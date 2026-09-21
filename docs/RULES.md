@@ -382,6 +382,32 @@ Items marked decided are house rules chosen by the owner. They are final for the
 | O8 | Does the reference list dominated readings, such as the lower of two straights for the same cards? | Compare on best readings and log the rest by class | Parity | none |
 | O9 | Exact strings for the ten, the jokers and the type names | Expected `T`, `SB`, `HR` and types `Single, Pair, Trips, ThreePair, ThreeWithTwo, TwoTrips, Straight, StraightFlush, Bomb, PASS, tribute, back`. Only `Single`, `Bomb`, `PASS`, `tribute` and `back` appear in the paper. | Parity | adapter mapping table |
 
+### 13.1 What the OpenGuanDan simulator does (the `ogd` profile)
+
+Recorded in M0 by reading the simulator's sources and by probing its move
+generator. Evidence per item is in `docs/ogd_profile_findings.md` and
+`docs/ogd_parity_probes.md`. These values are the `ogd` profile in
+`cpp/include/gd/config.h`. They do not change any house decision; they exist so
+that the differential tests of DESIGN.md 9.2 can run under the simulator's own
+rules.
+
+| ID | House | OpenGuanDan | Field |
+|---|---|---|---|
+| O1 pairing | The higher tribute card goes to the Banker | Fixed by seat: the Banker's downstream seat `(B + 1) % 4` always pays the Banker, the upstream seat always pays the Follower, whatever the cards are | `tribute_pairing` |
+| O1 leader | The payer of the higher card leads; on a tie the Banker's upstream seat | Payer of the higher card leads, which agrees; on a tie the seat recorded last in the finishing order leads, which does not | `tribute_tie` |
+| O2 | Natural rank 2 to 10, no level card of any suit; fall back to any lowest-power card | The same restriction, but no fallback path exists at all | `back_tribute_fallback` |
+| O4 count | Every owned A round that does not pass is a failure, including a plain loss | Only an owned A round won with Banker and Dweller counts. A plain loss counts nothing and simply hands ownership over. | `a_fail_on_loss` |
+| O4 limit | Reset to level 2 on the third failure | The check runs after the increment and compares with `> 3`, so the reset lands on the fourth | `a_fail_limit` |
+| O4 draw | No such rule | After 50 resets the match is decided by accumulated victory count | `shuffle_limit` |
+| O5 | By seat from `next(Follower)` | By ascending seat index. Logging only, no rule depends on it. | `double_win_tail` |
+| O6 | Uniform random from the seed | Uniform random, `randint(0, 3)`. Agrees. | `first_leader` |
+| O9 | See the adapter mapping table | Type strings `Single, Pair, Trips, ThreePair, ThreeWithTwo, TwoTrips, Straight, StraightFlush, Bomb, FourKings, tribute, back, PASS`. The joker bomb is `FourKings`, which this document previously did not list. Card strings `T`, `SB` and `HR` are confirmed. | `eval/ogd_adapter/normalize.py` |
+| Card counts | Declaration at ten or fewer, interface only | `publicInfo.rest` carries exact counts to every player at all times. Agrees with the note in section 10. | `ui_count_visibility` |
+
+Anti-tribute, the level gain of 3, 2 and 1, and the cap at A agree with this
+document. O3 and O8 are settled by probing the move generator, which lives in a
+compiled jar and cannot be read; see `docs/ogd_parity_probes.md`.
+
 ## 14. Engine invariants for property tests
 
 1. Conservation: for every card id, copies in the four hands plus copies played equals 2, after every step and after tribute.

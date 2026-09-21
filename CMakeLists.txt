@@ -25,6 +25,11 @@ if(GD_BUILD_BENCH)
   add_subdirectory(bench)
 endif()
 
+option(GD_BUILD_FUZZ "Build the property fuzzer" OFF)
+if(GD_BUILD_FUZZ)
+  add_subdirectory(cpp/fuzz)
+endif()
+
 if(GD_BUILD_PYTHON AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/python/bindings.cpp)
   find_package(Python 3.11 COMPONENTS Interpreter Development.Module REQUIRED)
   execute_process(COMMAND ${Python_EXECUTABLE} -m pybind11 --cmakedir
