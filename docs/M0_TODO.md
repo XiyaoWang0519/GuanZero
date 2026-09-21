@@ -14,7 +14,7 @@ OpenGuanDan traces without divergence and meets the throughput target
 | 4 | Move generation, full mode | equals the oracle on 10^4 random small hands; sound on 27-card hands | 10,000 hands, no mismatch; fuzzer covers full hands | done |
 | 5 | Move generation, canonical mode | subset and best-reading invariants; candidate statistics recorded | `tests/test_movegen_crosscheck.py`; statistics in the report | done |
 | 6 | Round and match state machine, tribute, level A, `DealSpec` | T-FLOW scenarios and tribute vectors | `tests/test_flow_scenarios.py`, 16 scenarios; `end_of_round` vs the oracle on 20,000 configurations | done |
-| 7 | Random and greedy bots, fuzzer | 10^7 rounds with all invariants; 10^5 clean under ASan and UBSan | 10,000,008 rounds, 735,492,869 decisions, no failure | done |
+| 7 | Random and greedy bots, fuzzer | 10^7 rounds with all invariants; 10^5 clean under ASan and UBSan | 10,000,008 rounds, 735,492,869 decisions, no failure; 100,002 rounds clean under UBSan (ASan is blocked by a toolchain deadlock on this host, see the report) | done |
 | 8 | `VecEnv` and Python bindings | Python smoke test plays 1,000 matches with random choices | `tests/test_vecenv_smoke.py` | done |
 | 9 | Benchmarks | report written, target met or the gap explained | 190,533 decisions per second per core against a target of 100,000 | done |
 | 10 | OpenGuanDan trace logger and replay diff | 1,000 matches replay with no unexplained divergence | 1,783,202 decisions, 13,341 round ends, one explained class at 0.21% | done |

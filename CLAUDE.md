@@ -28,12 +28,20 @@ cmake --build build -j
 ./scripts/check.sh                         # everything CI runs
 ```
 
-Sanitizer build:
+Sanitizer build. `-DGD_SANITIZE=ON` is address plus undefined; the variable
+also takes an explicit `-fsanitize` list.
 
 ```sh
-cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGD_SANITIZE=ON
-cmake --build build-asan -j && ./build-asan/cpp/tests/gd_tests
+cmake -S . -B build-ubsan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGD_SANITIZE=undefined
+cmake --build build-ubsan -j && ./build-ubsan/cpp/tests/gd_tests
+UBSAN_OPTIONS=halt_on_error=1 ./build-ubsan/cpp/fuzz/gd_fuzz --rounds 100000 --threads 6
 ```
+
+On macOS use `undefined` alone. AddressSanitizer deadlocks inside its own
+runtime initialisation on this host, spinning in `AsanInitInternal` while dyld
+shared-cache iteration re-enters malloc, before `main` runs. It is an
+interceptor problem in the toolchain, not in this code. CI runs address and
+undefined together on Linux, which is where ASan coverage comes from.
 
 ## Rules of the house
 

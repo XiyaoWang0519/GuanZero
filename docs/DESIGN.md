@@ -18,7 +18,7 @@ Match win rates are measured inside the OpenGuanDan simulator over 1,000 matches
 
 | Gate | Criterion | Calibration from the OpenGuanDan paper |
 |---|---|---|
-| M0 | Engine passes every test in RULES.md, replays OpenGuanDan traces without divergence and meets the throughput target | Their Java simulator reports about 25 million steps per hour on 10 parallel environments |
+| M0 | Engine passes every test in RULES.md, replays OpenGuanDan traces without divergence and meets the throughput target. **Met**, see `docs/reports/M0.md`. | Their Java simulator reports about 25 million steps per hour on 10 parallel environments |
 | M1 | At least 80% against each of Rule One to Rule Four | DanZero scores 83% to 92% against them |
 | M2 | At least 55% against DanZero and at least 50% against SDMC | SDMC beats DanZero 57.6% |
 | M3 | At least 55% against GS2 | GS2 beats SDMC 56.7% and DanZero 62.0% |
@@ -333,7 +333,11 @@ At 8,192 environments and about 30 candidates per decision, one iteration is rou
 4. The replay runs under the `ogd` rule profile. Divergences are grouped by class. Each class either fixes a bug, fills in a value of the `ogd` profile or closes a parity check in RULES.md section 13. Training and human play use the `house` profile.
 5. For gates M1 to M3 the agent plays 1,000 matches against each built-in agent.
 
-Unverified until M0: whether the repository ships usable weights for GS2, SDMC and DanZero. Its license terms are also unchecked, so nothing from it is vendored into this repository.
+Settled in M0, and not as hoped. The repository ships no agents and no weights: it contains the rules server, an Electron client and the move generator jar, nothing else. It also carries no LICENSE file, so nothing from it is vendored here and the adapter locates a local clone through `OGD_ROOT`.
+
+The consequence is that the opponents named in the M2 and M3 gates cannot currently be played against. The fallback from the risk table becomes the plan: train a DanZero-style baseline with our own pipeline and use it as the reference point, treating the published win rates as calibration rather than as a ladder. This needs a decision before M2 begins, because it changes what those gates can mean. See `docs/reports/M0.md` section 5.
+
+M0 also replaced the socket route with something cheaper: the repository's `guandan-java/` directory exposes the Java move generator to Python directly, which is what the trace logger and replay diff use.
 
 ### 9.3 Behavior probes
 

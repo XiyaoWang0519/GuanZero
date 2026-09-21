@@ -25,10 +25,21 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
 
-option(GD_SANITIZE "Build with ASan and UBSan" OFF)
-if(GD_SANITIZE)
-  add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer -g)
-  add_link_options(-fsanitize=address,undefined)
+# Sanitizers. ON means address plus undefined; a string selects them, e.g.
+# -DGD_SANITIZE=undefined. AddressSanitizer deadlocks inside its own runtime
+# initialisation on this host's macOS (dyld shared-cache iteration re-enters
+# malloc before main), so local runs use undefined only and CI runs both on
+# Linux. See docs/reports/M0.md.
+set(GD_SANITIZE "" CACHE STRING "Sanitizers to enable: OFF, ON, or a -fsanitize list")
+if(GD_SANITIZE AND NOT GD_SANITIZE STREQUAL "OFF")
+  if(GD_SANITIZE STREQUAL "ON")
+    set(GD_SANITIZE_LIST "address,undefined")
+  else()
+    set(GD_SANITIZE_LIST "${GD_SANITIZE}")
+  endif()
+  message(STATUS "sanitizers: ${GD_SANITIZE_LIST}")
+  add_compile_options(-fsanitize=${GD_SANITIZE_LIST} -fno-omit-frame-pointer -g)
+  add_link_options(-fsanitize=${GD_SANITIZE_LIST})
 endif()
 
 option(GD_BUILD_PYTHON "Build the pybind11 module" ON)
