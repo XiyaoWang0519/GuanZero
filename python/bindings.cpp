@@ -344,6 +344,22 @@ PYBIND11_MODULE(_gd_core, m) {
     return result;
   }, py::arg("hand"), py::arg("level"), py::arg("top"), py::arg("canonical") = false);
 
+  m.def("is_legal", [](const std::vector<int>& hand, int level,
+                       const py::object& top, const py::object& action) {
+    Action a;
+    if (py::isinstance<Action>(action)) {
+      a = action.cast<Action>();
+    } else {
+      const auto t = action.cast<py::tuple>();
+      a = action_from_reading(py::make_tuple(t[0], t[1]));
+      if (t.size() > 2)
+        for (const auto& c : t[2].cast<py::tuple>())
+          a.cards.add(static_cast<CardId>(c.cast<int>()));
+    }
+    return is_legal(hand_from(hand), level, action_from_reading(top), a,
+                    RuleConfig::house());
+  }, py::arg("hand"), py::arg("level"), py::arg("top"), py::arg("action"));
+
   m.def("tribute_choices", [](const std::vector<int>& hand, int level) {
     std::vector<Action> out;
     generate_tribute(hand_from(hand), level, RuleConfig::house(), out);
