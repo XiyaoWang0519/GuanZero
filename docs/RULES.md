@@ -373,14 +373,14 @@ Items marked decided are house rules chosen by the owner. They are final for the
 |---|---|---|---|---|
 | O1 | Double tribute with equal cards | The Banker's upstream seat pays the Banker and leads. The other loser pays the Follower. | Decided | `tribute_tie = upstream` |
 | O2 | Level cards as back-tribute | Not allowed. Natural rank 2 to 10 and not a level card. Fallback if nothing qualifies: any lowest power card. | Decided | `back_tribute_level_cards = false` |
-| O3 | Joker pair inside a full house | Allowed | Decided | `full_house_joker_pair = true` |
+| O3 | Joker pair inside a full house | Allowed. The simulator agrees: probed at M0, it offers the `ThreeWithTwo` with both `SB SB` and `HR HR` as the pair. | Decided, parity closed | `full_house_joker_pair = true` |
 | O4 | Passing A | Only in a round the team owns. Every owned A round that does not pass is a failure, cumulative. Three failures reset the team to level 2. | Decided | `pass_a_requires_owner = true`, `a_fail_limit = 3`, `a_fail_reset_level = 2` |
 | O7 | Card count visibility | Declaration at ten cards or fewer. Governs the human interface only. Agents use exact counts derived from public plays. | Decided | `ui_count_visibility = le10` |
 | O10 | Dweller paying tribute to a Banker on the same team | Tribute and back-tribute proceed as usual | Decided | `tribute_between_partners = true` |
 | O5 | Order of the last two players after a double win | By seat from `next(Follower)`. No rule depends on it. | Parity | none |
 | O6 | First leader in round 1 | Uniform random from the seed | Parity | `first_leader = random` |
-| O8 | Does the reference list dominated readings, such as the lower of two straights for the same cards? | Compare on best readings and log the rest by class | Parity | none |
-| O9 | Exact strings for the ten, the jokers and the type names | Expected `T`, `SB`, `HR` and types `Single, Pair, Trips, ThreePair, ThreeWithTwo, TwoTrips, Straight, StraightFlush, Bomb, PASS, tribute, back`. Only `Single`, `Bomb`, `PASS`, `tribute` and `back` appear in the paper. | Parity | adapter mapping table |
+| O8 | Does the reference list dominated readings, such as the lower of two straights for the same cards? | Yes, it lists them all and prunes nothing. Our full mode is therefore the right side of the comparison and canonical mode is ours alone. Probed at M0. | Parity closed | none |
+| O9 | Exact strings for the ten, the jokers and the type names | Confirmed at M0: `T`, `SB`, `HR`, and the 13 type strings `Single, Pair, Trips, ThreePair, ThreeWithTwo, TwoTrips, Straight, StraightFlush, Bomb, FourKings, tribute, back, PASS`. The joker bomb is `FourKings`, which this table previously did not list. | Parity closed | `eval/ogd_adapter/normalize.py` |
 
 ### 13.1 What the OpenGuanDan simulator does (the `ogd` profile)
 
@@ -405,8 +405,10 @@ rules.
 | Card counts | Declaration at ten or fewer, interface only | `publicInfo.rest` carries exact counts to every player at all times. Agrees with the note in section 10. | `ui_count_visibility` |
 
 Anti-tribute, the level gain of 3, 2 and 1, and the cap at A agree with this
-document. O3 and O8 are settled by probing the move generator, which lives in a
-compiled jar and cannot be read; see `docs/ogd_parity_probes.md`.
+document. O3 and O8 were settled by probing the move generator, which lives in a
+compiled jar and cannot be read; see `docs/ogd_parity_probes.md`. The
+simulator also passes the wild count to the generator as a caller-supplied
+`heartsNum` rather than deriving it, which the adapter must get right.
 
 ## 14. Engine invariants for property tests
 
