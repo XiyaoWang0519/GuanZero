@@ -41,6 +41,11 @@ struct RoundState {
   int8_t num_finished = 0;
   Phase phase = Phase::Deal;
   int16_t steps = 0;
+  // Most recent action of each seat this round, pass included. Type Pass with
+  // no cards means the seat has not acted yet. Feeds the observation's
+  // last-action block (DESIGN.md 6).
+  std::array<Action, 4> last_action{};
+  std::array<bool, 4> has_acted{{false, false, false, false}};
 
   // Tribute bookkeeping for this round.
   std::array<TributeMove, 4> tribute_moves{};
@@ -148,8 +153,8 @@ EndOfRound end_of_round(const std::array<int8_t, 2>& levels,
 
 // Double tribute pairing (RULES.md 9.2). Returns the payer to the Banker, the
 // payer to the Follower and the leader.
-struct TributePairing { int to_banker; int to_follower; int leader; };
-TributePairing double_tribute(int banker, int seat_a, int power_a, int seat_b,
+struct TributeRouting { int to_banker; int to_follower; int leader; };
+TributeRouting double_tribute(int banker, int seat_a, int power_a, int seat_b,
                               int power_b, const RuleConfig& rules);
 
 }  // namespace gd

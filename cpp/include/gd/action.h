@@ -41,7 +41,10 @@ struct Action {
   int8_t key = 0;
   int8_t bomb_size = 0;
   int8_t wilds = 0;        // wild cards consumed by this reading
-  int8_t fh_pair_rank = -1;  // FullHouse only: the pair's rank (0..12, 13=BJ, 14=RJ)
+  // FullHouse only: the pair's rank in the POWER domain, matching `key`
+  // (0..12, 13 = BJ pair, 14 = RJ pair). Power, not natural rank, so that
+  // abstract_id() needs no round level.
+  int8_t fh_pair_rank = -1;
   Hand cards{};
 
   constexpr bool is_pass() const { return type == Type::Pass; }
@@ -81,8 +84,8 @@ bool beats_reading(Type ct, int ckey, int cbomb, Type tt, int tkey, int tbomb);
 //   261 .. 351       bomb, 13 powers x sizes 4..10  (power * 7 + (size - 4))
 //   352 .. 391       straight flush, window * 4 + suit
 //   392              joker bomb
-// The full house pair slot encodes the pair rank: ranks 0..12 other than the
-// triple rank keep their order (0..11), BJ pair is 12 and RJ pair is 13.
+// The full house pair slot encodes the pair's power: powers 0..12 other than
+// the triple's power keep their order (0..11), BJ pair is 12 and RJ pair is 13.
 inline constexpr int kNumAbstract = 393;
 inline constexpr int kAbstractPass = 0;
 inline constexpr int kAbstractSingle = 1;
