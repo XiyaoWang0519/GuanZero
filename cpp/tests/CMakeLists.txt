@@ -1,0 +1,5 @@
+file(GLOB GD_TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
+add_executable(gd_tests ${GD_TEST_SOURCES})
+target_link_libraries(gd_tests PRIVATE gd_core)
+target_compile_options(gd_tests PRIVATE -Wall -Wextra)
+add_test(NAME gd_tests COMMAND gd_tests)

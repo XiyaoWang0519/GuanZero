@@ -1,0 +1,9 @@
+build/
+build-*/
+.venv/
+__pycache__/
+*.so
+*.pyc
+.pytest_cache/
+.hypothesis/
+ogd_traces/
