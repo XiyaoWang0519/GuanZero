@@ -7,8 +7,8 @@ OpenGuanDan traces without divergence and meets the throughput target
 | # | Task | Check | Status |
 |---|---|---|---|
 | 1 | Scaffold: CMake, pybind11, pytest, CI, oracle, `CLAUDE.md` | `oracle/test_gd_reference.py` passes in CI | done |
-| 2 | Cards, `Hand`, text parsing and printing | round trip over all 54 ids and random hands | todo |
-| 3 | `power`, windows, `interpret`, `beats` | every vector of RULES.md 12; 10^5 random multisets agree with the oracle | todo |
+| 2 | Cards, `Hand`, text parsing and printing | round trip over all 54 ids and random hands | done |
+| 3 | `power`, windows, `interpret`, `beats` | every vector of RULES.md 12; 10^5 random multisets agree with the oracle | done |
 | 4 | Move generation, full mode | equals the oracle on 10^4 random small hands; sound on 27-card hands | todo |
 | 5 | Move generation, canonical mode | subset and best-reading invariants; candidate statistics recorded | todo |
 | 6 | Round and match state machine, tribute, level A, `DealSpec` | T-FLOW scenarios and tribute vectors | todo |

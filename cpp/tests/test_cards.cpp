@@ -24,8 +24,8 @@ TEST("card id/text round trip over all 54 ids") {
 TEST("card text edge cases") {
   CHECK_EQ(card_from_string("SB"), (int)kBJ);
   CHECK_EQ(card_from_string("HR"), (int)kRJ);
-  CHECK_EQ(card_to_string(kBJ), std::string("SB"));
-  CHECK_EQ(card_to_string(kRJ), std::string("HR"));
+  CHECK(card_to_string(kBJ) == "SB");
+  CHECK(card_to_string(kRJ) == "HR");
   CHECK_EQ(card_from_string(""), -1);
   CHECK_EQ(card_from_string("Z9"), -1);
   CHECK_EQ(card_from_string("S1"), -1);

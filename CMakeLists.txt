@@ -1,4 +1,19 @@
 cmake_minimum_required(VERSION 3.24)
+
+# On this machine the CommandLineTools SDK ships .tbd stubs declaring an
+# arm64e.x1 slice that the installed linker cannot parse, so /usr/bin/c++ fails
+# its own compiler check. Ask xcrun for the active SDK instead. Must happen
+# before project(). No effect anywhere but macOS.
+if(APPLE AND NOT CMAKE_OSX_SYSROOT)
+  execute_process(COMMAND xcrun --sdk macosx --show-sdk-path
+                  OUTPUT_VARIABLE GD_MACOS_SDK
+                  OUTPUT_STRIP_TRAILING_WHITESPACE
+                  ERROR_QUIET)
+  if(GD_MACOS_SDK AND IS_DIRECTORY "${GD_MACOS_SDK}")
+    set(CMAKE_OSX_SYSROOT "${GD_MACOS_SDK}" CACHE PATH "macOS SDK" FORCE)
+  endif()
+endif()
+
 project(guandan_ai LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
