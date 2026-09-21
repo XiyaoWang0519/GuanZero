@@ -33,6 +33,8 @@ from eval.ogd_adapter import normalize as N
 
 # ---- the engine side, behind one seam --------------------------------------
 
+_N = N
+
 
 class EngineAdapter:
     """Wraps our C++ engine (`gd`). `available` is False until `cpp/` builds
@@ -49,6 +51,7 @@ class EngineAdapter:
             self.import_error = f"{type(e).__name__}: {e}"
             return
         self._gd = gd
+        self.gd = gd
         self.available = True
 
     def legal_actions(self, hand_ids: tuple[int, ...], level: int, top) -> set[tuple]:
@@ -102,49 +105,210 @@ def _trace_files(trace_arg: Path) -> list[Path]:
     return [trace_arg]
 
 
-def diff_trace(path: Path, engine: EngineAdapter, limit: int | None, report: DivergenceReport) -> None:
-    """Replay one trace file, recording divergences into `report`."""
-    current_level: str | None = None
+def _as_triple(action) -> tuple:
+    """Our engine's Action in the normalizer's vocabulary."""
+    kind, key, cards = action.as_tuple()
+    if kind == "Pass":
+        return ("Pass", None, ())
+    if kind == "JokerBomb":
+        return (kind, None, tuple(sorted(cards)))   # the joker bomb has no key
+    return (kind, key, tuple(sorted(cards)))
+
+
+def _engine_set(gd, state) -> set[tuple]:
+    return {_as_triple(a) for a in state[0].legal_actions(state[1])}
+
+
+class _RoundReplay:
+    """Drives our state machine through one logged round.
+
+    The traces record the deal before tribute, so the hands are adjusted by the
+    logged tribute movements and the round is started at the play phase with
+    the leader the simulator actually used. That isolates the legal-set
+    comparison from any difference in tribute policy, which is compared
+    separately from the tribute and back decisions themselves.
+    """
+
+    def __init__(self, gd, engine_rules, actions):
+        self.gd = gd
+        self.engine = gd.Engine(engine_rules, actions)
+        # The simulator asks every seat, including one whose only option is
+        # pass, so the replay must see those decisions too.
+        self.engine.auto_pass = False
+        self.state = None
+        self.deal = None
+        self.moves: list[tuple[int, int, str]] = []
+        self.anti = False
+
+    def on_deal(self, ev) -> None:
+        self.deal = ev
+        self.moves = []
+        self.anti = False
+        self.state = None
+
+    def on_tribute(self, ev) -> None:
+        for payer, receiver, card in ev["result"]:
+            self.moves.append((int(payer), int(receiver), card))
+
+    def start(self, leader: int):
+        gd, N = self.gd, _N
+        hands = [[N.card_id(c) for c in h] for h in self.deal["hands"]]
+        for payer, receiver, card in self.moves:
+            cid = N.card_id(card)
+            if cid in hands[payer]:
+                hands[payer].remove(cid)
+                hands[receiver].append(cid)
+        d = gd.DealSpec()
+        d.hands = [sorted(h) for h in hands]
+        d.level = N.RANK_INDEX[self.deal["level"]]
+        levels = self.deal.get("team_levels") or {}
+        d.team_levels = [N.RANK_INDEX[levels.get("0", self.deal["level"])],
+                         N.RANK_INDEX[levels.get("1", self.deal["level"])]]
+        owner = self.deal.get("owner_team")
+        d.owner = -1 if owner is None else int(owner)
+        d.leader = leader
+        m = gd.MatchState()
+        self.engine.set_deal(m, d)
+        self.state = m
+        return m
+
+
+def diff_trace(path: Path, engine: EngineAdapter, limit: int | None,
+               report: DivergenceReport) -> None:
+    """Replay one trace file through our engine, recording divergences."""
     checked = 0
+    if not engine.available:
+        # Normalization-only pass: still worth running, it validates the trace
+        # and the O9 mapping table.
+        level = None
+        for ev in _iter_events(path):
+            if ev["event"] == "deal":
+                level = ev["level"]
+            elif ev["event"] == "act":
+                report.decisions_checked += 1
+                try:
+                    _N.normalize_action_list(ev["action_list"], level)
+                except Exception as e:
+                    report.note("normalize_error", f"{path.name}: {e!r}")
+            elif ev["event"] == "episodeOver":
+                report.round_ends_checked += 1
+        return
+
+    gd = engine.gd
+    replay = _RoundReplay(gd, gd.RuleConfig.ogd(), gd.ActionConfig.full())
+    state = None
+
     for ev in _iter_events(path):
         if limit is not None and checked >= limit:
             return
         kind = ev["event"]
+
         if kind == "deal":
-            current_level = ev["level"]
+            replay.on_deal(ev)
+            state = None
             continue
+        if kind in ("tribute", "back"):
+            replay.on_tribute(ev)
+            continue
+        if kind == "anti-tribute":
+            replay.anti = True
+            continue
+
         if kind == "act":
-            checked += 1
-            report.decisions_checked += 1
-            assert current_level is not None, "act event before any deal event"
+            level_char = replay.deal["level"] if replay.deal else None
             try:
-                ogd_actions = N.normalize_action_list(ev["action_list"], current_level)
+                theirs = _N.normalize_action_list(ev["action_list"], level_char)
             except Exception as e:
                 report.note("normalize_error", f"{path.name}#{ev.get('round')}: {e!r}")
                 continue
-            if not engine.available:
-                continue  # normalization-only pass; no engine to compare against
-            hand_ids = tuple(sorted(N.card_id(c) for c in ev["hand"]))
-            level_idx = N.RANK_INDEX[current_level]
-            top = None  # TODO(M0 task 4/5): derive the top play once gd.Action exists
-            try:
-                engine_actions = engine.legal_actions(hand_ids, level_idx, top)
-            except EngineNotBuilt:
+
+            if ev.get("phase") != "play":
+                # Tribute and back-tribute candidate sets, compared directly.
+                hand = sorted(_N.card_id(c) for c in ev["hand"])
+                level = _N.RANK_INDEX[level_char]
+                if ev["phase"] == "tribute":
+                    ours = {("Tribute", None, (c,)) for c in gd.tribute_choices(hand, level)}
+                    theirs = {(t, None, c) for t, _, c in theirs}
+                    cls = "tribute_candidates"
+                else:
+                    ours = {("BackTribute", None, (c,))
+                            for c in gd.back_tribute_choices(hand, level)}
+                    theirs = {(t, None, c) for t, _, c in theirs}
+                    cls = "back_tribute_candidates"
+                if ours != theirs:
+                    report.note(cls,
+                                f"{path.name}#{ev.get('round')} seat{ev['seat']}: "
+                                f"ours-only {sorted(ours - theirs)[:3]} "
+                                f"theirs-only {sorted(theirs - ours)[:3]}")
                 continue
-            if ogd_actions != engine_actions:
-                only_ogd = ogd_actions - engine_actions
-                only_engine = engine_actions - ogd_actions
-                if only_ogd:
-                    report.note("legal_set_missing_from_engine", f"{path.name}#{ev['round']} seat{ev['seat']}: {sorted(only_ogd)[:3]}")
-                if only_engine:
-                    report.note("legal_set_extra_in_engine", f"{path.name}#{ev['round']} seat{ev['seat']}: {sorted(only_engine)[:3]}")
-        elif kind == "episodeOver":
+
+            checked += 1
+            report.decisions_checked += 1
+            if state is None:
+                state = replay.start(int(ev["seat"]))
+
+            # Our engine passes for a seat whose only option is pass; the
+            # simulator still asks. Skip those logged decisions.
+            only_pass = theirs == {("Pass", None, ())}
+            if state.to_move != ev["seat"]:
+                if only_pass:
+                    continue
+                report.note("seat_mismatch",
+                            f"{path.name}#{ev.get('round')}: ours {state.to_move} "
+                            f"theirs {ev['seat']}")
+                state = None
+                continue
+
+            ours = {_as_triple(a) for a in replay.engine.legal_actions(state)}
+            if ours != theirs:
+                only_theirs = theirs - ours
+                only_ours = ours - theirs
+                wild = _N.wild_card_id(_N.RANK_INDEX[level_char])
+                if only_theirs:
+                    report.note("legal_set_missing_from_engine",
+                                f"{path.name}#{ev.get('round')} seat{ev['seat']}: "
+                                f"{sorted(only_theirs)[:3]}")
+                if only_ours:
+                    # The known class: the simulator does not enumerate a wild
+                    # card standing for something weaker than what it already
+                    # is, so our set is a superset on wild-bearing readings.
+                    cls = ("extra_wild_substitution"
+                           if all(wild in cards for _, _, cards in only_ours)
+                           else "legal_set_extra_in_engine")
+                    report.note(cls,
+                                f"{path.name}#{ev.get('round')} seat{ev['seat']}: "
+                                f"{sorted(only_ours)[:3]}")
+
+            chosen = _N.normalize_action(ev["chosen_action"], level_char)
+            match = next((a for a in replay.engine.legal_actions(state)
+                          if _as_triple(a) == chosen), None)
+            if match is None:
+                report.note("chosen_action_illegal_here",
+                            f"{path.name}#{ev.get('round')} seat{ev['seat']}: {chosen}")
+                state = None
+                continue
+            replay.engine.apply(state, match)
+            continue
+
+        if kind == "episodeOver":
             report.round_ends_checked += 1
-            # Finishing order / level-change / tribute-flow comparison needs
-            # gd.MatchState (task 6); until then this only checks that the
-            # trace itself is well-formed.
-            if not isinstance(ev.get("order"), list) or len(ev["order"]) not in (2, 3, 4):
-                report.note("malformed_episode_over", f"{path.name}#{ev.get('round')}: {ev.get('order')}")
+            if state is None:
+                continue
+            if state.phase != gd.Phase.RoundEnd:
+                report.note("round_did_not_end",
+                            f"{path.name}#{ev.get('round')}: phase {state.phase}")
+                state = None
+                continue
+            result = replay.engine.end_round(state)
+            theirs_order = [int(x) for x in ev["order"]]
+            ours_order = result.order[:result.num_finished_seats]
+            n = min(len(theirs_order), len(ours_order))
+            if theirs_order[:n] != ours_order[:n]:
+                report.note("finishing_order",
+                            f"{path.name}#{ev.get('round')}: ours {ours_order} "
+                            f"theirs {theirs_order}")
+            state = None
+            continue
 
 
 def self_test() -> None:

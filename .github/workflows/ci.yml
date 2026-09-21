@@ -22,8 +22,15 @@ jobs:
         run: python oracle/test_gd_reference.py
       - name: Python suites
         run: python -m pytest -q tests
+      - name: Fuzzer
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGD_BUILD_FUZZ=ON
+          cmake --build build -j
+          ./build/cpp/fuzz/gd_fuzz --rounds 20000 --threads 2 --deep-every 1
+          ./build/cpp/fuzz/gd_fuzz --rounds 20000 --threads 2 --deep-every 1 --full
       - name: Sanitizers
         run: |
-          cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGD_SANITIZE=ON -DGD_BUILD_PYTHON=OFF
+          cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGD_SANITIZE=ON -DGD_BUILD_PYTHON=OFF -DGD_BUILD_FUZZ=ON
           cmake --build build-asan -j
           ./build-asan/cpp/tests/gd_tests
+          ./build-asan/cpp/fuzz/gd_fuzz --rounds 2000 --threads 2 --deep-every 8

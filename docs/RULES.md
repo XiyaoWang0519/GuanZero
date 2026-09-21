@@ -387,6 +387,7 @@ Items marked decided are house rules chosen by the owner. They are final for the
 | O6 | First leader in round 1 | Uniform random from the seed | Parity | `first_leader = random` |
 | O8 | Does the reference list dominated readings, such as the lower of two straights for the same cards? | Yes, it lists them all and prunes nothing. Our full mode is therefore the right side of the comparison and canonical mode is ours alone. Probed at M0. | Parity closed | none |
 | O9 | Exact strings for the ten, the jokers and the type names | Confirmed at M0: `T`, `SB`, `HR`, and the 13 type strings `Single, Pair, Trips, ThreePair, ThreeWithTwo, TwoTrips, Straight, StraightFlush, Bomb, FourKings, tribute, back, PASS`. The joker bomb is `FourKings`, which this table previously did not list. | Parity closed | `eval/ogd_adapter/normalize.py` |
+| O11 | Does the simulator enumerate every wild card substitution? | No. A wild card keeps its own identity when that identity already fits, so the simulator lists fewer readings than we do. Characterized by probe and by trace replay, not emulated: our set is a strict superset, so no legal play is ever missing. | Parity closed, superset accepted | none |
 
 ### 13.1 What the OpenGuanDan simulator does (the `ogd` profile)
 
@@ -409,6 +410,37 @@ rules.
 | O6 | Uniform random from the seed | Uniform random, `randint(0, 3)`. Agrees. | `first_leader` |
 | O9 | See the adapter mapping table | Type strings `Single, Pair, Trips, ThreePair, ThreeWithTwo, TwoTrips, Straight, StraightFlush, Bomb, FourKings, tribute, back, PASS`. The joker bomb is `FourKings`, which this document previously did not list. Card strings `T`, `SB` and `HR` are confirmed. | `eval/ogd_adapter/normalize.py` |
 | Card counts | Declaration at ten or fewer, interface only | `publicInfo.rest` carries exact counts to every player at all times. Agrees with the note in section 10. | `ui_count_visibility` |
+
+### 13.2 Wild card substitution: the one divergence left (O11)
+
+Replaying 1,000 logged matches, 1,783,202 decisions and 13,341 round ends
+through our engine under the `ogd` profile leaves exactly one class of
+difference, on 3,784 decisions, or 0.21%. In every case our legal set is a
+strict superset: we never miss a play the simulator offers, and every action
+the simulator's players actually chose was legal in our engine.
+
+The simulator does not enumerate a wild card standing for something weaker than
+what the card already is. Three probes of its move generator isolate it:
+
+| Hand | Level | Simulator | Us and the oracle |
+|---|---|---|---|
+| `H2 H3 H4 H6 HA` | A | straight flush only | straight flush and straight |
+| `S3 S4 S5 S6 H7` | 7 | straight flush and straight, both windows | the same |
+| `SA HA HA DA DA` | A | no full house | full house, key 12 |
+
+The wild card is the heart of the round level. In the first hand it is already
+a heart among hearts, so the simulator reads the flush and stops; we also read
+the wild as another suit, which gives the weaker plain straight that RULES.md
+section 5 allows, since the five cards are then not all one suit. The second
+hand is the control: the wild is a heart among spades, its own identity does
+not fit, and the simulator enumerates both readings exactly as we do. In the
+third the two wild cards are aces at level A, and the simulator will not let
+them stand for a pair of another rank.
+
+This is not emulated behind a config field. Emulating it would add a special
+case to move generation for no gain in play strength, and nothing depends on
+byte-exact action lists: the adapter matches the simulator's chosen action by
+its content, not by its index into `actionList`.
 
 Anti-tribute, the level gain of 3, 2 and 1, and the cap at A agree with this
 document. O3 and O8 were settled by probing the move generator, which lives in a

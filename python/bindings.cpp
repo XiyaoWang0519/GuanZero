@@ -280,6 +280,7 @@ PYBIND11_MODULE(_gd_core, m) {
       }, py::arg("state"))
       .def("apply", &Engine::apply, py::arg("state"), py::arg("action"))
       .def("needs_decision", &Engine::needs_decision, py::arg("state"))
+      .def_property("auto_pass", &Engine::auto_pass, &Engine::set_auto_pass)
       .def("end_round", [](const Engine& e, MatchState& s) {
         RoundResult r;
         e.end_round(s, r);

@@ -154,3 +154,8 @@ def normalize_action(raw: list, level_char: str) -> NormalizedAction:
 def normalize_action_list(raw_list: list[list], level_char: str) -> set[NormalizedAction]:
     """Normalize a full `actionList` into our full-mode legal action set."""
     return {normalize_action(a, level_char) for a in raw_list}
+
+
+def wild_card_id(level: int) -> int:
+    """The heart card of the round level: the wild card (docs/RULES.md 4)."""
+    return level * 4 + SUIT_INDEX["H"]

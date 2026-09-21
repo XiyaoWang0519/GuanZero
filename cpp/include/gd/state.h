@@ -121,6 +121,12 @@ class Engine {
   const RuleConfig& rules() const { return rules_; }
   const ActionConfig& action_config() const { return actions_; }
 
+  // Normally a seat whose only option is pass never gets asked; the engine
+  // passes for it (DESIGN.md 5.2). Trace replay needs to observe those
+  // decisions, because the reference simulator asks every seat.
+  void set_auto_pass(bool v) { auto_pass_ = v; }
+  bool auto_pass() const { return auto_pass_; }
+
   // Start a match at level 2 for both teams. Deals from `rng`.
   void new_match(MatchState& m, uint64_t seed) const;
   // Start a match or round from an explicit deal.
@@ -151,6 +157,7 @@ class Engine {
 
   RuleConfig rules_;
   ActionConfig actions_;
+  bool auto_pass_ = true;
 };
 
 // Oracle-equivalent match bookkeeping (gd_reference.end_of_round).

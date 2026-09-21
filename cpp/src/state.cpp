@@ -457,6 +457,7 @@ void Engine::apply_back_tribute(MatchState& m, const Action& a) const {
 
 // A seat whose only option is pass never gets asked (DESIGN.md 5.2).
 void Engine::skip_forced(MatchState& m) const {
+  if (!auto_pass_) return;
   // thread_local so that one Engine can drive many environments in parallel
   // without allocating in the rollout loop.
   static thread_local std::vector<Action> scratch;
