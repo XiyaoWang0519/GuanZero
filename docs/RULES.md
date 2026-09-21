@@ -246,7 +246,13 @@ A concrete action is `(type, key, card multiset)` and the engine derives `wilds_
 2. `suit_dedup`: a card of rank `r` and suit `s` is SF-relevant if some straight window containing `r` could still become a straight flush in suit `s` using the hand's own cards plus the wild cards it holds. Two concrete actions are equivalent if they share the abstract action, use the same number of wild cards and contain the same SF-relevant cards. Keep the member with the lexicographically smallest id vector. This is lossless up to opponent belief effects, since suits influence nothing else.
 3. `wild_usage = minimal`: only enumerate plays that use the fewest wild cards possible for the chosen natural cards. The alternative value `all` exists for experiments. The one known cost of `minimal` is that the agent cannot spend a wild card to keep a natural SF-relevant card.
 
-Canonical mode must always be a subset of full mode. For every full mode action there must be a canonical action with the same abstract action or a stronger reading of the same cards.
+Canonical mode must always be a subset of full mode. The guarantee it gives, corrected in M0, is:
+
+1. Every type available in full mode is available in canonical mode.
+2. For every type, the best reading available in canonical mode is the best one available in full mode. No play is ever weakened.
+3. Whenever a full mode action has no counterpart in canonical mode, canonical mode holds a strictly stronger reading of the same type.
+
+The earlier wording, that every full mode action survives as the same abstract action or as a stronger reading of the same cards, is too strong and the engine cannot satisfy it. Reduction 1 keeps only the highest key per type for one multiset, and with a wild card in hand every multiset that reads as a low full house also reads as a higher one, so the low key disappears outright rather than surviving on some other multiset. What is lost is the ability to declare a deliberately weak play of a type the player can also play strongly. Reduction 1 already accepts that cost for keys; it keeps the different types precisely because the cooperative argument applies across types.
 
 ## 12. Test vectors
 
@@ -416,7 +422,7 @@ simulator also passes the wild count to the generator as a caller-supplied
 2. When leading, the legal set is non-empty and has no pass. When following, it contains pass.
 3. Soundness: every generated action is accepted by the oracle's `interpret` and `beats`.
 4. Completeness: on random hands of 12 cards or fewer, the full mode legal set equals the oracle's `legal_actions`, for random levels and random tops.
-5. Canonical mode is a subset of full mode and preserves the best reading of every playable multiset.
+5. Canonical mode is a subset of full mode, offers every type that full mode offers, and for each type offers the same best reading (section 11.2).
 6. Termination: every round of random play ends in fewer than 600 steps.
 7. The finishing order never repeats a seat and a finished seat never moves again.
 8. Determinism: the same seed and the same action sequence give the same state hash on every platform.

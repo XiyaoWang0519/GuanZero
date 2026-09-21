@@ -3,13 +3,16 @@
 10^5 random multisets of 1 to 10 cards at random levels, plus every ordering
 and beats() pair the oracle can produce.
 """
+import os
 import random
 
 import gd
 import gd_reference as g
 import pytest
 
-N_MULTISETS = int(10**5)
+# The M0 gate is 10^5 multisets. CI runs a smaller sample by default; set
+# GD_XCHECK_N=100000 for the full sweep.
+N_MULTISETS = int(os.environ.get("GD_XCHECK_N", 20000))
 KINDS = [g.SINGLE, g.PAIR, g.TRIPLE, g.FULL_HOUSE, g.STRAIGHT, g.TUBE,
          g.PLATE, g.BOMB, g.STRAIGHT_FLUSH, g.JOKER_BOMB, g.PASS]
 

@@ -39,6 +39,9 @@ struct RoundState {
   std::array<int8_t, 4> finish_pos{{-1, -1, -1, -1}};   // -1 while active
   std::array<int8_t, 4> order{{-1, -1, -1, -1}};        // seats by finish position
   int8_t num_finished = 0;
+  // Seats that actually emptied their hands. The tail of `order` beyond this
+  // is filled at round end by seal order and those seats still hold cards.
+  int8_t num_out = 0;
   Phase phase = Phase::Deal;
   int16_t steps = 0;
   // Most recent action of each seat this round, pass included. Type Pass with
@@ -97,6 +100,7 @@ struct DealSpec {
 
 struct RoundResult {
   std::array<int8_t, 4> order{{-1, -1, -1, -1}};
+  int8_t num_out = 0;          // seats that emptied their hands
   int8_t winning_team = -1;
   int8_t gain = 0;
   std::array<int8_t, 2> levels{{0, 0}};
@@ -135,6 +139,16 @@ class Engine {
   void end_round(MatchState& m, RoundResult& out) const;
 
  private:
+  void open_tribute(MatchState& m) const;
+  void apply_play(MatchState& m, const Action& a) const;
+  void apply_tribute(MatchState& m, const Action& a) const;
+  void apply_back_tribute(MatchState& m, const Action& a) const;
+  void close_trick_if_done(MatchState& m) const;
+  void advance_seat(MatchState& m) const;
+  bool round_over(const MatchState& m) const;
+  void seal_order(MatchState& m) const;
+  void skip_forced(MatchState& m) const;
+
   RuleConfig rules_;
   ActionConfig actions_;
 };

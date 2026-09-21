@@ -62,11 +62,14 @@ def test_fork_copies_a_decision_point():
     env.reset()
     b = env.pending()
     assert b.offsets.shape[0] - 1 > 0
-    new_ids = env.fork(int(b.env_id[0]), 3)
+    # The batch buffers alias engine memory and die at the next pending(),
+    # so read what we need out of them first.
+    src_env = int(b.env_id[0])
+    new_ids = env.fork(src_env, 3)
     assert len(new_ids) == 3
     b2 = env.pending()
     rows = {int(e): i for i, e in enumerate(b2.env_id)}
-    src = rows[int(b.env_id[0])]
+    src = rows[src_env]
     for nid in new_ids:
         i = rows[int(nid)]
         assert np.array_equal(b2.obs[i], b2.obs[src])

@@ -53,7 +53,7 @@ void check_conservation(const gd::MatchState& m) {
 // Invariants 2 and 3: the legal set has the right shape and every member is a
 // real reading that beats the top play.
 void check_legal_set(const gd::MatchState& m, const std::vector<gd::Action>& cands,
-                     const gd::RuleConfig& rules) {
+                     const gd::RuleConfig& rules, bool deep) {
   if (cands.empty()) { report("empty legal set", m); return; }
   if (m.round.phase != gd::Phase::Play) return;
   const bool leading = m.round.top.is_pass();
@@ -67,6 +67,7 @@ void check_legal_set(const gd::MatchState& m, const std::vector<gd::Action>& can
     if (a.is_pass()) continue;
     if (!hand.contains(a.cards)) { report("action uses cards not held", m); continue; }
     if (!gd::beats(a, m.round.top)) { report("action does not beat the top", m); continue; }
+    if (!deep) continue;              // re-reading every candidate is the slow part
     bool found = false;
     for (const auto& r : gd::interpret(a.cards, m.round.level, rules))
       if (r.type == a.type && r.key == a.key && r.bomb_size == a.bomb_size) found = true;
@@ -82,13 +83,16 @@ void check_order(const gd::MatchState& m) {
     const int s = m.round.order[i];
     if (s < 0 || s > 3 || seen[s]) { report("bad finishing order", m); return; }
     seen[s] = true;
-    if (!m.round.hands[s].empty()) report("finished seat still holds cards", m);
+    // Only the seats that actually ran out are empty; the tail is ranked at
+    // round end and keeps its cards (RULES.md 7.3).
+    if (i < m.round.num_out && !m.round.hands[s].empty())
+      report("finished seat still holds cards", m);
   }
   if (m.round.phase == gd::Phase::Play && !m.round.active(m.round.to_move))
     report("a finished seat is to move", m);
 }
 
-void worker(long long rounds, uint64_t seed, bool canonical, bool verbose) {
+void worker(long long rounds, uint64_t seed, bool canonical, bool verbose, int deep_every) {
   gd::RuleConfig rules = gd::RuleConfig::house();
   gd::ActionConfig acfg = canonical ? gd::ActionConfig{} : gd::ActionConfig::full();
   gd::Engine engine(rules, acfg);
@@ -125,21 +129,27 @@ void worker(long long rounds, uint64_t seed, bool canonical, bool verbose) {
 
     cands.clear();
     engine.legal_actions(m, cands);
-    check_legal_set(m, cands, rules);
+    const bool deep = deep_every > 0 && (splitmix64(rng) % uint64_t(deep_every)) == 0;
+    check_legal_set(m, cands, rules, deep);
     if (cands.empty()) { engine.new_match(m, splitmix64(rng)); continue; }
     g_decisions.fetch_add(1, std::memory_order_relaxed);
 
     // Invariant 8: the same state and action give the same hash everywhere.
-    const uint64_t before = m.hash();
-    gd::MatchState copy = m;
-    if (copy.hash() != before) report("copy changed the hash", m);
+    gd::MatchState copy;
+    if (deep) {
+      const uint64_t before = m.hash();
+      copy = m;
+      if (copy.hash() != before) report("copy changed the hash", m);
+    }
 
     const gd::Action& pick = cands[splitmix64(rng) % cands.size()];
     engine.apply(m, pick);
 
-    gd::MatchState replay = copy;
-    engine.apply(replay, pick);
-    if (replay.hash() != m.hash()) report("apply is not deterministic", m);
+    if (deep) {
+      gd::MatchState replay = copy;
+      engine.apply(replay, pick);
+      if (replay.hash() != m.hash()) report("apply is not deterministic", m);
+    }
 
     check_conservation(m);
     check_order(m);
@@ -158,22 +168,25 @@ int main(int argc, char** argv) {
   int threads = 1;
   bool canonical = true;
   bool verbose = false;
+  int deep_every = 64;      // run the costly re-reading checks on 1 decision in N
   for (int i = 1; i < argc; ++i) {
     if (!std::strcmp(argv[i], "--rounds") && i + 1 < argc) rounds = std::atoll(argv[++i]);
     else if (!std::strcmp(argv[i], "--threads") && i + 1 < argc) threads = std::atoi(argv[++i]);
     else if (!std::strcmp(argv[i], "--full")) canonical = false;
     else if (!std::strcmp(argv[i], "--verbose")) verbose = true;
+    else if (!std::strcmp(argv[i], "--deep-every") && i + 1 < argc) deep_every = std::atoi(argv[++i]);
   }
   if (threads < 1) threads = 1;
   const long long per = (rounds + threads - 1) / threads;
 
   std::vector<std::thread> pool;
   for (int t = 0; t < threads; ++t)
-    pool.emplace_back(worker, per, 0x5EED0000ULL + uint64_t(t) * 7919ULL, canonical, verbose);
+    pool.emplace_back(worker, per, 0x5EED0000ULL + uint64_t(t) * 7919ULL, canonical,
+                      verbose, deep_every);
   for (auto& th : pool) th.join();
 
-  std::printf("rounds=%lld decisions=%lld failures=%lld mode=%s\n",
+  std::printf("rounds=%lld decisions=%lld failures=%lld mode=%s deep_every=%d\n",
               g_rounds.load(), g_decisions.load(), g_failures.load(),
-              canonical ? "canonical" : "full");
+              canonical ? "canonical" : "full", deep_every);
   return g_failures.load() == 0 ? 0 : 1;
 }

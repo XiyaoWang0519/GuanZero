@@ -90,91 +90,32 @@ PYBIND11_MODULE(_gd_core, m) {
   m.attr("OBS_DIM") = kObsDim;
   m.attr("ACT_DIM") = kActDim;
   m.attr("NUM_ABSTRACT") = kNumAbstract;
-
-  // ---- cards and orderings ------------------------------------------------
-  m.def("card_id", &card_from_string, py::arg("text"));
-  m.def("card_str", [](int c) { return card_to_string(static_cast<CardId>(c)); }, py::arg("card"));
-  m.def("cards", [](const std::string& s) {
-    const auto v = cards_from_string(s);
-    return std::vector<int>(v.begin(), v.end());
-  }, py::arg("text"));
-  m.def("power", &power, py::arg("rank"), py::arg("level"));
-  m.def("abstract_action_count", [] { return kNumAbstract; });
-
-  // ---- readings -----------------------------------------------------------
-  m.def("interpret", [](const std::vector<int>& cs, int level) {
-    return readings_to_set(interpret(hand_from(cs), level));
-  }, py::arg("cards"), py::arg("level"));
-  m.def("best_readings", [](const std::vector<int>& cs, int level) {
-    return readings_to_set(best_readings(hand_from(cs), level));
-  }, py::arg("cards"), py::arg("level"));
-  m.def("beats", [](const py::object& cand, const py::object& top) {
-    const Action c = action_from_reading(cand);
-    if (top.is_none()) return c.type != Type::Pass;
-    return beats(c, action_from_reading(top));
-  }, py::arg("cand"), py::arg("top"));
-
-  m.def("abstract_id", [](const py::object& obj) {
-    if (py::isinstance<Action>(obj)) return abstract_id(obj.cast<const Action&>());
-    const auto t = obj.cast<py::tuple>();
-    Action a = action_from_reading(py::make_tuple(t[0], t[1]));
-    if (t.size() > 2) {
-      for (const auto& c : t[2].cast<py::tuple>()) a.cards.add(static_cast<CardId>(c.cast<int>()));
-    }
-    return abstract_id(a);
-  }, py::arg("action"));
-
-  // ---- move generation ----------------------------------------------------
-  m.def("legal_actions", [](const std::vector<int>& hand, int level,
-                            const py::object& top, bool canonical) {
-    ActionConfig acfg = canonical ? ActionConfig{} : ActionConfig::full();
-    std::vector<Action> out;
-    generate_moves(hand_from(hand), level, action_from_reading(top), acfg,
-                   RuleConfig::house(), out);
-    py::set result;
-    for (const auto& a : out) result.add(action_triple(a));
-    return result;
-  }, py::arg("hand"), py::arg("level"), py::arg("top"), py::arg("canonical") = false);
-
-  m.def("tribute_choices", [](const std::vector<int>& hand, int level) {
-    std::vector<Action> out;
-    generate_tribute(hand_from(hand), level, RuleConfig::house(), out);
-    std::set<int> ids;
-    for (const auto& a : out) ids.insert(int(a.cards.to_vector().front()));
-    return ids;
-  }, py::arg("hand"), py::arg("level"));
-  m.def("back_tribute_choices", [](const std::vector<int>& hand, int level) {
-    std::vector<Action> out;
-    generate_back_tribute(hand_from(hand), level, RuleConfig::house(), out);
-    std::set<int> ids;
-    for (const auto& a : out) ids.insert(int(a.cards.to_vector().front()));
-    return ids;
-  }, py::arg("hand"), py::arg("level"));
-
-  // ---- round bookkeeping --------------------------------------------------
-  m.def("level_gain", [](const std::vector<int>& order) {
-    std::array<int8_t, 4> o{};
-    for (int i = 0; i < 4; ++i) o[i] = static_cast<int8_t>(order[i]);
-    const LevelGain g = level_gain(o);
-    return py::make_tuple(g.team, g.gain);
-  }, py::arg("order"));
-  m.def("promote", &promote, py::arg("level"), py::arg("gain"));
-  m.def("end_of_round", [](const std::vector<int>& levels, const std::vector<int>& fails,
-                           const py::object& owner, int round_level,
-                           const std::vector<int>& order, const RuleConfig& rules) {
-    std::array<int8_t, 2> lv{int8_t(levels[0]), int8_t(levels[1])};
-    std::array<int8_t, 2> fl{int8_t(fails[0]), int8_t(fails[1])};
-    std::array<int8_t, 4> o{};
-    for (int i = 0; i < 4; ++i) o[i] = static_cast<int8_t>(order[i]);
-    const EndOfRound r = end_of_round(lv, fl, owner.is_none() ? -1 : owner.cast<int>(),
-                                      round_level, o, rules);
-    py::object winner = r.match_winner < 0 ? py::none()
-                                           : py::object(py::int_(int(r.match_winner)));
-    return py::make_tuple(std::vector<int>{r.levels[0], r.levels[1]},
-                          std::vector<int>{r.fails[0], r.fails[1]},
-                          int(r.next_owner), winner);
-  }, py::arg("levels"), py::arg("fails"), py::arg("owner"), py::arg("round_level"),
-     py::arg("order"), py::arg("rules") = RuleConfig::house());
+  // Layout constants, so that the golden tests pin the offsets from Python too.
+  m.attr("ACT_CARDS1") = kActCards1;
+  m.attr("ACT_CARDS2") = kActCards2;
+  m.attr("ACT_TYPE") = kActType;
+  m.attr("ACT_KEY") = kActKey;
+  m.attr("ACT_BOMB_SIZE") = kActBombSize;
+  m.attr("ACT_WILDS") = kActWilds;
+  m.attr("ACT_TRIBUTE_FLAGS") = kActTributeFlags;
+  m.attr("OBS_OWN_HAND") = kObsOwnHand;
+  m.attr("OBS_UNSEEN") = kObsUnseen;
+  m.attr("OBS_PLAYED") = kObsPlayed;
+  m.attr("OBS_CARDS_LEFT") = kObsCardsLeft;
+  m.attr("OBS_FINISH_STATUS") = kObsFinishStatus;
+  m.attr("OBS_LEVELS") = kObsLevels;
+  m.attr("OBS_WILD_HELD") = kObsWildHeld;
+  m.attr("OBS_WILD_UNSEEN") = kObsWildUnseen;
+  m.attr("OBS_WILD_FLAGS") = kObsWildFlags;
+  m.attr("OBS_TRICK_TOP") = kObsTrickTop;
+  m.attr("OBS_TRICK_HOLDER") = kObsTrickHolder;
+  m.attr("OBS_TRICK_PASSES") = kObsTrickPasses;
+  m.attr("OBS_TRICK_LEADING") = kObsTrickLeading;
+  m.attr("OBS_LAST_ACTION") = kObsLastAction;
+  m.attr("OBS_PHASE") = kObsPhase;
+  m.attr("OBS_ROLES") = kObsRoles;
+  m.attr("OBS_TRIBUTE") = kObsTribute;
+  m.attr("OBS_KNOWN_HOLDINGS") = kObsKnownHoldings;
 
   // ---- configuration ------------------------------------------------------
   py::enum_<Phase>(m, "Phase")
@@ -261,7 +202,7 @@ PYBIND11_MODULE(_gd_core, m) {
         return std::vector<int>{r.order[0], r.order[1], r.order[2], r.order[3]};
       })
       .def_property_readonly("num_finished_seats",
-                             [](const RoundResult& r) { return count_finished(r.order); })
+                             [](const RoundResult& r) { return int(r.num_out); })
       .def_property_readonly("winning_team", [](const RoundResult& r) { return int(r.winning_team); })
       .def_property_readonly("gain", [](const RoundResult& r) { return int(r.gain); })
       .def_property_readonly("levels", [](const RoundResult& r) {
@@ -355,6 +296,92 @@ PYBIND11_MODULE(_gd_core, m) {
         uint64_t rng = seed;
         return greedy_bot(s, out, rng);
       }, py::arg("state"), py::arg("seed") = 0);
+
+
+  // ---- cards and orderings ------------------------------------------------
+  m.def("card_id", &card_from_string, py::arg("text"));
+  m.def("card_str", [](int c) { return card_to_string(static_cast<CardId>(c)); }, py::arg("card"));
+  m.def("cards", [](const std::string& s) {
+    const auto v = cards_from_string(s);
+    return std::vector<int>(v.begin(), v.end());
+  }, py::arg("text"));
+  m.def("power", &power, py::arg("rank"), py::arg("level"));
+  m.def("abstract_action_count", [] { return kNumAbstract; });
+
+  // ---- readings -----------------------------------------------------------
+  m.def("interpret", [](const std::vector<int>& cs, int level) {
+    return readings_to_set(interpret(hand_from(cs), level));
+  }, py::arg("cards"), py::arg("level"));
+  m.def("best_readings", [](const std::vector<int>& cs, int level) {
+    return readings_to_set(best_readings(hand_from(cs), level));
+  }, py::arg("cards"), py::arg("level"));
+  m.def("beats", [](const py::object& cand, const py::object& top) {
+    const Action c = action_from_reading(cand);
+    if (top.is_none()) return c.type != Type::Pass;
+    return beats(c, action_from_reading(top));
+  }, py::arg("cand"), py::arg("top"));
+
+  m.def("abstract_id", [](const py::object& obj) {
+    if (py::isinstance<Action>(obj)) return abstract_id(obj.cast<const Action&>());
+    const auto t = obj.cast<py::tuple>();
+    Action a = action_from_reading(py::make_tuple(t[0], t[1]));
+    if (t.size() > 2) {
+      for (const auto& c : t[2].cast<py::tuple>()) a.cards.add(static_cast<CardId>(c.cast<int>()));
+    }
+    return abstract_id(a);
+  }, py::arg("action"));
+
+  // ---- move generation ----------------------------------------------------
+  m.def("legal_actions", [](const std::vector<int>& hand, int level,
+                            const py::object& top, bool canonical) {
+    ActionConfig acfg = canonical ? ActionConfig{} : ActionConfig::full();
+    std::vector<Action> out;
+    generate_moves(hand_from(hand), level, action_from_reading(top), acfg,
+                   RuleConfig::house(), out);
+    py::set result;
+    for (const auto& a : out) result.add(action_triple(a));
+    return result;
+  }, py::arg("hand"), py::arg("level"), py::arg("top"), py::arg("canonical") = false);
+
+  m.def("tribute_choices", [](const std::vector<int>& hand, int level) {
+    std::vector<Action> out;
+    generate_tribute(hand_from(hand), level, RuleConfig::house(), out);
+    std::set<int> ids;
+    for (const auto& a : out) ids.insert(int(a.cards.to_vector().front()));
+    return ids;
+  }, py::arg("hand"), py::arg("level"));
+  m.def("back_tribute_choices", [](const std::vector<int>& hand, int level) {
+    std::vector<Action> out;
+    generate_back_tribute(hand_from(hand), level, RuleConfig::house(), out);
+    std::set<int> ids;
+    for (const auto& a : out) ids.insert(int(a.cards.to_vector().front()));
+    return ids;
+  }, py::arg("hand"), py::arg("level"));
+
+  // ---- round bookkeeping --------------------------------------------------
+  m.def("level_gain", [](const std::vector<int>& order) {
+    std::array<int8_t, 4> o{};
+    for (int i = 0; i < 4; ++i) o[i] = static_cast<int8_t>(order[i]);
+    const LevelGain g = level_gain(o);
+    return py::make_tuple(g.team, g.gain);
+  }, py::arg("order"));
+  m.def("promote", &promote, py::arg("level"), py::arg("gain"));
+  m.def("end_of_round", [](const std::vector<int>& levels, const std::vector<int>& fails,
+                           const py::object& owner, int round_level,
+                           const std::vector<int>& order, const RuleConfig& rules) {
+    std::array<int8_t, 2> lv{int8_t(levels[0]), int8_t(levels[1])};
+    std::array<int8_t, 2> fl{int8_t(fails[0]), int8_t(fails[1])};
+    std::array<int8_t, 4> o{};
+    for (int i = 0; i < 4; ++i) o[i] = static_cast<int8_t>(order[i]);
+    const EndOfRound r = end_of_round(lv, fl, owner.is_none() ? -1 : owner.cast<int>(),
+                                      round_level, o, rules);
+    py::object winner = r.match_winner < 0 ? py::none()
+                                           : py::object(py::int_(int(r.match_winner)));
+    return py::make_tuple(std::vector<int>{r.levels[0], r.levels[1]},
+                          std::vector<int>{r.fails[0], r.fails[1]},
+                          int(r.next_owner), winner);
+  }, py::arg("levels"), py::arg("fails"), py::arg("owner"), py::arg("round_level"),
+     py::arg("order"), py::arg("rules") = RuleConfig::house());
 
   // ---- vectorized environment --------------------------------------------
   py::class_<DecisionBatch>(m, "DecisionBatch")
