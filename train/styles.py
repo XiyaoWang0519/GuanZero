@@ -345,3 +345,45 @@ def iter_style_slots(space: StyleSpace, vectors: Sequence[Sequence[float]]) -> I
     stack = np.asarray(vectors, dtype=np.float64).reshape(-1, space.dim)
     for index, name in enumerate(space.names):
         yield name, stack[:, index]
+
+
+# --- fixed evaluation styles ------------------------------------------------
+
+# Four named styles used as fixed evaluation opponents (STAGE_B_TODO B0, later
+# the league). Each starts from the greedy-equivalent neutral style and changes
+# only the listed slots. Temperature stays 0, so the bot is deterministic.
+# Keys are StyleParams property names, or "prefer_<Type>" for a per-type lead
+# preference.
+#
+# Greedy already sits at two of the four corners, so the single-slot versions
+# of those two play exactly like greedy (0 of 21,438 decisions differ on
+# greedy trajectories, measured for B0):
+#   - bomb_threshold 1 is the greedy bomb rule. bomb-shy therefore uses 1.1,
+#     just outside the sampling box [0, 1]: the C++ gate is linear and
+#     unclamped, the bomb class unlocks at opponent pressure
+#     <= 2 - 27 * (threshold - 1), which is below 1, so it bombs only to go
+#     out and never to stop an opponent about to finish.
+#   - greedy already leads its cheapest play, so lead_high_bias -1 alone
+#     changes nothing. low-lead adds a Single preference: it leads its lowest
+#     single card.
+FIXED_STYLES: dict[str, dict[str, float]] = {
+    "bomb-happy": {"bomb_threshold": 0.0},
+    "bomb-shy": {"bomb_threshold": 1.1},
+    "high-lead": {"lead_high_bias": 1.0},
+    "low-lead": {"lead_high_bias": -1.0, "prefer_Single": 1.0},
+}
+
+
+def fixed_style(name: str) -> np.ndarray:
+    """Float32 style vector of a named fixed style, built via gd.StyleParams."""
+    if name not in FIXED_STYLES:
+        raise ValueError(f"unknown fixed style {name!r}; choose from {sorted(FIXED_STYLES)}")
+    if not styled_bot_available():
+        raise RuntimeError("fixed styles need the styled-bot binding in gd")
+    params = gd.StyleParams.neutral()
+    for slot, value in FIXED_STYLES[name].items():
+        if slot.startswith("prefer_"):
+            params.set_type_pref(slot[len("prefer_"):], float(value))
+        else:
+            setattr(params, slot, float(value))
+    return np.asarray(params.to_array(), dtype=np.float32).copy()

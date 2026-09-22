@@ -42,6 +42,26 @@ class GreedyPolicy:
         return engine.greedy(state)
 
 
+class StyledPolicy:
+    """The C++ style-parameterised heuristic bot at one fixed style vector.
+
+    Tribute phases go to the shared tribute heuristic inside `styled_bot`.
+    The per-decision seed comes from the caller's RNG, so a style with
+    temperature above 0 is still reproducible under the arena seeds.
+    """
+
+    def __init__(self, style: Sequence[float], name: str = "styled") -> None:
+        vector = np.asarray(style, dtype=np.float32).reshape(-1)
+        if vector.shape != (int(gd.STYLE_DIM),) or not np.isfinite(vector).all():
+            raise ValueError(f"style must be {int(gd.STYLE_DIM)} finite floats")
+        self.style = vector
+        self.name = name
+
+    def select(self, engine: gd.Engine, state: gd.MatchState,
+               actions: Sequence[gd.Action], rng: random.Random) -> int:
+        return engine.styled(state, self.style, rng.getrandbits(64))
+
+
 class ModelPolicy:
     """Greedy Q inference from public observation and the acting hand only.
 
@@ -99,13 +119,22 @@ def model_digest(state_dict: dict) -> str:
 
 
 def load_policy(spec: str, device: str = "cpu", margin: float = 0.0) -> Policy:
-    """Load 'random', 'greedy', or a checkpoint produced by train.ckpt."""
+    """Load 'random', 'greedy', 'styled:<name>', or a train.ckpt checkpoint.
+
+    `<name>` is a key of train.styles.FIXED_STYLES, for example
+    'styled:bomb-happy'.
+    """
     if not math.isfinite(margin) or margin < 0:
         raise ValueError("sampling margin must be nonnegative and finite")
     if spec == "random":
         return RandomPolicy()
     if spec == "greedy":
         return GreedyPolicy()
+    if spec.startswith("styled:"):
+        from train.styles import fixed_style
+
+        style_name = spec[len("styled:"):]
+        return StyledPolicy(fixed_style(style_name), name=spec)
     from train.ckpt import load_checkpoint
     from train.model import GuandanModel, ModelConfig
 

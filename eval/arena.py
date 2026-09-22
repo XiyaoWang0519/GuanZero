@@ -10,6 +10,7 @@ import json
 import math
 from pathlib import Path
 from statistics import NormalDist
+from typing import Iterable
 
 import gd
 
@@ -37,12 +38,29 @@ def evaluate_matches(agent: Policy, opponent: Policy, count: int = 100,
     These are not duplicate matches (which would require clustered intervals).
     A runaway match raises rather than silently counting a truncation as loss.
     """
-    if count < 1 or max_rounds < 1:
+    if count < 1:
+        raise ValueError("match count and round bound must be positive")
+    return summarize_matches(play_matches(agent, opponent, range(count), seed, max_rounds))
+
+
+MATCH_COUNTERS = ("matches", "wins", "rounds", "bankers", "double_wins",
+                  "opponent_doubles", "awarded", "net")
+
+
+def play_matches(agent: Policy, opponent: Policy, indices: Iterable[int],
+                 seed: int = 0, max_rounds: int = 1000) -> dict:
+    """Raw counters for the given match indices; summable across workers.
+
+    Match `m` uses seed `seed + m` and seats the agent on team `m % 2`, so a
+    split of `range(count)` into chunks reproduces the serial run exactly.
+    """
+    if max_rounds < 1:
         raise ValueError("match count and round bound must be positive")
     engine = gd.Engine()
-    wins = rounds = bankers = double_wins = opponent_doubles = awarded = net = 0
+    matches = wins = rounds = bankers = double_wins = opponent_doubles = awarded = net = 0
     records = []
-    for match in range(count):
+    for match in indices:
+        matches += 1
         team = match % 2
         policies = (agent, opponent) if team == 0 else (opponent, agent)
         state = gd.MatchState()
@@ -65,13 +83,23 @@ def evaluate_matches(agent: Policy, opponent: Policy, count: int = 100,
         wins += won
         records.append({"seed": seed + match, "agent_team": team,
                         "winner": state.winner, "agent_won": won, "rounds": match_rounds})
+    return {"matches": matches, "wins": wins, "rounds": rounds, "bankers": bankers,
+            "double_wins": double_wins, "opponent_doubles": opponent_doubles,
+            "awarded": awarded, "net": net, "records": records}
+
+
+def summarize_matches(totals: dict) -> dict:
+    """Match report from (possibly merged) play_matches counters."""
+    count, wins, rounds = totals["matches"], totals["wins"], totals["rounds"]
+    if count < 1:
+        raise ValueError("match count and round bound must be positive")
     return {"matches": count, "wins": wins, "win_rate": wins / count,
             "wilson_95_ci": list(wilson_interval(wins, count)), "rounds": rounds,
-            "banker_rate": bankers / rounds, "double_win_rate": double_wins / rounds,
-            "opponent_double_win_rate": opponent_doubles / rounds,
-            "mean_finish_order_award_per_round": awarded / rounds,
+            "banker_rate": totals["bankers"] / rounds, "double_win_rate": totals["double_wins"] / rounds,
+            "opponent_double_win_rate": totals["opponent_doubles"] / rounds,
+            "mean_finish_order_award_per_round": totals["awarded"] / rounds,
             "net_level_definition": "signed DMC return; an owned A Banker/Dweller result returns zero to both teams",
-            "mean_net_levels_per_round": net / rounds, "results": records}
+            "mean_net_levels_per_round": totals["net"] / rounds, "results": totals["records"]}
 
 
 def evaluate_checkpoint_belief(policy: Policy, directory: Path, batch_size: int = 64,
