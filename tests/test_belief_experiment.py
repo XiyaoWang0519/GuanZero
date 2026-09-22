@@ -147,7 +147,13 @@ def test_schema_one_logs_fall_into_unknown_cells(tmp_path):
     torch.manual_seed(0)
     result = evaluate(matched_models(1849, 16, 1)["v1"], examples(rounds), "cpu", 8)
     assert set(result["cells"]) == {"round_bin:unknown", "style_region:unknown",
-                                    "target_driver:unknown"}
+                                    "target_driver:unknown", "stage:early",
+                                    "target_relation:teammate", "target_relation:opponent",
+                                    "stage:early|target_relation:teammate",
+                                    "stage:early|target_relation:opponent",
+                                    "target_seat:lho", "target_seat:partner", "target_seat:rho",
+                                    "stage:early|target_seat:lho", "stage:early|target_seat:partner",
+                                    "stage:early|target_seat:rho"}
     assert result["cells"]["round_bin:unknown"]["decisions"] == 60
     # Driver cells score each of the three predicted seats separately.
     assert result["cells"]["target_driver:unknown"]["decisions"] == 180
@@ -229,3 +235,71 @@ def test_validation_decisions_caps_selection_but_never_the_test_set(tmp_path):
     assert splits["validation"]["decisions"] == 9 and splits["validation"]["decisions_used"] == 4
     assert splits["test"]["decisions_used"] == splits["test"]["decisions"] == 9
     assert report["runs"][0]["models"]["v2"]["test"]["decisions"] == 9
+
+
+def test_stage_relation_cells_use_target_counts_and_match_pairing():
+    from train.belief_experiment import paired_cells
+
+    class KnownLoss(torch.nn.Module):
+        def forward(self, obs, tokens, lengths, seat):
+            # All targets are zero: CE is exactly log(1 + 2 exp(-logit)).
+            logits = torch.zeros(len(obs), 3, 54, 3)
+            logits[..., 0] = torch.tensor([0., 1., 2.])[None, :, None]
+            return logits
+
+    items = []
+    for group, played in (("a", 0), ("a", 36), ("b", 72), ("b", 72)):
+        obs = np.zeros((1, 1849), np.uint8)
+        obs[0, 216:216 + played] = 1
+        record = {"group": group, "obs": obs, "hidden": np.zeros((1, 3, 54), np.uint8),
+                  "tokens": np.zeros((1, TOKEN_DIM), np.uint8),
+                  "prefix": np.zeros(1, np.int64), "seat": np.zeros(1, np.int64)}
+        items.append((record, 0))
+    result = evaluate(KnownLoss(), items, "cpu", 2)
+    losses = np.log1p(2 * np.exp(-np.arange(3)))
+    cells = result["cells"]
+    for stage, count in (("early", 1), ("middle", 1), ("late", 2)):
+        assert cells[f"stage:{stage}"]["decisions"] == count
+        assert cells[f"stage:{stage}"]["log_loss"] == pytest.approx(losses.mean())
+        for j, seat in enumerate(("lho", "partner", "rho")):
+            cell = cells[f"stage:{stage}|target_seat:{seat}"]
+            assert cell["decisions"] == count
+            assert cell["log_loss"] == pytest.approx(losses[j])
+        for relation, per_decision, loss in (("teammate", 1, losses[1]),
+                                            ("opponent", 2, losses[[0, 2]].mean())):
+            cell = cells[f"stage:{stage}|target_relation:{relation}"]
+            assert cell["decisions"] == count * per_decision
+            assert cell["log_loss"] == pytest.approx(loss)
+            assert sum(v["decisions"] for v in cell["matches"].values()) == count * per_decision
+    assert cells["target_relation:teammate"]["decisions"] == 4
+    assert cells["target_relation:opponent"]["decisions"] == 8
+    paired = paired_cells(result, result, 31, 32)
+    assert set(paired) == set(cells)
+    assert all(value["bootstrap_95_ci"] == [0., 0.] for value in paired.values())
+
+
+@pytest.mark.parametrize("interrupt_call", [2, 4])
+def test_best_checkpoint_survives_interrupted_validation_or_test(tmp_path, monkeypatch, interrupt_call):
+    import train.belief_experiment as experiment
+
+    make_dataset(tmp_path / "data")
+    output = tmp_path / "out"
+    snapshots = []
+
+    def fake_evaluate(model, *args, **kwargs):
+        if len(snapshots) + 1 == interrupt_call:
+            payload = torch.load(output / "v1-s31.pt", weights_only=False)
+            assert payload["selected_step"] == (2 if interrupt_call == 4 else 1)
+            selected = snapshots[1 if interrupt_call == 4 else 0]
+            assert all(torch.equal(payload["model"][key], tensor) for key, tensor in selected.items())
+            assert not list(output.glob("*.tmp"))
+            raise TimeoutError("interrupted evaluation")
+        snapshots.append({key: tensor.detach().cpu().clone() for key, tensor in model.state_dict().items()})
+        return {"log_loss": [2., 1., 1.5][len(snapshots) - 1]}
+
+    monkeypatch.setattr(experiment, "evaluate", fake_evaluate)
+    with pytest.raises(TimeoutError, match="interrupted evaluation"):
+        run(tmp_path / "data", output, seeds=(31,), steps=3, min_steps=3,
+            validation_interval=1, batch_size=2, width=16, layers=1, threads=1,
+            max_seconds=30)
+    assert json.loads((output / "report.json").read_text())["status"] == "incomplete"

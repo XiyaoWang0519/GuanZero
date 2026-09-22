@@ -15,14 +15,13 @@ improve on heuristic exchanges, so the heuristic remains the baseline. See
 `M2_TODO.md` and `reports/M2-A2.md`. The public known-holdings encoder was also
 corrected before collection; PPO, the critic and league remain pending.
 
-Transformer follow-up: the larger §7.4 belief experiment passed its gate on
-4,096 frozen-policy rounds and three fit seeds. The corrected query network
-improves flat-model log loss by 9.1–11.1%; history itself adds 0.21–0.43% over
-a separately trained no-history control, with positive paired intervals.
-Shared-cache inference is implemented and tested. Full v2 policy/sequence RL
-integration and equal-compute playing-strength evaluation are next; see
-`reports/M2-belief.md`. The earlier small prototype omitted the post-attention
-MLP, so its negative result does not apply to this corrected architecture.
+Transformer follow-up: the earlier 4,096-round prototype passed its supervised
+history gate (`reports/M2-belief.md`). The subsequent 100,000-round styled
+probe supersedes that result for the Stage B choice: use the no_history query
+tower. History's incremental gain is small and inconsistent across seeds;
+cross-round memory remains a separate experiment. Shared-cache inference is
+implemented, but no history playing policy has been promoted. See
+`reports/M2-belief-scaled.md` for the completed GPU experiment.
 
 ## 1. Summary
 
@@ -292,12 +291,18 @@ Once v1 self-play produces logs, run a supervised experiment with no RL in it: t
 1. If v2 predicts hidden hands clearly better, build v2 into the RL pipeline and confirm with an equal-compute duplicate-deal comparison against v1.
 2. If the two are close, v2 is demoted and the compute goes to the critic, the league and endgame search, which are the larger levers by the record of prior work: PerfectDou passed DouZero through its critic and GS2 passed SDMC through search.
 
-Measured status, Sept. 21: the larger corrected prototype passes the supervised
-gate across three seeds and 60 shared held-out matches. Its history-specific
-gain is small, so retain the improved no-history model in the next equal-compute
-RL comparison. This supports implementing v2 experiments, not promoting an
-untested playing policy. All models were still improving at the 6,000-update
-budget; convergence and production-size scaling remain unmeasured.
+Measured status, Sept. 21: the scaled styled-opponent probe is complete on
+100,000 rounds and three training seeds. Mean held-out-style test loss is
+0.400759 (flat), 0.395368 (no_history) and 0.395270 (history). The query
+structure improves flat by 1.345%; additional history averages only 0.0249%
+and wins two seeds but loses one, with the seed-33 paired interval below zero.
+The pooled interval is positive conditional on these fitted models, but the
+three-seed history gate fails. **Stage B uses no_history.** History-specific
+benefit does not consistently grow with round index; v3 must be tested
+separately with a memory-masked control. All nine fits selected the 50,000-step
+cap, so this is a bounded result, not a convergence claim. Reports, per-cell
+paired intervals and selected checkpoints are saved; see
+`reports/M2-belief-scaled.md`.
 
 The same probe, with opponents of fixed style and the log loss measured round by round within a match, is the first test for v3.
 

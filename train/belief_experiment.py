@@ -10,7 +10,9 @@ match-relative round bins ``0``, ``1``, ``2-3``, ``4-5`` and ``6+`` (habits need
 several rounds of a match to show, so early rounds are separated one by one and
 later ones pooled), inside the style region of the test match (``train``,
 ``heldout`` or ``unknown``) and by whether the seat whose hand is predicted is
-bot-driven or policy-driven. Schema 1 logs carry no round index, style region or
+bot-driven or policy-driven. Stage, relative seat, teammate/opponent relation,
+and stage-by-seat/relation cells provide the same paired comparisons.
+Schema 1 logs carry no round index, style region or
 per-seat driver, so their cells are labelled ``unknown`` and stay loadable. The
 paired flat-vs-history and no-history-vs-history differences are bootstrapped
 inside each cell with whole matches as the resampling unit.
@@ -240,8 +242,9 @@ def evaluate(model, items: list, device: str, batch_size: int,
     `cells` carries one entry per breakdown cell with its own per-match table,
     so `paired_cells` can bootstrap a paired difference inside each cell with
     whole matches as the resampling unit. Round-bin and style-region cells
-    average a decision's three hidden hands; `target_driver` cells score each
-    predicted seat on its own, so their `decisions` count seat targets.
+    and stage cells average a decision's three hidden hands; target-driver,
+    target-seat/relation and stage-by-seat/relation cells score each predicted seat on its
+    own, so their `decisions` count seat targets.
     """
     model.eval()
     sums, counts = np.zeros((3, 3)), np.zeros((3, 3), dtype=np.int64)
@@ -268,12 +271,20 @@ def evaluate(model, items: list, device: str, batch_size: int,
             entry[1] += 1
             accumulate(cells, "round_bin:" + record.get("round_bin", "unknown"), group, mean)
             accumulate(cells, "style_region:" + record.get("style_region", "unknown"), group, mean)
+            stage = ("early", "middle", "late")[stages[row]]
+            accumulate(cells, "stage:" + stage, group, mean)
             drivers = record.get("seat_driver")
             for j in range(3):
                 # Relative target j is lho, partner then rho of the acting seat.
                 code = (DRIVER_UNKNOWN if drivers is None
                         else drivers[(int(seats[row]) + 1 + j) % 4])
                 accumulate(cells, "target_driver:" + driver_label(code), group, float(loss[j]))
+                relative_seat = ("lho", "partner", "rho")[j]
+                accumulate(cells, "target_seat:" + relative_seat, group, float(loss[j]))
+                accumulate(cells, f"stage:{stage}|target_seat:{relative_seat}", group, float(loss[j]))
+                relation = "teammate" if j == 1 else "opponent"
+                accumulate(cells, "target_relation:" + relation, group, float(loss[j]))
+                accumulate(cells, f"stage:{stage}|target_relation:{relation}", group, float(loss[j]))
     return {"log_loss": float(sums.sum() / counts.sum()), "decisions": len(items),
             "matches": {g: {"log_loss": total / n, "decisions": n}
                         for g, (total, n) in sorted(matches.items())},
@@ -391,6 +402,7 @@ def run(directory: Path, output: Path, *, seeds=(31, 32, 33), split_seed=2026092
                 sampler = random.Random(seed)
                 best, best_step, stale = float("inf"), 0, 0
                 selected = None
+                path = output / f"{name}-s{seed}.pt"
                 curve = []
                 model_started = time.monotonic()
                 learn_seconds = 0.
@@ -417,6 +429,12 @@ def run(directory: Path, output: Path, *, seeds=(31, 32, 33), split_seed=2026092
                     if metric["log_loss"] < best:
                         best, best_step, stale = metric["log_loss"], step, 0
                         selected = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+                        # Publish every validation improvement before another update or test.
+                        temporary = path.with_suffix(".tmp")
+                        torch.save({"purpose": "belief_probe_only", "architecture": name, "model": selected,
+                                    "config": config, "seed": seed, "selected_step": best_step,
+                                    "dataset_sha256": fingerprint}, temporary)
+                        temporary.replace(path)
                     else:
                         stale += 1
                     if step >= min_steps and stale >= patience:
@@ -424,12 +442,6 @@ def run(directory: Path, output: Path, *, seeds=(31, 32, 33), split_seed=2026092
                 model.load_state_dict(selected)
                 # Test data is first accessed here, after validation-only selection.
                 final_test = evaluate(model, data["test"], device, batch_size, deadline)
-                path = output / f"{name}-s{seed}.pt"
-                temporary = path.with_suffix(".tmp")
-                torch.save({"purpose": "belief_probe_only", "architecture": name, "model": selected,
-                            "config": config, "seed": seed, "selected_step": best_step,
-                            "dataset_sha256": fingerprint}, temporary)
-                temporary.replace(path)
                 result["models"][name] = {"parameters": count_parameters(model),
                     "steps_run": step, "selected_step": best_step, "validation_log_loss": best,
                     "best_validation_step": best_step, "validation_evaluations": len(curve),
