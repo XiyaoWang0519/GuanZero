@@ -33,6 +33,7 @@ Stage B payload (`stage="ppo"`) that `eval.policies.load_policy` plays. As in
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 import json
 import math
@@ -44,7 +45,8 @@ import resource
 import signal
 import sys
 import time
-from typing import Any
+from typing import Any, Iterator
+import warnings
 
 import numpy as np
 import torch
@@ -54,11 +56,12 @@ import gd
 from train.ckpt import load_checkpoint, restore_rng, rng_state, save_checkpoint
 from train.critic import Critic, CriticConfig, load_critic
 from train.dmc import schedule, tensor
-from train.model import GuandanModel, ModelConfig
+from train.model import GuandanModel, ModelConfig, select_actions
 from train.opponents import FrozenModelOpponent, GreedyOpponent, OpponentRows, OpponentSource
 from train.policy import (PolicyConfig, StageBPolicy, gather_segments, policy_from_payload,
                           segment_entropy, segment_log_softmax, segment_rows)
-from train.rollout_buffer import HIDDEN_DIM, RolloutBuffer, RolloutBufferConfig, _ragged_index
+from train.rollout_buffer import (HIDDEN_DIM, RolloutBuffer, RolloutBufferConfig, _ragged_index,
+                                  to_device)
 
 PLAY = int(gd.Phase.Play)
 M1_FINAL = ".work/runpod/artifacts/pilot/final.pt"
@@ -110,6 +113,19 @@ class PPOConfig:
     max_updates: int = 100000
     max_seconds: float = 86400
     tensorboard: bool = True
+    # Throughput path (B5b): one upload of the batch per step, one frozen-M1
+    # forward shared by pruning and the default frozen opponent, no device
+    # synchronisation inside a step or a minibatch except the pruning's
+    # nonzero and the one copy of results back. False keeps the B5 path
+    # (separate opponent call, per-call uploads); both sample the same
+    # actions under a seed, see tests/test_ppo_throughput.py.
+    fast_rollout: bool = True
+    # 0 rolls out in this process. W > 0 steps num_envs / W environments in
+    # each of W actor processes (train/ppo_actors.py), each with num_threads
+    # engine threads and torch_threads torch threads, synchronously: actors
+    # wait while the learner trains, so there is no policy lag. Needs a
+    # config opponent (frozen, frozen:<path>, greedy).
+    actor_processes: int = 0
 
     def validate(self) -> None:
         positive = ("num_envs", "num_threads", "torch_threads", "rollout_steps", "epochs",
@@ -122,7 +138,7 @@ class PPOConfig:
                 raise ValueError(f"{name} must be positive and finite")
         nonnegative = ("policy_lr", "critic_lr", "entropy_coef", "kl_coef", "target_kl",
                        "value_coef", "hidden_weight", "finish_weight", "buffer_steps",
-                       "buffer_candidates", "buffer_trajectories")
+                       "buffer_candidates", "buffer_trajectories", "actor_processes")
         for name in nonnegative:
             value = getattr(self, name)
             if not math.isfinite(value) or value < 0:
@@ -144,6 +160,9 @@ class PPOConfig:
             raise ValueError("opponent must be frozen, frozen:<path> or greedy")
         if not self.init_checkpoint:
             raise ValueError("init_checkpoint is required")
+        if self.actor_processes and (self.num_envs % self.actor_processes
+                                     or self.num_envs // self.actor_processes < 2):
+            raise ValueError("num_envs must split into actor_processes shards of at least 2")
 
     def buffer_config(self) -> RolloutBufferConfig:
         # About half of all rows are learner rows; a round in progress at the
@@ -159,7 +178,8 @@ class PPOConfig:
 
 # Fields that may change on resume: runtime limits and resources only.
 MUTABLE_ON_RESUME = {"max_updates", "max_seconds", "checkpoint_seconds", "snapshot_updates",
-                     "tensorboard", "torch_threads", "num_threads", "init_checkpoint", "critic_init"}
+                     "tensorboard", "torch_threads", "num_threads", "init_checkpoint", "critic_init",
+                     "fast_rollout", "actor_processes"}
 
 
 def resolve_artifact(path: str | Path) -> Path:
@@ -181,10 +201,12 @@ def segment_sum(values: torch.Tensor, offsets: torch.Tensor) -> torch.Tensor:
 
 def policy_terms(policy: StageBPolicy, obs: torch.Tensor, cand: torch.Tensor,
                  offsets: torch.Tensor, phase: torch.Tensor, chosen: torch.Tensor,
-                 phase_code: int | None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+                 phase_code: int | None, state: torch.Tensor | None = None
+                 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """`StageBPolicy.evaluate` plus the full pruned log-probabilities (for the
     KL term) from one forward pass. Returns (log_prob, entropy, log_probs)."""
-    log_probs = segment_log_softmax(policy.logits(obs, cand, offsets, phase, phase_code), offsets)
+    log_probs = segment_log_softmax(policy.logits(obs, cand, offsets, phase, phase_code,
+                                                  state=state), offsets)
     return (gather_segments(log_probs, offsets, chosen),
             segment_entropy(log_probs, offsets), log_probs)
 
@@ -201,7 +223,310 @@ def reference_kl(policy: StageBPolicy, log_probs: torch.Tensor, obs: torch.Tenso
     return segment_sum(log_probs.exp() * (log_probs - ref_log_probs), offsets)
 
 
-class PPOTrainer:
+def cached_reference_kl(log_probs: torch.Tensor, ref_log_probs: torch.Tensor,
+                        offsets: torch.Tensor) -> torch.Tensor:
+    """`reference_kl` from the reference log-probabilities stored at rollout
+    time. The reference is frozen and the stored pruned set is exactly what it
+    scored, so this equals the recomputed value up to float reassociation."""
+    return segment_sum(log_probs.exp() * (log_probs - ref_log_probs), offsets)
+
+
+def concat_minibatches(parts: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
+    """Join `RolloutBuffer.gather` results of several buffers into one batch
+    (ragged offsets rebased; `steps` are then per-buffer indices)."""
+    if len(parts) == 1:
+        return parts[0]
+    joined = {key: torch.cat([part[key] for part in parts]) for key in parts[0]
+              if key != "offsets"}
+    offsets, base = [parts[0]["offsets"][:1]], 0
+    for part in parts:
+        offsets.append(part["offsets"][1:] + base)
+        base += len(part["cand"])
+    joined["offsets"] = torch.cat(offsets)
+    return joined
+
+
+def _host_view(array: np.ndarray) -> torch.Tensor:
+    """Zero-copy tensor over a read-only engine buffer. Callers only read it."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        return torch.from_numpy(array)
+
+
+class Uploader:
+    """Per-step host-to-device transfer of the pending batch.
+
+    On CPU the engine buffers are used in place. On CUDA every array is
+    narrowed to its wire dtype (the encoder's features are 0/1, exact in
+    uint8) while being copied into a reusable pinned buffer, sent
+    asynchronously and widened on the device. A pinned buffer is rewritten
+    only on the next step, after the step's results were copied back, which
+    synchronises the stream, so an in-flight copy is never overwritten.
+    Buffers grow geometrically and are then reused: no allocation in steady
+    state.
+    """
+
+    def __init__(self, device: torch.device) -> None:
+        self.device = device
+        self.pinned: dict[str, torch.Tensor] = {}
+
+    def __call__(self, name: str, array: np.ndarray, wire: torch.dtype,
+                 dtype: torch.dtype) -> torch.Tensor:
+        source = _host_view(np.ascontiguousarray(array))
+        if self.device.type != "cuda":
+            return source if source.dtype == dtype else source.to(dtype)
+        size = source.numel()
+        buffer = self.pinned.get(name)
+        if buffer is None or buffer.numel() < size:
+            capacity = max(size, 0 if buffer is None else buffer.numel() * 3 // 2, 1)
+            buffer = torch.empty(capacity, dtype=wire, pin_memory=True)
+            self.pinned[name] = buffer
+        staged = buffer[:size].view(source.shape)
+        staged.copy_(source)
+        return staged.to(self.device, non_blocking=True).to(dtype)
+
+
+def to_host(device: torch.device, *values: torch.Tensor) -> list[np.ndarray]:
+    """Copy tensors back with a single synchronisation."""
+    if device.type != "cuda":
+        return [value.numpy() for value in values]
+    host = [value.to("cpu", non_blocking=True) for value in values]
+    torch.cuda.current_stream(device).synchronize()
+    return [value.numpy() for value in host]
+
+
+class RolloutCollector:
+    """The rollout half of the trainer: vector steps into the round buffer.
+
+    Shared by `PPOTrainer` (in-process rollout) and the actor processes of
+    `train/ppo_actors.py`. Needs `config`, `device`, `policy`, `env`,
+    `learner_team`, `env_match`, `buffer`, `opponent`, `fused_opponent`,
+    `upload`, `timers`, `generator`, `progress`, `window`, `phase_code`,
+    `bound` and `should_stop()`.
+    """
+
+    def _finish_rounds(self, results) -> None:
+        ended, won = [], []
+        for result in results:
+            env = int(result.env_id)
+            team = int(self.learner_team[env])
+            self.buffer.finish_round(env, int(result.match_id), int(result.round_index),
+                                     result.seat_return, result.order)
+            self.progress["rounds"] += 1
+            self.window["rounds"] += 1
+            self.window["learner_return"] += float(result.seat_return[team])
+            if result.match_winner >= 0:
+                learner_won = int(result.match_winner) == team
+                ended.append(env)
+                won.append(learner_won)
+                self.progress["matches"] += 1
+                self.progress["learner_match_wins"] += learner_won
+                self.window["matches"] += 1
+                self.window["wins"] += learner_won
+        if ended:
+            self.opponent.on_match_end(np.asarray(ended, np.int32), np.asarray(won, bool))
+
+    def _start_matches(self, env_id: np.ndarray, match_id: np.ndarray) -> None:
+        if not self.bound:
+            # Contract: every environment starts a match right after bind.
+            self.env_match.fill(-1)
+            self.env_match[env_id] = match_id
+            self.opponent.on_match_start(np.arange(len(self.env_match), dtype=np.int32))
+            self.bound = True
+            return
+        changed = match_id != self.env_match[env_id]
+        if changed.any():
+            envs = np.unique(env_id[changed])
+            self.env_match[env_id[changed]] = match_id[changed]
+            self.opponent.on_match_start(envs.astype(np.int32))
+
+    @staticmethod
+    def _ragged_rows(batch, rows: np.ndarray, offsets: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Candidates and rebased offsets of a subset of batch rows."""
+        if rows.size == len(offsets) - 1:
+            return np.asarray(batch.cand), offsets
+        counts = offsets[rows + 1] - offsets[rows]
+        cand = np.asarray(batch.cand)[_ragged_index(offsets[rows], counts, int(counts.sum()))]
+        local = np.zeros(rows.size + 1, np.int64)
+        np.cumsum(counts, out=local[1:])
+        return cand, local
+
+    def _opponent_rows(self, batch, rows: np.ndarray, offsets: np.ndarray,
+                       env_id: np.ndarray, seat: np.ndarray, phase: np.ndarray,
+                       match_id: np.ndarray) -> OpponentRows:
+        cand, local = self._ragged_rows(batch, rows, offsets)
+        # styled_choice is read only now, after on_match_start (set_styles may
+        # have recomputed it for rows already pending).
+        return OpponentRows(
+            obs=np.asarray(batch.obs)[rows], cand=cand, offsets=local.astype(np.int32),
+            env_id=env_id[rows], seat=seat[rows], phase=phase[rows], match_id=match_id[rows],
+            greedy_choice=np.asarray(batch.greedy_choice)[rows],
+            styled_choice=np.asarray(batch.styled_choice)[rows])
+
+    def _learner_act(self, batch, rows: np.ndarray, offsets: np.ndarray, env_id: np.ndarray,
+                     seat: np.ndarray, phase: np.ndarray, match_id: np.ndarray,
+                     choices: np.ndarray) -> None:
+        cand, local = self._ragged_rows(batch, rows, offsets)
+        obs = np.asarray(batch.obs)[rows]
+        with torch.inference_mode():
+            step = self.policy.act(tensor(obs, self.device, torch.float32),
+                                   tensor(cand, self.device, torch.float32),
+                                   tensor(local, self.device, torch.long),
+                                   tensor(phase[rows], self.device, torch.long),
+                                   generator=self.generator, phase_code=self.phase_code)
+        keep = step.keep_index.cpu().numpy()
+        choices[rows] = step.choice.cpu().numpy()
+        self.buffer.add_batch(
+            learner=np.ones(rows.size, bool), env_id=env_id[rows], match_id=match_id[rows],
+            round_index=np.asarray(batch.round_index)[rows], seat=seat[rows], phase=phase[rows],
+            obs=obs, hidden_counts=np.asarray(batch.hidden_counts)[rows],
+            cand=cand[keep], offsets=step.pruned_offsets.cpu().numpy(),
+            chosen=step.pruned_choice.cpu().numpy(), logp=step.log_prob.float().cpu().numpy(),
+            ref_logp=step.ref_log_probs.float().cpu().numpy())
+        self.progress["learner_decisions"] += int(rows.size)
+
+    def _fast_act(self, batch, learner_rows: np.ndarray, opponent_rows: np.ndarray,
+                  offsets: np.ndarray, env_id: np.ndarray, seat: np.ndarray,
+                  phase: np.ndarray, match_id: np.ndarray, choices: np.ndarray) -> None:
+        """Learner sampling plus, for the fused frozen opponent, its play-row
+        argmax, from ONE reference forward over both row sets.
+
+        Rows are laid out learner first, so each part is a contiguous slice of
+        the scored candidates and nothing on the device needs a data-dependent
+        shape except the pruning. Results come back in one copy."""
+        rows = np.concatenate((learner_rows, opponent_rows))
+        if not rows.size:
+            return
+        counts = offsets[rows + 1] - offsets[rows]
+        local = np.zeros(rows.size + 1, np.int64)
+        np.cumsum(counts, out=local[1:])
+        src = _ragged_index(offsets[rows], counts, int(local[-1]))
+        n_learner = learner_rows.size
+        c_learner = int(local[n_learner])
+        with self._phase("upload"):
+            obs_all = self.upload("obs", batch.obs, torch.uint8, torch.float32)
+            cand_all = self.upload("cand", batch.cand, torch.uint8, torch.float32)
+            index = self.upload("index", np.concatenate((rows, src)), torch.int64, torch.long)
+            local_t = self.upload("offsets", local, torch.int64, torch.long)
+            phase_t = self.upload("phase", phase[rows], torch.int64, torch.long)
+            obs = obs_all.view(-1, gd.OBS_DIM).index_select(0, index[:rows.size])
+            cand = cand_all.view(-1, gd.ACT_DIM).index_select(0, index[rows.size:])
+        policy = self.policy
+        with torch.inference_mode():
+            with self._phase("reference forward"):
+                ref = policy.reference.score_candidates(
+                    obs, cand, local_t, phase_t, chunk_size=policy.config.chunk_size,
+                    phase_code=self.phase_code)
+            outputs = [torch.isfinite(ref).all()]
+            if n_learner:
+                with self._phase("prune + policy forward + sample"):
+                    step = policy.act(obs[:n_learner], cand[:c_learner],
+                                      local_t[:n_learner + 1], phase_t[:n_learner],
+                                      generator=self.generator, phase_code=self.phase_code,
+                                      ref_scores=ref[:c_learner], sync_checks=False)
+                outputs += [step.choice, step.pruned_choice, step.log_prob.float(),
+                            step.keep_index, step.pruned_offsets, step.ref_log_probs.float()]
+            if opponent_rows.size:
+                with self._phase("opponent argmax"):
+                    outputs.append(select_actions(ref[c_learner:],
+                                                  local_t[n_learner:] - c_learner))
+            with self._phase("device to host"):
+                host = to_host(self.device, *outputs)
+        if not bool(host[0]):
+            raise FloatingPointError("non-finite reference scores")
+        if opponent_rows.size:
+            choices[opponent_rows] = host[-1]
+        if not n_learner:
+            return
+        choice, pruned_choice, log_prob, keep, pruned_offsets, ref_logp = host[1:7]
+        choices[learner_rows] = choice
+        with self._phase("buffer add"):
+            self.buffer.add_batch(
+                learner=np.ones(n_learner, bool), env_id=env_id[learner_rows],
+                match_id=match_id[learner_rows],
+                round_index=np.asarray(batch.round_index)[learner_rows],
+                seat=seat[learner_rows], phase=phase[learner_rows],
+                obs=np.asarray(batch.obs)[learner_rows],
+                hidden_counts=np.asarray(batch.hidden_counts)[learner_rows],
+                cand=np.asarray(batch.cand), cand_index=src[keep],
+                offsets=pruned_offsets, chosen=pruned_choice, logp=log_prob, ref_logp=ref_logp)
+        self.progress["learner_decisions"] += n_learner
+
+    @contextmanager
+    def _phase(self, name: str):
+        """Accumulate wall time per rollout/learner phase when `timers` is set
+        (bench only); synchronises CUDA at both ends so time is attributed to
+        the phase that spent it. A no-op otherwise."""
+        if self.timers is None:
+            yield
+            return
+        if self.device.type == "cuda":
+            torch.cuda.synchronize(self.device)
+        start = time.perf_counter()
+        try:
+            yield
+        finally:
+            if self.device.type == "cuda":
+                torch.cuda.synchronize(self.device)
+            self.timers[name] = self.timers.get(name, 0.0) + time.perf_counter() - start
+
+    def collect(self) -> None:
+        self.net.eval()
+        heuristic = self.config.tribute_policy == "heuristic"
+        for _ in range(self.config.rollout_steps):
+            if self.should_stop():
+                break
+            with self._phase("env pending (C++)"):
+                batch = self.env.pending()
+            with self._phase("round bookkeeping"):
+                # Contract order: ended matches, then started matches, then rows.
+                self._finish_rounds(self.env.drain_finished_rounds())
+                n = batch.rows
+                if not n:
+                    raise RuntimeError("environment produced no pending decisions")
+                env_id = np.asarray(batch.env_id, np.int64)
+                match_id = np.asarray(batch.match_id, np.int64)
+                self._start_matches(env_id, match_id)
+                seat = np.asarray(batch.seat, np.int64)
+                phase = np.asarray(batch.phase, np.int64)
+                offsets = np.asarray(batch.offsets, np.int64)
+                learner = seat % 2 == self.learner_team[env_id]
+                choices = np.array(batch.greedy_choice, dtype=np.int32, copy=True)
+                opponent_rows = np.flatnonzero(~learner)
+                acting = learner & (phase == PLAY) if heuristic else learner
+                learner_rows = np.flatnonzero(acting)
+            if self.fused_opponent:
+                # Tribute rows keep greedy_choice, as FrozenModelOpponent.act does.
+                opponent_play = opponent_rows[phase[opponent_rows] == PLAY]
+                self._fast_act(batch, learner_rows, opponent_play, offsets, env_id, seat,
+                               phase, match_id, choices)
+            else:
+                if opponent_rows.size:
+                    with self._phase("opponent act"):
+                        picked = np.asarray(self.opponent.act(self._opponent_rows(
+                            batch, opponent_rows, offsets, env_id, seat, phase, match_id)),
+                            np.int32)
+                    if picked.shape != opponent_rows.shape:
+                        raise ValueError("opponent returned the wrong number of choices")
+                    choices[opponent_rows] = picked
+                if learner_rows.size:
+                    if self.config.fast_rollout:
+                        self._fast_act(batch, learner_rows, learner_rows[:0], offsets, env_id,
+                                       seat, phase, match_id, choices)
+                    else:
+                        with self._phase("learner act (B5 path)"):
+                            self._learner_act(batch, learner_rows, offsets, env_id, seat,
+                                              phase, match_id, choices)
+            counts = offsets[1:] - offsets[:-1]
+            if ((choices < 0) | (choices >= counts)).any():
+                raise ValueError("a choice lies outside its candidate list")
+            with self._phase("env step (C++)"):
+                self.env.step(choices)
+            self.progress["decisions"] += n
+
+
+
+class PPOTrainer(RolloutCollector):
     def __init__(self, config: PPOConfig, run_dir: str | Path, device: str = "cpu",
                  resume: str | Path | None = None,
                  opponent: OpponentSource | None = None) -> None:
@@ -296,22 +621,45 @@ class PPOTrainer:
             json.dumps(metadata, indent=2) + "\n")
         actions = gd.ActionConfig.full() if config.action_mode == "full" else gd.ActionConfig()
         # As in dmc.py, environments restart on resume from a seed drawn from the restored RNG.
-        self.env = gd.VecEnv(config.num_envs, num_threads=config.num_threads,
-                             seed=int(self.rng.integers(0, 2**63)), actions=actions)
-        self.env.reset()
-        self.learner_team = np.arange(config.num_envs, dtype=np.int64) % 2
-        self.env_match = np.full(config.num_envs, -1, np.int64)
-        self.buffer = RolloutBuffer(config.buffer_config())
-        # Finish position of every seat per trajectory, for the auxiliary finish loss.
-        self.traj_finish = np.zeros((self.buffer.config.max_trajectories, 4), np.int64)
-        self.opponent = opponent if opponent is not None else self._default_opponent()
-        self.opponent.bind(self.env, self.learner_team)
+        self.actors = None
+        self.window = {"matches": 0, "wins": 0, "rounds": 0, "learner_return": 0.0}
+        if config.actor_processes:
+            # Environments, opponents and shard buffers live in actor processes
+            # (train/ppo_actors.py); the buffers are shared memory read here.
+            if opponent is not None:
+                raise ValueError("actor_processes builds opponents from config.opponent; "
+                                 "an OpponentSource object needs the in-process rollout")
+            from train.ppo_actors import ActorPool, shard_sizes
+            self.env = self.buffer = self.opponent = None
+            self.fused_opponent = False
+            self.actors = ActorPool(self, shard_sizes(config.num_envs, config.actor_processes))
+            self.buffers = self.actors.buffers
+        else:
+            self.env = gd.VecEnv(config.num_envs, num_threads=config.num_threads,
+                                 seed=int(self.rng.integers(0, 2**63)), actions=actions)
+            self.env.reset()
+            self.learner_team = np.arange(config.num_envs, dtype=np.int64) % 2
+            self.env_match = np.full(config.num_envs, -1, np.int64)
+            self.buffer = RolloutBuffer(config.buffer_config())
+            self.buffers = [self.buffer]
+            self.opponent = opponent if opponent is not None else self._default_opponent()
+            self.opponent.bind(self.env, self.learner_team)
+            # FrozenModelOpponent.act is a pure function of its rows: argmax of
+            # its network's play head on play rows, the heuristic otherwise.
+            # When that network IS the frozen pruning reference, the fast path
+            # scores both teams' rows in one reference forward and takes the
+            # same argmax (bind/on_match_start/on_match_end are still called in
+            # contract order).
+            self.fused_opponent = (config.fast_rollout
+                                   and isinstance(self.opponent, FrozenModelOpponent)
+                                   and self.opponent.model is self.policy.reference)
+        self.upload = Uploader(self.device)
+        self.timers: dict[str, float] | None = None   # phase timers, see bench/ppo_throughput.py
         self.bound = False
         self.stop_requested = False
         self.started = self.last_save = time.monotonic()
         self.prior_elapsed = self.progress["elapsed_seconds"]
         self.prior_decisions = self.progress["decisions"]
-        self.window = {"matches": 0, "wins": 0, "rounds": 0, "learner_return": 0.0}
         self.writer = None
         if config.tensorboard:
             from torch.utils.tensorboard import SummaryWriter
@@ -329,204 +677,136 @@ class PPOTrainer:
         return FrozenModelOpponent.from_checkpoint(resolve_artifact(spec[len("frozen:"):]),
                                                    str(self.device), self.config.candidate_chunk)
 
-    # ----------------------------------------------------------------- rollout
-    def _finish_rounds(self, results) -> None:
-        ended, won = [], []
-        for result in results:
-            env = int(result.env_id)
-            team = int(self.learner_team[env])
-            slot = int(self.buffer.open_traj[env, team])
-            if slot >= 0:
-                self.traj_finish[slot, list(result.order)] = np.arange(4)
-            self.buffer.finish_round(env, int(result.match_id), int(result.round_index),
-                                     result.seat_return)
-            self.progress["rounds"] += 1
-            self.window["rounds"] += 1
-            self.window["learner_return"] += float(result.seat_return[team])
-            if result.match_winner >= 0:
-                learner_won = int(result.match_winner) == team
-                ended.append(env)
-                won.append(learner_won)
-                self.progress["matches"] += 1
-                self.progress["learner_match_wins"] += learner_won
-                self.window["matches"] += 1
-                self.window["wins"] += learner_won
-        if ended:
-            self.opponent.on_match_end(np.asarray(ended, np.int32), np.asarray(won, bool))
-
-    def _start_matches(self, env_id: np.ndarray, match_id: np.ndarray) -> None:
-        if not self.bound:
-            # Contract: every environment starts a match right after bind.
-            self.env_match.fill(-1)
-            self.env_match[env_id] = match_id
-            self.opponent.on_match_start(np.arange(self.config.num_envs, dtype=np.int32))
-            self.bound = True
-            return
-        changed = match_id != self.env_match[env_id]
-        if changed.any():
-            envs = np.unique(env_id[changed])
-            self.env_match[env_id[changed]] = match_id[changed]
-            self.opponent.on_match_start(envs.astype(np.int32))
-
-    @staticmethod
-    def _ragged_rows(batch, rows: np.ndarray, offsets: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Candidates and rebased offsets of a subset of batch rows."""
-        if rows.size == len(offsets) - 1:
-            return np.asarray(batch.cand), offsets
-        counts = offsets[rows + 1] - offsets[rows]
-        cand = np.asarray(batch.cand)[_ragged_index(offsets[rows], counts, int(counts.sum()))]
-        local = np.zeros(rows.size + 1, np.int64)
-        np.cumsum(counts, out=local[1:])
-        return cand, local
-
-    def _opponent_rows(self, batch, rows: np.ndarray, offsets: np.ndarray,
-                       env_id: np.ndarray, seat: np.ndarray, phase: np.ndarray,
-                       match_id: np.ndarray) -> OpponentRows:
-        cand, local = self._ragged_rows(batch, rows, offsets)
-        # styled_choice is read only now, after on_match_start (set_styles may
-        # have recomputed it for rows already pending).
-        return OpponentRows(
-            obs=np.asarray(batch.obs)[rows], cand=cand, offsets=local.astype(np.int32),
-            env_id=env_id[rows], seat=seat[rows], phase=phase[rows], match_id=match_id[rows],
-            greedy_choice=np.asarray(batch.greedy_choice)[rows],
-            styled_choice=np.asarray(batch.styled_choice)[rows])
-
-    def _learner_act(self, batch, rows: np.ndarray, offsets: np.ndarray, env_id: np.ndarray,
-                     seat: np.ndarray, phase: np.ndarray, match_id: np.ndarray,
-                     choices: np.ndarray) -> None:
-        cand, local = self._ragged_rows(batch, rows, offsets)
-        obs = np.asarray(batch.obs)[rows]
-        with torch.inference_mode():
-            step = self.policy.act(tensor(obs, self.device, torch.float32),
-                                   tensor(cand, self.device, torch.float32),
-                                   tensor(local, self.device, torch.long),
-                                   tensor(phase[rows], self.device, torch.long),
-                                   generator=self.generator, phase_code=self.phase_code)
-        keep = step.keep_index.cpu().numpy()
-        choices[rows] = step.choice.cpu().numpy()
-        self.buffer.add_batch(
-            learner=np.ones(rows.size, bool), env_id=env_id[rows], match_id=match_id[rows],
-            round_index=np.asarray(batch.round_index)[rows], seat=seat[rows], phase=phase[rows],
-            obs=obs, hidden_counts=np.asarray(batch.hidden_counts)[rows],
-            cand=cand[keep], offsets=step.pruned_offsets.cpu().numpy(),
-            chosen=step.pruned_choice.cpu().numpy(), logp=step.log_prob.float().cpu().numpy())
-        self.progress["learner_decisions"] += int(rows.size)
-
-    def collect(self) -> None:
-        self.net.eval()
-        heuristic = self.config.tribute_policy == "heuristic"
-        for _ in range(self.config.rollout_steps):
-            if self.should_stop():
-                break
-            batch = self.env.pending()
-            # Contract order: ended matches, then started matches, then rows.
-            self._finish_rounds(self.env.drain_finished_rounds())
-            n = batch.rows
-            if not n:
-                raise RuntimeError("environment produced no pending decisions")
-            env_id = np.asarray(batch.env_id, np.int64)
-            match_id = np.asarray(batch.match_id, np.int64)
-            self._start_matches(env_id, match_id)
-            seat = np.asarray(batch.seat, np.int64)
-            phase = np.asarray(batch.phase, np.int64)
-            offsets = np.asarray(batch.offsets, np.int64)
-            learner = seat % 2 == self.learner_team[env_id]
-            choices = np.array(batch.greedy_choice, dtype=np.int32, copy=True)
-            opponent_rows = np.flatnonzero(~learner)
-            if opponent_rows.size:
-                picked = np.asarray(self.opponent.act(self._opponent_rows(
-                    batch, opponent_rows, offsets, env_id, seat, phase, match_id)), np.int32)
-                if picked.shape != opponent_rows.shape:
-                    raise ValueError("opponent returned the wrong number of choices")
-                choices[opponent_rows] = picked
-            acting = learner & (phase == PLAY) if heuristic else learner
-            learner_rows = np.flatnonzero(acting)
-            if learner_rows.size:
-                self._learner_act(batch, learner_rows, offsets, env_id, seat, phase,
-                                  match_id, choices)
-            counts = offsets[1:] - offsets[:-1]
-            if ((choices < 0) | (choices >= counts)).any():
-                raise ValueError("a choice lies outside its candidate list")
-            self.env.step(choices)
-            self.progress["decisions"] += n
-
     # ----------------------------------------------------------------- learner
     @torch.no_grad()
-    def refresh_values(self) -> np.ndarray:
-        """Critic values of every completed step, written into the buffer."""
-        steps = self.buffer.pending_value_steps()
+    def refresh_values(self) -> None:
+        """Critic values of every completed step, written into the buffer(s)."""
         self.critic.eval()
         chunk = max(1, self.config.minibatch_size)
-        for begin in range(0, steps.size, chunk):
-            part = steps[begin:begin + chunk]
-            x = tensor(self.buffer.critic_input(part), self.device, torch.float32)
-            self.buffer.value[part] = self.critic(x).float().cpu().numpy()
-        return steps
+        for buffer in self.buffers:
+            steps = buffer.pending_value_steps()
+            for begin in range(0, steps.size, chunk):
+                part = steps[begin:begin + chunk]
+                x = to_device(buffer.critic_input(part), self.device, torch.float32)
+                buffer.value[part] = self.critic(x).float().cpu().numpy()
+
+    def collect(self) -> None:
+        if self.actors is None:
+            super().collect()
+            return
+        with self._phase("actor processes collect"):
+            self.actor_stats = self.actors.collect(self, self.config.rollout_steps)
+
+    def minibatches(self) -> Iterator[dict[str, torch.Tensor]]:
+        """One epoch of minibatches over every buffer's finalized samples."""
+        size = self.config.minibatch_size
+        if len(self.buffers) == 1:
+            yield from self.buffers[0].minibatches(size, self.rng, self.device)
+            return
+        counts = [buffer.n_samples for buffer in self.buffers]
+        shard = np.repeat(np.arange(len(self.buffers)), counts)
+        local = np.concatenate([buffer.samples[:buffer.n_samples] for buffer in self.buffers])
+        order = self.rng.permutation(local.size)
+        for begin in range(0, order.size, size):
+            chosen = order[begin:begin + size]
+            parts = [self.buffers[s].gather(local[chosen[shard[chosen] == s]], self.device)
+                     for s in np.unique(shard[chosen])]
+            yield concat_minibatches(parts)
+
+    def close(self) -> None:
+        """Stop the actor processes, if any. Idempotent."""
+        if self.actors is not None:
+            self.actors.close()
 
     def kl_coef(self) -> float:
         return schedule(self.config.kl_coef, 0.0, self.progress["updates"],
                         self.config.kl_anneal_updates)
 
+    # Scalar minibatch terms reported as means over the update's minibatches.
+    STAT_KEYS = ("policy_loss", "value_loss", "entropy", "kl_ref", "hidden_loss", "finish_loss",
+                 "approx_kl", "clip_fraction", "ratio_deviation", "policy_grad_norm",
+                 "critic_grad_norm")
+
     def learn(self) -> dict[str, float]:
         cfg = self.config
-        self.refresh_values()
-        samples = self.buffer.finalize(cfg.gamma, cfg.gae_lambda)
+        with self._phase("critic values"):
+            self.refresh_values()
+        with self._phase("GAE"):
+            samples = sum(buffer.finalize(cfg.gamma, cfg.gae_lambda) for buffer in self.buffers)
         stats: dict[str, float] = {"update_samples": samples, "kl_coef": self.kl_coef()}
         if samples == 0:
             return stats
-        index = self.buffer.samples[:samples]
-        returns, values = self.buffer.returns[index], self.buffer.value[index]
+        returns = np.concatenate([b.returns[b.samples[:b.n_samples]] for b in self.buffers])
+        values = np.concatenate([b.value[b.samples[:b.n_samples]] for b in self.buffers])
         variance = float(np.var(returns))
         stats["explained_variance"] = (1.0 - float(np.var(returns - values)) / variance
                                        if variance > 0 else 0.0)
         stats["mean_return"] = float(returns.mean())
         stats["mean_value"] = float(values.mean())
         kl_coef = stats["kl_coef"]
-        sums: dict[str, float] = {}
+        # Statistics and finiteness stay on the device and are read once per
+        # epoch, so a minibatch never waits for the device. A non-finite loss
+        # or gradient raises at the end of its epoch instead of before its
+        # optimizer step; the run then stops without saving, as before.
+        totals = torch.zeros(len(self.STAT_KEYS), dtype=torch.float64, device=self.device)
         count = 0
         first_ratio_deviation = None
         stopped_epoch = cfg.epochs
         self.net.train()
         self.critic.train()
         for epoch in range(cfg.epochs):
-            epoch_kl, epoch_batches = 0.0, 0
-            for mb in self.buffer.minibatches(cfg.minibatch_size, self.rng, self.device):
-                terms = self.minibatch_loss(mb, kl_coef)
-                self.policy_optimizer.zero_grad(set_to_none=True)
-                self.critic_optimizer.zero_grad(set_to_none=True)
-                (terms["policy_total"] + cfg.value_coef * terms["value_loss"]).backward()
-                policy_grad = torch.nn.utils.clip_grad_norm_(
-                    self.net.parameters(), cfg.grad_clip, error_if_nonfinite=True)
-                critic_grad = torch.nn.utils.clip_grad_norm_(
-                    self.critic.parameters(), cfg.grad_clip, error_if_nonfinite=True)
-                self.policy_optimizer.step()
-                self.critic_optimizer.step()
+            epoch_kl = torch.zeros((), dtype=torch.float64, device=self.device)
+            finite = torch.ones((), dtype=torch.bool, device=self.device)
+            epoch_batches = 0
+            batches = self.minibatches()
+            while True:
+                with self._phase("minibatch gather + upload"):
+                    mb = next(batches, None)
+                if mb is None:
+                    break
+                with self._phase("learner forward"):
+                    terms = self.minibatch_loss(mb, kl_coef)
+                with self._phase("learner backward + step"):
+                    self.policy_optimizer.zero_grad(set_to_none=True)
+                    self.critic_optimizer.zero_grad(set_to_none=True)
+                    (terms["policy_total"] + cfg.value_coef * terms["value_loss"]).backward()
+                    policy_grad = torch.nn.utils.clip_grad_norm_(self.net.parameters(),
+                                                                 cfg.grad_clip)
+                    critic_grad = torch.nn.utils.clip_grad_norm_(self.critic.parameters(),
+                                                                 cfg.grad_clip)
+                    finite &= (torch.isfinite(terms["policy_total"])
+                               & torch.isfinite(terms["value_loss"])
+                               & torch.isfinite(policy_grad) & torch.isfinite(critic_grad))
+                    self.policy_optimizer.step()
+                    self.critic_optimizer.step()
                 self.progress["optimizer_steps"] += 1
-                values_now = {k: float(v.detach()) for k, v in terms.items() if v.dim() == 0}
-                values_now["policy_grad_norm"] = float(policy_grad)
-                values_now["critic_grad_norm"] = float(critic_grad)
+                terms["policy_grad_norm"] = policy_grad
+                terms["critic_grad_norm"] = critic_grad
+                totals += torch.stack([terms[key].detach().double() for key in self.STAT_KEYS])
                 if first_ratio_deviation is None:
-                    first_ratio_deviation = float(terms["ratio_deviation"])
-                for key, value in values_now.items():
-                    sums[key] = sums.get(key, 0.0) + value
+                    first_ratio_deviation = terms["ratio_deviation"].detach()
                 count += 1
-                epoch_kl += values_now["approx_kl"]
+                epoch_kl += terms["approx_kl"].detach().double()
                 epoch_batches += 1
-            if cfg.target_kl and epoch_kl / max(1, epoch_batches) > cfg.target_kl:
+            if not bool(finite):
+                raise FloatingPointError("non-finite PPO loss or gradient")
+            if cfg.target_kl and float(epoch_kl) / max(1, epoch_batches) > cfg.target_kl:
                 stopped_epoch = epoch + 1
                 break
-        stats.update({key: value / count for key, value in sums.items()})
-        stats.pop("policy_total", None)
-        stats["first_ratio_max_deviation"] = first_ratio_deviation
+        stats.update(zip(self.STAT_KEYS, (totals / count).tolist()))
+        stats["first_ratio_max_deviation"] = float(first_ratio_deviation)
         stats["epochs_run"] = stopped_epoch
         self.progress["samples"] += samples
         return stats
 
     def minibatch_loss(self, mb: dict[str, torch.Tensor], kl_coef: float) -> dict[str, torch.Tensor]:
         cfg = self.config
+        # One state-tower pass feeds both the policy logits and the auxiliary
+        # heads (B5 ran it twice; the gradient is the same sum either way).
+        state = self.net.state_tower(mb["obs"]) if cfg.fast_rollout else None
         log_prob, entropy, log_probs = policy_terms(
             self.policy, mb["obs"], mb["cand"], mb["offsets"], mb["phase"], mb["chosen"],
-            self.phase_code)
+            self.phase_code, state=state)
         log_ratio = log_prob - mb["logp"]
         ratio = log_ratio.exp()
         advantage = mb["advantage"]
@@ -534,21 +814,20 @@ class PPOTrainer:
             advantage = (advantage - advantage.mean()) / (advantage.std() + 1e-8)
         surrogate = -torch.minimum(ratio * advantage,
                                    ratio.clamp(1 - cfg.clip, 1 + cfg.clip) * advantage).mean()
-        kl_ref = reference_kl(self.policy, log_probs, mb["obs"], mb["cand"], mb["offsets"],
-                              mb["phase"], self.phase_code).mean()
-        state = self.net.state_tower(mb["obs"])
+        if cfg.fast_rollout:
+            kl_ref = cached_reference_kl(log_probs, mb["ref_logp"], mb["offsets"]).mean()
+        else:
+            kl_ref = reference_kl(self.policy, log_probs, mb["obs"], mb["cand"], mb["offsets"],
+                                  mb["phase"], self.phase_code).mean()
+        if state is None:
+            state = self.net.state_tower(mb["obs"])
         aux = self.net.auxiliary(state)
         hidden_target = mb["critic_obs"][:, gd.OBS_DIM:].long().reshape(-1)
         hidden_loss = F.cross_entropy(aux["hidden"].reshape(-1, 3), hidden_target)
-        steps = mb["steps"].cpu().numpy()
-        finish_target = self.traj_finish[self.buffer.traj[steps], self.buffer.seat[steps]]
-        finish_loss = F.cross_entropy(aux["finish"],
-                                      torch.as_tensor(finish_target, device=self.device))
+        finish_loss = F.cross_entropy(aux["finish"], mb["finish"])
         value_loss = F.mse_loss(self.critic(mb["critic_obs"]), mb["returns"])
         policy_total = (surrogate - cfg.entropy_coef * entropy.mean() + kl_coef * kl_ref
                         + cfg.hidden_weight * hidden_loss + cfg.finish_weight * finish_loss)
-        if not bool(torch.isfinite(policy_total)) or not bool(torch.isfinite(value_loss)):
-            raise FloatingPointError("non-finite PPO loss")
         with torch.no_grad():
             approx_kl = ((ratio - 1) - log_ratio).mean()
             clip_fraction = ((ratio - 1).abs() > cfg.clip).float().mean()
@@ -572,8 +851,9 @@ class PPOTrainer:
             "critic_optimizer": self.critic_optimizer.state_dict(),
             "sampler": self.generator.get_state(),
             "init_source": self.init_source, "critic_source": self.critic_source,
-            "league": {"stage": "B", "opponents": [getattr(self.opponent, "name",
-                                                           type(self.opponent).__name__)]},
+            "league": {"stage": "B", "opponents": [
+                self.config.opponent if self.opponent is None
+                else getattr(self.opponent, "name", type(self.opponent).__name__)]},
         })
         save_checkpoint(self.run_dir / "latest.pt", payload)
         if snapshot:
@@ -626,7 +906,10 @@ class PPOTrainer:
         collect_seconds = time.monotonic() - collect_start
         learn_start = time.monotonic()
         stats = self.learn()
-        self.buffer.next_iteration()
+        if self.actors is None:
+            self.buffer.next_iteration()    # actors clear their shards before collecting
+        else:
+            stats.update(self.actor_stats)
         self.progress["updates"] += 1
         return self.metric({**stats, "collect_seconds": collect_seconds,
                             "learn_seconds": time.monotonic() - learn_start})
@@ -648,6 +931,7 @@ class PPOTrainer:
                 if completed:
                     self.save()
             finally:
+                self.close()
                 if self.writer:
                     self.writer.close()
                 for sig, handler in handlers.items():

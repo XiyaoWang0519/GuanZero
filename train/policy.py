@@ -54,6 +54,12 @@ class PolicyStep:
     keep_index: Tensor      # [m] flat indices into `cand` of kept candidates
     pruned_offsets: Tensor  # [n + 1] offsets of the kept candidates
     logits: Tensor          # [m] policy logits of kept candidates
+    # [m] log softmax(Q_ref / temperature) over the pruned set, the KL target
+    # the learner needs; cached here so the learner never re-runs the reference.
+    ref_log_probs: Tensor | None = None
+    # Scalar bool tensor, all reference scores finite; set when act() was asked
+    # not to synchronize for the check (the caller then checks it later).
+    finite: Tensor | None = None
 
 
 def segment_rows(offsets: Tensor, total: int) -> Tensor:
@@ -67,17 +73,19 @@ def pass_mask(cand: Tensor) -> Tensor:
 
 
 def prune_candidates(ref_scores: Tensor, offsets: Tensor, top_k: int,
-                     keep: Tensor | None = None) -> tuple[Tensor, Tensor]:
+                     keep: Tensor | None = None, *,
+                     check_finite: bool = True) -> tuple[Tensor, Tensor]:
     """Keep the `top_k` best reference scores per segment, plus every `keep`.
 
     Ties break toward the lower original index. Returns the kept flat indices in
     ascending order (so segments stay contiguous and in original order) and the
     offsets of the pruned ragged batch. A segment with at most `top_k`
-    candidates is kept whole.
+    candidates is kept whole. `check_finite=False` skips the (device-syncing)
+    finiteness check; the caller must then check the scores itself.
     """
     if top_k <= 0:
         raise ValueError("top_k must be positive")
-    if not torch.isfinite(ref_scores).all():
+    if check_finite and not torch.isfinite(ref_scores).all():
         raise ValueError("reference scores must be finite")
     n, total = len(offsets) - 1, len(ref_scores)
     rows = segment_rows(offsets, total)
@@ -89,7 +97,8 @@ def prune_candidates(ref_scores: Tensor, offsets: Tensor, top_k: int,
     if keep is not None:
         kept |= keep
     keep_index = torch.nonzero(kept).flatten()
-    counts = torch.bincount(rows[keep_index], minlength=n)
+    # A segment sum rather than bincount, which synchronises CUDA to size its output.
+    counts = offsets.new_zeros(n).index_add_(0, rows, kept.to(offsets.dtype))
     pruned_offsets = torch.cat((offsets.new_zeros(1), torch.cumsum(counts, 0)))
     return keep_index, pruned_offsets
 
@@ -112,10 +121,13 @@ def segment_entropy(log_probs: Tensor, offsets: Tensor) -> Tensor:
 
 
 def sample_segments(log_probs: Tensor, offsets: Tensor,
-                    generator: torch.Generator | None = None) -> Tensor:
-    """Inverse-CDF draw per segment, one uniform per decision, in float64."""
+                    generator: torch.Generator | None = None, *,
+                    validate: bool = True) -> Tensor:
+    """Inverse-CDF draw per segment, one uniform per decision, in float64.
+    `validate=False` skips the device-syncing empty-segment check for callers
+    whose segments are nonempty by construction."""
     sizes = offsets[1:] - offsets[:-1]
-    if (sizes <= 0).any():
+    if validate and (sizes <= 0).any():
         raise ValueError("every decision needs at least one candidate")
     n = len(sizes)
     rows = segment_rows(offsets, len(log_probs))
@@ -180,11 +192,12 @@ class StageBPolicy:
         return self
 
     def logits(self, obs: Tensor, cand: Tensor, offsets: Tensor, phase: Tensor,
-               phase_code: int | None = None) -> Tensor:
-        """Policy logits for every candidate: phase-head scalar / temperature."""
+               phase_code: int | None = None, state: Tensor | None = None) -> Tensor:
+        """Policy logits for every candidate: phase-head scalar / temperature.
+        `state` optionally passes a precomputed `net.state_tower(obs)`."""
         scores = self.net.score_candidates(obs, cand, offsets, phase,
                                            chunk_size=self.config.chunk_size,
-                                           phase_code=phase_code)
+                                           phase_code=phase_code, state=state)
         return scores / self.config.temperature
 
     def prune(self, obs: Tensor, cand: Tensor, offsets: Tensor, phase: Tensor,
@@ -198,22 +211,40 @@ class StageBPolicy:
 
     def act(self, obs: Tensor, cand: Tensor, offsets: Tensor, phase: Tensor, *,
             generator: torch.Generator | None = None, greedy: bool = False,
-            phase_code: int | None = None) -> PolicyStep:
-        """Prune, then sample (or take the argmax) over the pruned set."""
-        keep_index, pruned_offsets = self.prune(obs, cand, offsets, phase, phase_code)
+            phase_code: int | None = None, ref_scores: Tensor | None = None,
+            sync_checks: bool = True) -> PolicyStep:
+        """Prune, then sample (or take the argmax) over the pruned set.
+
+        `ref_scores`, when given, are the frozen reference's scores of `cand`
+        (the caller already ran the reference, e.g. fused with an opponent
+        that plays the same network); otherwise the reference runs here.
+        `sync_checks=False` defers the finiteness check to `PolicyStep.finite`
+        and skips checks that hold by construction, so the whole call issues
+        no device synchronization except the pruning's `nonzero`.
+        """
+        if ref_scores is None:
+            with torch.no_grad():
+                ref_scores = self.reference.score_candidates(
+                    obs, cand, offsets, phase, chunk_size=self.config.chunk_size,
+                    phase_code=phase_code)
+        keep_index, pruned_offsets = prune_candidates(
+            ref_scores, offsets, self.config.top_k, pass_mask(cand), check_finite=sync_checks)
         pruned_cand = cand[keep_index]
         logits = self.logits(obs, pruned_cand, pruned_offsets, phase, phase_code)
         log_probs = segment_log_softmax(logits, pruned_offsets)
         if greedy:
             local = select_actions(logits.detach(), pruned_offsets)
         else:
-            local = sample_segments(log_probs, pruned_offsets, generator)
+            local = sample_segments(log_probs, pruned_offsets, generator, validate=sync_checks)
         flat = pruned_offsets[:-1] + local
+        ref_log_probs = segment_log_softmax(ref_scores[keep_index] / self.config.temperature,
+                                            pruned_offsets)
         return PolicyStep(choice=keep_index[flat] - offsets[:-1], pruned_choice=local,
                           log_prob=log_probs[flat],
                           entropy=segment_entropy(log_probs, pruned_offsets),
                           keep_index=keep_index, pruned_offsets=pruned_offsets,
-                          logits=logits)
+                          logits=logits, ref_log_probs=ref_log_probs,
+                          finite=None if sync_checks else torch.isfinite(ref_scores).all())
 
     def evaluate(self, obs: Tensor, pruned_cand: Tensor, pruned_offsets: Tensor,
                  phase: Tensor, pruned_choice: Tensor,

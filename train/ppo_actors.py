@@ -1,0 +1,283 @@
+"""Synchronous rollout actor processes for Stage B PPO (STAGE_B_TODO B5b).
+
+`PPOConfig.actor_processes = W > 0` splits the `num_envs` environments into
+W shards, each stepped by its own process with its own `gd.VecEnv`, its own
+copy of the policy and frozen reference on the trainer's device, its own
+opponent and its own sampling generator. A single rollout process is bound by
+one Python thread (batch assembly, copies, kernel launches, buffer writes);
+W processes run those in parallel on a many-core host.
+
+The learner process keeps everything else. Every shard's `RolloutBuffer`
+lives in shared memory: an actor writes its rounds there, the learner reads
+them in place (critic values, GAE, minibatches over the union of shards), so
+no trajectory data is pickled. Per update:
+
+1. the learner publishes the policy weights into shared tensors;
+2. every actor loads them, clears its shard's finished rounds
+   (`next_iteration`, carrying rounds in progress), and collects
+   `rollout_steps` vector steps;
+3. the learner waits for all actors, then learns.
+
+Actors never run while the learner trains, so every stored sample was drawn
+from exactly the weights the learner starts the update with: no policy lag,
+the first-epoch importance ratio is 1 up to float noise, as in-process
+(tests/test_ppo_actors.py bounds it). What differs from the in-process path
+under the same seed is only which random streams drive what: the shards'
+environment seeds and sampling generators are drawn from the trainer RNG,
+and minibatches are permuted over the union of shards. The distribution of
+the data and of the updates is the same.
+
+Opponents are built per actor from the config spec (`frozen`,
+`frozen:<path>`, `greedy`); each actor drives its own `OpponentSource` in the
+contract's order for its shard. An opponent object passed to `PPOTrainer` is
+not supported here (a stateful league would need one sampler across shards).
+"""
+from __future__ import annotations
+
+from dataclasses import asdict
+import os
+from pathlib import Path
+import signal
+import time
+import traceback
+from typing import Any
+
+import numpy as np
+import torch
+
+import gd
+
+PROGRESS_KEYS = ("decisions", "learner_decisions", "rounds", "matches", "learner_match_wins")
+
+
+def shard_sizes(num_envs: int, actors: int) -> list[int]:
+    if actors <= 0 or num_envs % actors or num_envs // actors < 2:
+        raise ValueError("num_envs must split into actor_processes shards of at least 2")
+    return [num_envs // actors] * actors
+
+
+def shared_state(module: torch.nn.Module) -> dict[str, torch.Tensor]:
+    return {k: v.detach().to("cpu", copy=True).share_memory_()
+            for k, v in module.state_dict().items()}
+
+
+def publish(module: torch.nn.Module, shared: dict[str, torch.Tensor]) -> None:
+    with torch.no_grad():
+        for key, value in module.state_dict().items():
+            shared[key].copy_(value)
+
+
+def buffer_bytes(config) -> int:
+    from train.rollout_buffer import RolloutBuffer
+    return sum(a.nbytes for a in RolloutBuffer(config).storage().values())
+
+
+def check_shared_memory(needed: int) -> None:
+    """Shard buffers live in POSIX shared memory (/dev/shm on Linux). Docker
+    gives containers 64 MiB there unless told otherwise, and running out
+    kills a process with SIGBUS mid-rollout, so check up front."""
+    shm = Path("/dev/shm")
+    if not shm.is_dir():
+        return
+    stat = os.statvfs(shm)
+    free = stat.f_bavail * stat.f_frsize
+    if free < needed * 1.1:
+        raise RuntimeError(
+            f"actor_processes needs {needed / 2**30:.2f} GiB of /dev/shm for the shard buffers, "
+            f"{free / 2**30:.2f} GiB free; enlarge it (docker --shm-size) or lower "
+            "num_envs/buffer_candidates")
+
+
+class ActorPool:
+    """Learner-side handle of the actor processes."""
+
+    def __init__(self, trainer, sizes: list[int]) -> None:
+        from train.ppo import resolve_artifact
+
+        cfg = trainer.config
+        ctx = torch.multiprocessing.get_context("spawn")
+        self.net_weights = shared_state(trainer.policy.net)
+        reference_weights = shared_state(trainer.policy.reference)
+        opponent = cfg.opponent
+        if opponent.startswith("frozen:"):
+            opponent = "frozen:" + str(resolve_artifact(opponent[len("frozen:"):]))
+        from train.rollout_buffer import RolloutBuffer
+
+        configs = [type(cfg)(**{**asdict(cfg), "num_envs": size}).buffer_config()
+                   for size in sizes]
+        check_shared_memory(sum(buffer_bytes(c) for c in configs))
+        self.buffers = []
+        self.connections = []
+        self.processes = []
+        for index, (size, buffer_config) in enumerate(zip(sizes, configs)):
+            buffer, tensors = RolloutBuffer.shared(buffer_config)
+            spec = {
+                "config": asdict(cfg), "index": index, "num_envs": size,
+                "device": str(trainer.device), "opponent": opponent,
+                "env_seed": int(trainer.rng.integers(0, 2**63)),
+                "generator_seed": int(trainer.rng.integers(0, 2**63)),
+                "model_config": asdict(trainer.policy.net.config),
+                "policy_config": asdict(trainer.policy.config),
+                "reference_checkpoint_id": trainer.policy.reference_checkpoint_id,
+                "phase_code": trainer.phase_code,
+                "buffer_config": asdict(buffer_config),
+            }
+            parent, child = ctx.Pipe()
+            process = ctx.Process(target=actor_main, daemon=True, name=f"ppo-actor-{index}",
+                                  args=(child, spec, self.net_weights, reference_weights, tensors))
+            process.start()
+            child.close()
+            self.buffers.append(buffer)
+            self.connections.append(parent)
+            self.processes.append(process)
+        for connection in self.connections:
+            self._receive(connection)   # "ready"
+
+    def _receive(self, connection) -> Any:
+        status, payload = connection.recv()
+        if status == "error":
+            self.close()
+            raise RuntimeError(f"PPO actor failed:\n{payload}")
+        return payload
+
+    def collect(self, trainer, steps: int) -> dict[str, float]:
+        publish(trainer.policy.net, self.net_weights)
+        for connection in self.connections:
+            connection.send(("collect", steps))
+        seconds = []
+        for buffer, connection in zip(self.buffers, self.connections):
+            reply = self._receive(connection)
+            buffer.n_steps, buffer.n_cand, buffer.n_traj = reply["counters"]
+            buffer.n_samples = 0
+            buffer.finalized = False
+            for key in PROGRESS_KEYS:
+                trainer.progress[key] += reply["progress"][key]
+            for key, value in reply["window"].items():
+                trainer.window[key] += value
+            seconds.append(reply["seconds"])
+        return {"actor_collect_seconds_max": max(seconds),
+                "actor_collect_seconds_min": min(seconds)}
+
+    def request(self, command: str) -> list[Any]:
+        for connection in self.connections:
+            connection.send((command, None))
+        return [self._receive(connection) for connection in self.connections]
+
+    def close(self) -> None:
+        for connection in self.connections:
+            try:
+                connection.send(("close", None))
+            except (BrokenPipeError, OSError):
+                pass
+        for process in self.processes:
+            process.join(timeout=10)
+            if process.is_alive():
+                process.terminate()
+        self.connections, self.processes = [], []
+
+
+def actor_main(connection, spec: dict, net_weights: dict, reference_weights: dict,
+               tensors: dict) -> None:
+    """Entry point of one actor process."""
+    # The learner handles SIGINT/SIGTERM and closes the actors itself.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        actor = Actor(spec, net_weights, reference_weights, tensors)
+        connection.send(("ok", "ready"))
+        first = True
+        while True:
+            command, argument = connection.recv()
+            if command == "close":
+                break
+            if command == "collect":
+                connection.send(("ok", actor.collect_once(argument, first)))
+                first = False
+            elif command == "weights_digest":
+                connection.send(("ok", actor.weights_digest()))
+            else:
+                raise ValueError(f"unknown actor command {command}")
+    except (EOFError, KeyboardInterrupt):
+        pass
+    except BaseException:  # report anything else to the learner
+        try:
+            connection.send(("error", traceback.format_exc()))
+        except (BrokenPipeError, OSError):
+            pass
+
+
+class Actor:
+    """One shard: a `RolloutCollector` over its own environments."""
+
+    def __init__(self, spec: dict, net_weights: dict, reference_weights: dict,
+                 tensors: dict) -> None:
+        from train.model import GuandanModel, ModelConfig
+        from train.opponents import FrozenModelOpponent, GreedyOpponent
+        from train.policy import PolicyConfig, StageBPolicy
+        from train.ppo import PPOConfig, RolloutCollector, Uploader
+        from train.rollout_buffer import RolloutBuffer, RolloutBufferConfig
+
+        cfg = PPOConfig(**{**spec["config"], "num_envs": spec["num_envs"]})  # this shard
+        torch.set_num_threads(cfg.torch_threads)
+        device = torch.device(spec["device"])
+        model_config = ModelConfig(**spec["model_config"])
+        net, reference = GuandanModel(model_config), GuandanModel(model_config)
+        net.load_state_dict(net_weights)
+        reference.load_state_dict(reference_weights)
+        policy = StageBPolicy(net, reference, PolicyConfig(**spec["policy_config"]),
+                              spec["reference_checkpoint_id"]).to(device)
+        net.eval()
+        self.net_weights = net_weights
+        collector = RolloutCollector()
+        collector.config = cfg
+        collector.device = device
+        collector.policy = policy
+        collector.net = net
+        collector.phase_code = spec["phase_code"]
+        actions = gd.ActionConfig.full() if cfg.action_mode == "full" else gd.ActionConfig()
+        size = spec["num_envs"]
+        collector.env = gd.VecEnv(size, num_threads=cfg.num_threads, seed=spec["env_seed"],
+                                  actions=actions)
+        collector.env.reset()
+        collector.learner_team = np.arange(size, dtype=np.int64) % 2
+        collector.env_match = np.full(size, -1, np.int64)
+        collector.buffer = RolloutBuffer(RolloutBufferConfig(**spec["buffer_config"]),
+                                         arrays={k: t.numpy() for k, t in tensors.items()})
+        opponent_spec = spec["opponent"]
+        if opponent_spec == "greedy":
+            opponent = GreedyOpponent()
+        elif opponent_spec == "frozen":
+            opponent = FrozenModelOpponent(policy.reference, str(device), cfg.candidate_chunk)
+        else:
+            opponent = FrozenModelOpponent.from_checkpoint(opponent_spec[len("frozen:"):],
+                                                           str(device), cfg.candidate_chunk)
+        collector.opponent = opponent
+        opponent.bind(collector.env, collector.learner_team)
+        collector.fused_opponent = (cfg.fast_rollout and isinstance(opponent, FrozenModelOpponent)
+                                    and opponent.model is policy.reference)
+        collector.upload = Uploader(device)
+        collector.timers = None
+        collector.generator = torch.Generator(device=device)
+        collector.generator.manual_seed(spec["generator_seed"])
+        collector.progress = {key: 0 for key in PROGRESS_KEYS}
+        collector.window = {"matches": 0, "wins": 0, "rounds": 0, "learner_return": 0.0}
+        collector.bound = False
+        collector.should_stop = lambda: False
+        self.collector = collector
+
+    def collect_once(self, steps: int, first: bool) -> dict:
+        c = self.collector
+        start = time.monotonic()
+        if not first:
+            c.buffer.next_iteration()
+        c.net.load_state_dict(self.net_weights)
+        before = dict(c.progress)
+        c.window = {"matches": 0, "wins": 0, "rounds": 0, "learner_return": 0.0}
+        c.config.rollout_steps = steps
+        c.collect()
+        return {"counters": (c.buffer.n_steps, c.buffer.n_cand, c.buffer.n_traj),
+                "progress": {k: c.progress[k] - before[k] for k in PROGRESS_KEYS},
+                "window": dict(c.window), "seconds": time.monotonic() - start}
+
+    def weights_digest(self) -> float:
+        with torch.no_grad():
+            return float(sum(p.double().sum() for p in self.collector.net.parameters()))
