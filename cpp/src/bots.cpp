@@ -109,7 +109,7 @@ int tribute_bot(const MatchState& m, const std::vector<Action>& cands, uint64_t&
     int best = 0;
     bool best_sf = true;
     for (size_t i = 0; i < cands.size(); ++i) {
-      const CardId c = cands[i].cards.to_vector().front();
+      const CardId c = static_cast<CardId>(std::countr_zero(cands[i].cards.has1));
       const int suit = suit_of(c);
       const bool sf = suit >= 0 && (sf_mask[suit] >> rank_of(c)) & 1u;
       if (!sf && best_sf) { best = static_cast<int>(i); best_sf = false; }
@@ -129,7 +129,7 @@ int tribute_bot(const MatchState& m, const std::vector<Action>& cands, uint64_t&
   int best = 0;
   int64_t best_score = std::numeric_limits<int64_t>::min();
   for (size_t i = 0; i < cands.size(); ++i) {
-    const CardId c = cands[i].cards.to_vector().front();
+    const CardId c = static_cast<CardId>(std::countr_zero(cands[i].cards.has1));
     const int rank = rank_of(c);
     const int suit = suit_of(c);
     const int copies = view.rank_count[rank];

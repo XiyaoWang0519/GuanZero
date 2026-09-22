@@ -1,0 +1,4 @@
+# Install the appropriate CPU/CUDA PyTorch wheel before this file; see TRAINING.md.
+torch>=2.9,<3
+numpy>=1.26
+tensorboard>=2.18,<3

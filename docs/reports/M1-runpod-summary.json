@@ -1,0 +1,756 @@
+{
+  "status": "complete",
+  "date": "2026-09-21",
+  "budget_usd": 5,
+  "authorized_max_hours": 2,
+  "pod_id": "kuf3qpi59kj0ew",
+  "created_at_utc": "2026-09-21T23:12:25.757495+00:00",
+  "quoted_gpu_hourly_usd": 0.99,
+  "conservative_hourly_usd": 0.9959523809523809,
+  "source_sha256": "3b10dbcfb379a9a68e494cf0cea405ab174e4b3c5122d3a114b684e7aea5a383",
+  "runtime": {
+    "python": "3.12.13",
+    "torch": "2.9.1+cu128",
+    "device": "cuda",
+    "bf16_enabled": true,
+    "cuda_runtime": "12.8",
+    "gpu_name": "NVIDIA GeForce RTX 5090",
+    "parameters": 3078125,
+    "resume_source": "runs/pilot/latest.pt"
+  },
+  "final_progress": {
+    "updates": 34496,
+    "decisions": 71266304,
+    "rounds": 1264800,
+    "matches": 109563,
+    "samples": 55052332,
+    "logged_rounds": 1220,
+    "elapsed_seconds": 1228.7682977560908,
+    "resumes": 2,
+    "snapshot_update": 34000,
+    "trained_samples": 70647808
+  },
+  "max_recorded_host_rss_mib": 4306.03125,
+  "max_recorded_cuda_allocated_mib": 694.8232421875,
+  "max_recorded_candidate_batch": 821098,
+  "evaluations": {
+    "initial": {
+      "agent": "step-000000000.pt@19f3041d25e8b669",
+      "opponent": "greedy",
+      "seed": 20260921,
+      "checkpoint_sampling_margin": 0.0,
+      "duplicate": {
+        "deals": 100,
+        "rounds": 200,
+        "score_definition": "(A net level gain in leg 1 + A net level gain in leg 2) / 2",
+        "mean_net_levels_per_round": -3.0,
+        "bootstrap_95_ci": [
+          -3.0,
+          -3.0
+        ],
+        "mean_pair_difference": -6.0,
+        "banker_rate": 0.0,
+        "double_win_rate": 0.0,
+        "opponent_double_win_rate": 1.0,
+        "mean_finish_order_award_per_round": 0.0
+      },
+      "match": {
+        "matches": 20,
+        "wins": 0,
+        "win_rate": 0.0,
+        "wilson_95_ci": [
+          1.3877787807814457e-17,
+          0.1611251580528193
+        ],
+        "rounds": 100,
+        "banker_rate": 0.0,
+        "double_win_rate": 0.0,
+        "opponent_double_win_rate": 1.0,
+        "mean_finish_order_award_per_round": 0.0,
+        "net_level_definition": "signed DMC return; an owned A Banker/Dweller result returns zero to both teams",
+        "mean_net_levels_per_round": -3.0
+      },
+      "probes": {
+        "feed_partner_single": false,
+        "opponent_one_avoid_single": false,
+        "opponent_one_cover_high": false,
+        "let_partner_hold": true,
+        "bomb_imminent_finish": false,
+        "save_bomb_and_wild": false,
+        "inherited_lead_double_win": false,
+        "tribute_preserve_straight_flush": true
+      }
+    },
+    "stage1": {
+      "agent": "stage1.pt@a766e2dedd36f55b",
+      "opponent": "greedy",
+      "seed": 20260921,
+      "checkpoint_sampling_margin": 0.0,
+      "duplicate": {
+        "deals": 100,
+        "rounds": 200,
+        "score_definition": "(A net level gain in leg 1 + A net level gain in leg 2) / 2",
+        "mean_net_levels_per_round": 1.055,
+        "bootstrap_95_ci": [
+          0.81,
+          1.295
+        ],
+        "mean_pair_difference": 2.11,
+        "banker_rate": 0.73,
+        "double_win_rate": 0.395,
+        "opponent_double_win_rate": 0.125,
+        "mean_finish_order_award_per_round": 1.64
+      },
+      "match": {
+        "matches": 20,
+        "wins": 19,
+        "win_rate": 0.95,
+        "wilson_95_ci": [
+          0.763868806553258,
+          0.9911185511992047
+        ],
+        "rounds": 165,
+        "banker_rate": 0.7818181818181819,
+        "double_win_rate": 0.48484848484848486,
+        "opponent_double_win_rate": 0.09696969696969697,
+        "mean_finish_order_award_per_round": 1.878787878787879,
+        "net_level_definition": "signed DMC return; an owned A Banker/Dweller result returns zero to both teams",
+        "mean_net_levels_per_round": 1.387878787878788
+      },
+      "probes": {
+        "feed_partner_single": true,
+        "opponent_one_avoid_single": true,
+        "opponent_one_cover_high": false,
+        "let_partner_hold": true,
+        "bomb_imminent_finish": true,
+        "save_bomb_and_wild": false,
+        "inherited_lead_double_win": true,
+        "tribute_preserve_straight_flush": true
+      }
+    },
+    "final": {
+      "agent": "final.pt@8a8e2b08dec2e739",
+      "opponent": "greedy",
+      "seed": 20260921,
+      "checkpoint_sampling_margin": 0.0,
+      "duplicate": {
+        "deals": 100,
+        "rounds": 200,
+        "score_definition": "(A net level gain in leg 1 + A net level gain in leg 2) / 2",
+        "mean_net_levels_per_round": 1.45,
+        "bootstrap_95_ci": [
+          1.195,
+          1.695
+        ],
+        "mean_pair_difference": 2.9,
+        "banker_rate": 0.77,
+        "double_win_rate": 0.46,
+        "opponent_double_win_rate": 0.065,
+        "mean_finish_order_award_per_round": 1.865
+      },
+      "match": {
+        "matches": 20,
+        "wins": 20,
+        "win_rate": 1.0,
+        "wilson_95_ci": [
+          0.8388748419471808,
+          1.0
+        ],
+        "rounds": 165,
+        "banker_rate": 0.8242424242424242,
+        "double_win_rate": 0.45454545454545453,
+        "opponent_double_win_rate": 0.07878787878787878,
+        "mean_finish_order_award_per_round": 1.9393939393939394,
+        "net_level_definition": "signed DMC return; an owned A Banker/Dweller result returns zero to both teams",
+        "mean_net_levels_per_round": 1.5757575757575757
+      },
+      "probes": {
+        "feed_partner_single": true,
+        "opponent_one_avoid_single": true,
+        "opponent_one_cover_high": false,
+        "let_partner_hold": true,
+        "bomb_imminent_finish": true,
+        "save_bomb_and_wild": false,
+        "inherited_lead_double_win": true,
+        "tribute_preserve_straight_flush": true
+      },
+      "belief": {
+        "checkpoint": "final.pt@8a8e2b08dec2e739",
+        "logs": "runs/pilot/eval/belief-final",
+        "split": "deterministic match-hash holdout: 20%, at least one match",
+        "checkpoint_training_overlap": "independent_frozen_checkpoint_collection",
+        "split_note": "Collected from this frozen checkpoint with an independent seed and no learner updates.",
+        "evaluated_matches": 5,
+        "excluded_matches": 24,
+        "evaluated_rounds": 39,
+        "evaluated_decisions": 1958,
+        "log_loss": 0.44381149613942505,
+        "by_stage_and_seat": {
+          "early": {
+            "lho": {
+              "log_loss": 0.7938575444521604,
+              "decisions": 429
+            },
+            "partner": {
+              "log_loss": 0.768362800002376,
+              "decisions": 429
+            },
+            "rho": {
+              "log_loss": 0.7637392913267051,
+              "decisions": 429
+            }
+          },
+          "middle": {
+            "lho": {
+              "log_loss": 0.560325792920304,
+              "decisions": 543
+            },
+            "partner": {
+              "log_loss": 0.5253305426399133,
+              "decisions": 543
+            },
+            "rho": {
+              "log_loss": 0.5403395884603427,
+              "decisions": 543
+            }
+          },
+          "late": {
+            "lho": {
+              "log_loss": 0.25911442575783566,
+              "decisions": 986
+            },
+            "partner": {
+              "log_loss": 0.22915843219834459,
+              "decisions": 986
+            },
+            "rho": {
+              "log_loss": 0.24823450292583413,
+              "decisions": 986
+            }
+          }
+        },
+        "collection_provenance": {
+          "schema_version": 1,
+          "purpose": "evaluation_only",
+          "status": "complete",
+          "checkpoint": "final.pt@8a8e2b08dec2e739",
+          "checkpoint_id": "8a8e2b08dec2e73998092a67cbc25c26df75b4c0d2f02fd0a791d5d16cd4f745",
+          "checkpoint_source": "runs/pilot/final.pt",
+          "seed": 20260922,
+          "training_seed": 7,
+          "requested_rounds": 200,
+          "num_envs": 16,
+          "collected_rounds": 200,
+          "learner_updates": 0,
+          "action_mode": "canonical",
+          "tribute_policy": "heuristic",
+          "sampling_margin": 0.0,
+          "elapsed_seconds": 5.570892287418246
+        }
+      }
+    },
+    "validation-stage1": {
+      "agent": "stage1.pt@a766e2dedd36f55b",
+      "opponent": "greedy",
+      "seed": 20261001,
+      "checkpoint_sampling_margin": 0.0,
+      "duplicate": {
+        "deals": 1000,
+        "rounds": 2000,
+        "score_definition": "(A net level gain in leg 1 + A net level gain in leg 2) / 2",
+        "mean_net_levels_per_round": 1.1005,
+        "bootstrap_95_ci": [
+          1.025,
+          1.1785
+        ],
+        "mean_pair_difference": 2.201,
+        "banker_rate": 0.7305,
+        "double_win_rate": 0.394,
+        "opponent_double_win_rate": 0.106,
+        "mean_finish_order_award_per_round": 1.661
+      },
+      "match": {
+        "matches": 100,
+        "wins": 96,
+        "win_rate": 0.96,
+        "wilson_95_ci": [
+          0.9016292856411208,
+          0.9843366960084523
+        ],
+        "rounds": 883,
+        "banker_rate": 0.7463193657984145,
+        "double_win_rate": 0.4801812004530011,
+        "opponent_double_win_rate": 0.10532276330690826,
+        "mean_finish_order_award_per_round": 1.8459796149490373,
+        "net_level_definition": "signed DMC return; an owned A Banker/Dweller result returns zero to both teams",
+        "mean_net_levels_per_round": 1.305775764439411
+      },
+      "probes": {
+        "feed_partner_single": true,
+        "opponent_one_avoid_single": true,
+        "opponent_one_cover_high": false,
+        "let_partner_hold": true,
+        "bomb_imminent_finish": true,
+        "save_bomb_and_wild": false,
+        "inherited_lead_double_win": true,
+        "tribute_preserve_straight_flush": true
+      }
+    },
+    "validation-final": {
+      "agent": "final.pt@8a8e2b08dec2e739",
+      "opponent": "greedy",
+      "seed": 20261001,
+      "checkpoint_sampling_margin": 0.0,
+      "duplicate": {
+        "deals": 1000,
+        "rounds": 2000,
+        "score_definition": "(A net level gain in leg 1 + A net level gain in leg 2) / 2",
+        "mean_net_levels_per_round": 1.4905,
+        "bootstrap_95_ci": [
+          1.4109875,
+          1.5610249999999999
+        ],
+        "mean_pair_difference": 2.981,
+        "banker_rate": 0.785,
+        "double_win_rate": 0.4615,
+        "opponent_double_win_rate": 0.067,
+        "mean_finish_order_award_per_round": 1.8955
+      },
+      "match": {
+        "matches": 100,
+        "wins": 100,
+        "win_rate": 1.0,
+        "wilson_95_ci": [
+          0.9630065017930143,
+          1.0
+        ],
+        "rounds": 749,
+        "banker_rate": 0.8264352469959947,
+        "double_win_rate": 0.5460614152202937,
+        "opponent_double_win_rate": 0.056074766355140186,
+        "mean_finish_order_award_per_round": 2.0987983978638183,
+        "net_level_definition": "signed DMC return; an owned A Banker/Dweller result returns zero to both teams",
+        "mean_net_levels_per_round": 1.759679572763685
+      },
+      "probes": {
+        "feed_partner_single": true,
+        "opponent_one_avoid_single": true,
+        "opponent_one_cover_high": false,
+        "let_partner_hold": true,
+        "bomb_imminent_finish": true,
+        "save_bomb_and_wild": false,
+        "inherited_lead_double_win": true,
+        "tribute_preserve_straight_flush": true
+      }
+    },
+    "final-vs-stage1": {
+      "agent": "final.pt@8a8e2b08dec2e739",
+      "opponent": "stage1.pt@a766e2dedd36f55b",
+      "seed": 20261001,
+      "checkpoint_sampling_margin": 0.0,
+      "duplicate": {
+        "deals": 500,
+        "rounds": 1000,
+        "score_definition": "(A net level gain in leg 1 + A net level gain in leg 2) / 2",
+        "mean_net_levels_per_round": 0.608,
+        "bootstrap_95_ci": [
+          0.508,
+          0.719
+        ],
+        "mean_pair_difference": 1.216,
+        "banker_rate": 0.63,
+        "double_win_rate": 0.284,
+        "opponent_double_win_rate": 0.139,
+        "mean_finish_order_award_per_round": 1.367
+      },
+      "probes": {
+        "feed_partner_single": true,
+        "opponent_one_avoid_single": true,
+        "opponent_one_cover_high": false,
+        "let_partner_hold": true,
+        "bomb_imminent_finish": true,
+        "save_bomb_and_wild": false,
+        "inherited_lead_double_win": true,
+        "tribute_preserve_straight_flush": true
+      }
+    }
+  },
+  "paired_final_minus_stage1_vs_greedy": {
+    "mean_net_levels_per_round": 0.39,
+    "bootstrap_95_ci": [
+      0.2905,
+      0.488
+    ],
+    "bootstrap_samples": 10000,
+    "bootstrap_seed": 20261002,
+    "deals": 1000,
+    "evaluation_seed": 20261001
+  },
+  "belief_probes": [
+    {
+      "seed": 11,
+      "steps": 1000,
+      "train_decisions": 10192,
+      "test_decisions": 2759,
+      "train_matches": 25,
+      "test_matches": 6,
+      "results": {
+        "v1": {
+          "parameters": 788140,
+          "log_loss": 0.4901991258270141,
+          "by_stage_and_seat": {
+            "early": {
+              "lho": {
+                "log_loss": 0.827244509030876,
+                "decisions": 577
+              },
+              "partner": {
+                "log_loss": 0.8129953668683613,
+                "decisions": 577
+              },
+              "rho": {
+                "log_loss": 0.8044464881539964,
+                "decisions": 577
+              }
+            },
+            "middle": {
+              "lho": {
+                "log_loss": 0.6024841905600457,
+                "decisions": 869
+              },
+              "partner": {
+                "log_loss": 0.5802473352473954,
+                "decisions": 869
+              },
+              "rho": {
+                "log_loss": 0.5877767448732576,
+                "decisions": 869
+              }
+            },
+            "late": {
+              "lho": {
+                "log_loss": 0.2938017360326995,
+                "decisions": 1313
+              },
+              "partner": {
+                "log_loss": 0.2711937417533683,
+                "decisions": 1313
+              },
+              "rho": {
+                "log_loss": 0.27904294200826035,
+                "decisions": 1313
+              }
+            }
+          }
+        },
+        "v2": {
+          "parameters": 786918,
+          "log_loss": 0.5763298323063137,
+          "by_stage_and_seat": {
+            "early": {
+              "lho": {
+                "log_loss": 1.0797060159917928,
+                "decisions": 577
+              },
+              "partner": {
+                "log_loss": 1.0632235941895165,
+                "decisions": 577
+              },
+              "rho": {
+                "log_loss": 1.0475951926960276,
+                "decisions": 577
+              }
+            },
+            "middle": {
+              "lho": {
+                "log_loss": 0.6977483049223695,
+                "decisions": 869
+              },
+              "partner": {
+                "log_loss": 0.6891266424444658,
+                "decisions": 869
+              },
+              "rho": {
+                "log_loss": 0.696122425197869,
+                "decisions": 869
+              }
+            },
+            "late": {
+              "lho": {
+                "log_loss": 0.28947999199564367,
+                "decisions": 1313
+              },
+              "partner": {
+                "log_loss": 0.27696241105864816,
+                "decisions": 1313
+              },
+              "rho": {
+                "log_loss": 0.28597533798181457,
+                "decisions": 1313
+              }
+            }
+          }
+        }
+      },
+      "v2_log_loss_improvement": -0.08613070647929966,
+      "gate": "diagnostic only; repeat across seeds before enabling v2 RL"
+    },
+    {
+      "seed": 12,
+      "steps": 1000,
+      "train_decisions": 10192,
+      "test_decisions": 2759,
+      "train_matches": 25,
+      "test_matches": 6,
+      "results": {
+        "v1": {
+          "parameters": 788140,
+          "log_loss": 0.4856409182781267,
+          "by_stage_and_seat": {
+            "early": {
+              "lho": {
+                "log_loss": 0.8218279942689364,
+                "decisions": 577
+              },
+              "partner": {
+                "log_loss": 0.8096664146079554,
+                "decisions": 577
+              },
+              "rho": {
+                "log_loss": 0.8024175997623331,
+                "decisions": 577
+              }
+            },
+            "middle": {
+              "lho": {
+                "log_loss": 0.5989696186623172,
+                "decisions": 869
+              },
+              "partner": {
+                "log_loss": 0.565589491050729,
+                "decisions": 869
+              },
+              "rho": {
+                "log_loss": 0.5782981555398781,
+                "decisions": 869
+              }
+            },
+            "late": {
+              "lho": {
+                "log_loss": 0.2917349576405324,
+                "decisions": 1313
+              },
+              "partner": {
+                "log_loss": 0.26610961917330994,
+                "decisions": 1313
+              },
+              "rho": {
+                "log_loss": 0.28049486575921984,
+                "decisions": 1313
+              }
+            }
+          }
+        },
+        "v2": {
+          "parameters": 786918,
+          "log_loss": 0.5724998816381521,
+          "by_stage_and_seat": {
+            "early": {
+              "lho": {
+                "log_loss": 1.0909423357072694,
+                "decisions": 577
+              },
+              "partner": {
+                "log_loss": 1.056022081259425,
+                "decisions": 577
+              },
+              "rho": {
+                "log_loss": 1.0407694852951288,
+                "decisions": 577
+              }
+            },
+            "middle": {
+              "lho": {
+                "log_loss": 0.7024270058775661,
+                "decisions": 869
+              },
+              "partner": {
+                "log_loss": 0.6789577317320162,
+                "decisions": 869
+              },
+              "rho": {
+                "log_loss": 0.6850837190625857,
+                "decisions": 869
+              }
+            },
+            "late": {
+              "lho": {
+                "log_loss": 0.29215598859954045,
+                "decisions": 1313
+              },
+              "partner": {
+                "log_loss": 0.26772061637223266,
+                "decisions": 1313
+              },
+              "rho": {
+                "log_loss": 0.2805635853296732,
+                "decisions": 1313
+              }
+            }
+          }
+        }
+      },
+      "v2_log_loss_improvement": -0.08685896336002541,
+      "gate": "diagnostic only; repeat across seeds before enabling v2 RL"
+    },
+    {
+      "seed": 13,
+      "steps": 1000,
+      "train_decisions": 10192,
+      "test_decisions": 2759,
+      "train_matches": 25,
+      "test_matches": 6,
+      "results": {
+        "v1": {
+          "parameters": 788140,
+          "log_loss": 0.4790201201824314,
+          "by_stage_and_seat": {
+            "early": {
+              "lho": {
+                "log_loss": 0.8193613049062534,
+                "decisions": 577
+              },
+              "partner": {
+                "log_loss": 0.8026124831915314,
+                "decisions": 577
+              },
+              "rho": {
+                "log_loss": 0.7897443713513776,
+                "decisions": 577
+              }
+            },
+            "middle": {
+              "lho": {
+                "log_loss": 0.5885425069389738,
+                "decisions": 869
+              },
+              "partner": {
+                "log_loss": 0.5602368962778458,
+                "decisions": 869
+              },
+              "rho": {
+                "log_loss": 0.5667731814060716,
+                "decisions": 869
+              }
+            },
+            "late": {
+              "lho": {
+                "log_loss": 0.28953950802787787,
+                "decisions": 1313
+              },
+              "partner": {
+                "log_loss": 0.2626491627072162,
+                "decisions": 1313
+              },
+              "rho": {
+                "log_loss": 0.272238565144971,
+                "decisions": 1313
+              }
+            }
+          }
+        },
+        "v2": {
+          "parameters": 786918,
+          "log_loss": 0.5708888159637018,
+          "by_stage_and_seat": {
+            "early": {
+              "lho": {
+                "log_loss": 1.0581566638715139,
+                "decisions": 577
+              },
+              "partner": {
+                "log_loss": 1.0554456818248412,
+                "decisions": 577
+              },
+              "rho": {
+                "log_loss": 1.0343436475849648,
+                "decisions": 577
+              }
+            },
+            "middle": {
+              "lho": {
+                "log_loss": 0.698751525308238,
+                "decisions": 869
+              },
+              "partner": {
+                "log_loss": 0.6831124890659978,
+                "decisions": 869
+              },
+              "rho": {
+                "log_loss": 0.685076599977096,
+                "decisions": 869
+              }
+            },
+            "late": {
+              "lho": {
+                "log_loss": 0.2942232444644065,
+                "decisions": 1313
+              },
+              "partner": {
+                "log_loss": 0.27125454316680336,
+                "decisions": 1313
+              },
+              "rho": {
+                "log_loss": 0.2819787986116925,
+                "decisions": 1313
+              }
+            }
+          }
+        }
+      },
+      "v2_log_loss_improvement": -0.09186869578127038,
+      "gate": "diagnostic only; repeat across seeds before enabling v2 RL"
+    }
+  ],
+  "artifacts": {
+    "archive": {
+      "name": "guanzero-evidence.tar.gz",
+      "bytes": 8896927,
+      "sha256": "9bc07b5fe19c90447bba200d29580a306c2932326e324788ef56dec879bf822f"
+    },
+    "members": 1787,
+    "checkpoints": {
+      "pilot/final.pt": {
+        "bytes": 31724059,
+        "sha256": "74b4365acc3e423e827c3f40d971081227fda04f7f5a198d1aa0c27239c2dcb1"
+      },
+      "pilot/stage1.pt": {
+        "bytes": 31723803,
+        "sha256": "eaf3e19d80b648bcbc9c6e6d5e301d80c2793ee0f9980b7b9be9c6c9ec2bd82c"
+      },
+      "pilot/after-sigterm.pt": {
+        "bytes": 31724059,
+        "sha256": "2e892527cfcd1885174bb20795823160f05071a9e9793a4b3d4031d0752b5118"
+      },
+      "pilot/checkpoints/step-000000000.pt": {
+        "bytes": 12338085,
+        "sha256": "9cd0b71154c72a3587bc3175e39bda9c766571f564316becfb5dbddf02d01ab5"
+      },
+      "gpu-preflight/latest.pt": {
+        "bytes": 31724059,
+        "sha256": "2e079b61e66f4b6a3fd89a4023037109aeb102b74d119de6a8dd879d243db95b"
+      }
+    }
+  },
+  "evidence_boundary": "Internal house-rule evaluation against local greedy and own checkpoint; external M1 gate remains unverified.",
+  "cleanup": {
+    "confirmed_gone": true,
+    "confirmed_at_epoch": 1790034524.5950642,
+    "wall_hours": 0.605232658121321,
+    "conservative_estimated_cost_usd": 0.602782906886068,
+    "reported_balance_decrease_usd": 0.5753752160000012,
+    "provider_current_spend_per_hr": 0,
+    "remaining_pod_count": 0,
+    "checked_at_epoch": 1790034601.864707
+  }
+}

@@ -349,6 +349,10 @@ All verified by `test_gd_reference.py`. `W` means a wild card in prose. Keys are
 | T-TRB-04 | level 5, receiver holds `S5 S3 DT SJ` | may return `S3` or `DT`. The level card `S5` is excluded. |
 | T-TRB-05 | double tribute, Banker 0, both cards of power 13 | seat 3 pays the Banker and leads, seat 1 pays the Follower |
 | T-TRB-06 | double tribute, Banker 0, seat 1 gives power 14, seat 3 gives 13 | seat 1 pays the Banker and leads |
+| T-OBS-01 | Seat 3 tributes `S9` to 0; seat 0 returns that `S9` | Known-holdings feature marks `S9` at 0 before the return, and only at 3 afterward. |
+| T-OBS-02 | Same exchange, but seat 0 privately already held another `S9` | After returning one copy, the remaining private copy is not marked as publicly known. |
+| T-OBS-03 | Seat 3 tributes `S9` to 0; seat 0 returns `S3`; seat 3 plays `S4`, then 0 plays `S9` | The different return preserves both known holdings. Playing `S4` preserves known `S3`; playing `S9` removes its guarantee. |
+| T-OBS-04 | Seat 0 privately holds `S9`, receives another `S9`, returns `S3`, then plays one `S9` | One physical copy remains, but no publicly guaranteed copy remains. |
 | T-MATCH-01 to 06 | match bookkeeping cases in `test_match_bookkeeping` | as asserted there, matching T-FLOW-09 and T-FLOW-11 to 13 |
 
 ### Flow scenarios to script in the engine tests

@@ -22,9 +22,24 @@ using namespace gd;
 
 namespace {
 
+void require_range(int value, int low, int high, const char* field) {
+  if (value < low || value > high)
+    throw py::value_error(std::string(field) + " outside valid range");
+}
+
+void require_size(size_t actual, size_t expected, const char* field) {
+  if (actual != expected)
+    throw py::value_error(std::string(field) + " has incorrect length");
+}
+
 Hand hand_from(const std::vector<int>& cs) {
   Hand h;
-  for (int c : cs) h.add(static_cast<CardId>(c));
+  for (int c : cs) {
+    require_range(c, 0, kNumCardIds - 1, "card id");
+    if (h.count(static_cast<CardId>(c)) >= 2)
+      throw py::value_error("a hand cannot contain more than two copies of a card");
+    h.add(static_cast<CardId>(c));
+  }
   return h;
 }
 
@@ -76,11 +91,14 @@ int count_finished(const std::array<int8_t, 4>& order) {
 }
 
 template <typename T>
-py::array_t<T> view_of(const std::span<const T>& s) {
+py::array_t<T> view_of(const std::span<const T>& s, const DecisionBatch& batch) {
   // A read-only view that aliases the engine's own buffers, as DESIGN.md 5.3
   // requires. Valid until the next pending() or step().
-  return py::array_t<T>({static_cast<py::ssize_t>(s.size())},
-                        {static_cast<py::ssize_t>(sizeof(T))}, s.data(), py::cast(1));
+  auto a = py::array_t<T>({static_cast<py::ssize_t>(s.size())},
+                         {static_cast<py::ssize_t>(sizeof(T))}, s.data(),
+                         py::cast(&batch, py::return_value_policy::reference));
+  a.attr("setflags")(false);
+  return a;
 }
 
 }  // namespace
@@ -171,33 +189,48 @@ PYBIND11_MODULE(_gd_core, m) {
             return out;
           },
           [](DealSpec& d, const std::vector<std::vector<int>>& hs) {
-            for (size_t i = 0; i < 4 && i < hs.size(); ++i) d.hands[i] = hand_from(hs[i]);
+            require_size(hs.size(), 4, "hands");
+            std::array<Hand, 4> hands;
+            for (size_t i = 0; i < 4; ++i) hands[i] = hand_from(hs[i]);
+            d.hands = hands;
           })
       .def_property("level", [](const DealSpec& d) { return int(d.level); },
-                    [](DealSpec& d, int v) { d.level = int8_t(v); })
+                    [](DealSpec& d, int v) { require_range(v, 0, 12, "level"); d.level = int8_t(v); })
       .def_property("team_levels",
           [](const DealSpec& d) { return std::vector<int>{d.team_levels[0], d.team_levels[1]}; },
           [](DealSpec& d, const std::vector<int>& v) {
+            require_size(v.size(), 2, "team_levels");
+            for (int x : v) require_range(x, 0, 12, "team level");
             d.team_levels = {int8_t(v[0]), int8_t(v[1])};
           })
       .def_property("fails",
           [](const DealSpec& d) { return std::vector<int>{d.fails[0], d.fails[1]}; },
-          [](DealSpec& d, const std::vector<int>& v) { d.fails = {int8_t(v[0]), int8_t(v[1])}; })
+          [](DealSpec& d, const std::vector<int>& v) {
+            require_size(v.size(), 2, "fails");
+            for (int x : v) require_range(x, 0, 127, "fails");
+            d.fails = {int8_t(v[0]), int8_t(v[1])};
+          })
       .def_property("owner", [](const DealSpec& d) { return int(d.owner); },
-                    [](DealSpec& d, int v) { d.owner = int8_t(v); })
+                    [](DealSpec& d, int v) { require_range(v, -1, 1, "owner"); d.owner = int8_t(v); })
       .def_property("leader", [](const DealSpec& d) { return int(d.leader); },
-                    [](DealSpec& d, int v) { d.leader = int8_t(v); })
+                    [](DealSpec& d, int v) { require_range(v, -1, 3, "leader"); d.leader = int8_t(v); })
       .def_property("prev_order",
           [](const DealSpec& d) {
             return std::vector<int>{d.prev_order[0], d.prev_order[1],
                                     d.prev_order[2], d.prev_order[3]};
           },
           [](DealSpec& d, const std::vector<int>& v) {
+            require_size(v.size(), 4, "prev_order");
+            if (std::set<int>(v.begin(), v.end()) != std::set<int>{0, 1, 2, 3})
+              throw py::value_error("prev_order must be a permutation of seats 0..3");
             for (int i = 0; i < 4; ++i) d.prev_order[i] = int8_t(v[i]);
             d.has_prev = true;
           });
 
   py::class_<RoundResult>(m, "RoundResult")
+      .def_readonly("env_id", &RoundResult::env_id)
+      .def_readonly("match_id", &RoundResult::match_id)
+      .def_readonly("round_index", &RoundResult::round_index)
       .def_property_readonly("order", [](const RoundResult& r) {
         return std::vector<int>{r.order[0], r.order[1], r.order[2], r.order[3]};
       })
@@ -240,10 +273,12 @@ PYBIND11_MODULE(_gd_core, m) {
                                 s.round.order[2], s.round.order[3]};
       })
       .def("hand", [](const MatchState& s, int seat) {
+        require_range(seat, 0, 3, "seat");
         const auto v = s.round.hands[seat].to_vector();
         return std::vector<int>(v.begin(), v.end());
       }, py::arg("seat"))
       .def("played", [](const MatchState& s, int seat) {
+        require_range(seat, 0, 3, "seat");
         const auto v = s.round.played[seat].to_vector();
         return std::vector<int>(v.begin(), v.end());
       }, py::arg("seat"))
@@ -260,6 +295,7 @@ PYBIND11_MODULE(_gd_core, m) {
         return s;
       }, py::arg("blob"))
       .def("observation", [](const MatchState& s, int seat) {
+        require_range(seat, 0, 3, "seat");
         py::array_t<float> out(kObsDim);
         encode_observation(s, seat, std::span<float>(out.mutable_data(), kObsDim));
         return out;
@@ -287,6 +323,7 @@ PYBIND11_MODULE(_gd_core, m) {
         return r;
       }, py::arg("state"))
       .def("encode_action", [](const Engine&, const Action& a, const MatchState& s, int seat) {
+        require_range(seat, 0, 3, "seat");
         py::array_t<float> out(kActDim);
         encode_action(a, s.round, seat, std::span<float>(out.mutable_data(), kActDim));
         return out;
@@ -404,42 +441,75 @@ PYBIND11_MODULE(_gd_core, m) {
   py::class_<DecisionBatch>(m, "DecisionBatch")
       .def_readonly("rows", &DecisionBatch::rows)
       .def_property_readonly("obs", [](const DecisionBatch& b) {
-        py::array_t<float> a = view_of(b.obs);
-        a.resize({b.rows, kObsDim});
+        py::array_t<float> a = view_of(b.obs, b);
+        a.resize({static_cast<int>(b.obs.size() / kObsDim), kObsDim});
         return a;
       })
       .def_property_readonly("cand", [](const DecisionBatch& b) {
-        py::array_t<float> a = view_of(b.cand);
+        py::array_t<float> a = view_of(b.cand, b);
         a.resize({static_cast<py::ssize_t>(b.cand.size() / kActDim), py::ssize_t(kActDim)});
         return a;
       })
-      .def_property_readonly("offsets", [](const DecisionBatch& b) { return view_of(b.offsets); })
-      .def_property_readonly("env_id", [](const DecisionBatch& b) { return view_of(b.env_id); })
-      .def_property_readonly("seat", [](const DecisionBatch& b) { return view_of(b.seat); })
-      .def_property_readonly("phase", [](const DecisionBatch& b) { return view_of(b.phase); });
+      .def_property_readonly("offsets", [](const DecisionBatch& b) { return view_of(b.offsets, b); })
+      .def_property_readonly("env_id", [](const DecisionBatch& b) { return view_of(b.env_id, b); })
+      .def_property_readonly("seat", [](const DecisionBatch& b) { return view_of(b.seat, b); })
+      .def_property_readonly("phase", [](const DecisionBatch& b) { return view_of(b.phase, b); })
+      .def_property_readonly("round_index", [](const DecisionBatch& b) { return view_of(b.round_index, b); })
+      .def_property_readonly("match_id", [](const DecisionBatch& b) { return view_of(b.match_id, b); })
+      .def_property_readonly("greedy_choice", [](const DecisionBatch& b) { return view_of(b.greedy_choice, b); })
+      .def_property_readonly("hidden_counts", [](const DecisionBatch& b) {
+        auto a = view_of(b.hidden_counts, b);
+        a.resize({b.rows, 3, kNumCardIds});
+        return a;
+      });
+
+  py::class_<PublicActionEvent>(m, "PublicActionEvent")
+      .def_readonly("env_id", &PublicActionEvent::env_id)
+      .def_readonly("match_id", &PublicActionEvent::match_id)
+      .def_readonly("round_index", &PublicActionEvent::round_index)
+      .def_readonly("step", &PublicActionEvent::step)
+      .def_readonly("seat", &PublicActionEvent::seat)
+      .def_readonly("phase", &PublicActionEvent::phase)
+      .def_readonly("action", &PublicActionEvent::action)
+      .def_readonly("forced", &PublicActionEvent::forced)
+      .def_readonly("cards_left", &PublicActionEvent::cards_left)
+      .def_property_readonly("encoded_action", [](const PublicActionEvent& event) {
+        py::array_t<float> a(kActDim);
+        std::memcpy(a.mutable_data(), event.encoded_action.data(), sizeof(float) * kActDim);
+        return a;
+      });
 
   py::class_<VecEnv>(m, "VecEnv")
       .def(py::init([](int num_envs, int num_threads, uint64_t seed,
-                       RuleConfig rules, ActionConfig actions, bool encode) {
+                       RuleConfig rules, ActionConfig actions, bool encode,
+                       bool log_public_actions, int log_env_limit) {
              EnvConfig cfg;
              cfg.rules = rules;
              cfg.actions = actions;
              cfg.encode = encode;
+             cfg.log_public_actions = log_public_actions;
+             cfg.log_env_limit = log_env_limit;
              return new VecEnv(num_envs, num_threads, cfg, seed);
            }),
            py::arg("num_envs"), py::arg("num_threads") = 1, py::arg("seed") = 0,
            py::arg("rules") = RuleConfig::house(), py::arg("actions") = ActionConfig{},
-           py::arg("encode") = true)
+           py::arg("encode") = true, py::arg("log_public_actions") = false,
+           py::arg("log_env_limit") = -1)
       .def("reset", [](VecEnv& e, const std::vector<DealSpec>& deals) {
         e.reset(std::span<const DealSpec>(deals.data(), deals.size()));
       }, py::arg("deals") = std::vector<DealSpec>{})
-      .def("pending", &VecEnv::pending)
-      .def("step", [](VecEnv& e, py::array_t<int32_t, py::array::c_style | py::array::forcecast> ch) {
+      .def("pending", &VecEnv::pending, py::keep_alive<0, 1>())
+      .def("step", [](VecEnv& e, py::array_t<int32_t, py::array::c_style> ch) {
+        if (ch.ndim() != 1) throw py::value_error("choices must be a one-dimensional int32 array");
         e.step(std::span<const int32_t>(ch.data(), ch.size()));
-      }, py::arg("choices"))
+      }, py::arg("choices").noconvert())
       .def("drain_finished_rounds", [](VecEnv& e) {
         const auto s = e.drain_finished_rounds();
         return std::vector<RoundResult>(s.begin(), s.end());
+      })
+      .def("drain_public_actions", [](VecEnv& e) {
+        const auto events = e.drain_public_actions();
+        return std::vector<PublicActionEvent>(events.begin(), events.end());
       })
       .def("fork", &VecEnv::fork, py::arg("env_id"), py::arg("copies"))
       .def_property_readonly("num_envs", &VecEnv::num_envs);

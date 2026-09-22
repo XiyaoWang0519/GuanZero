@@ -390,7 +390,7 @@ void Engine::apply_play(MatchState& m, const Action& a) const {
 void Engine::apply_tribute(MatchState& m, const Action& a) const {
   RoundState& r = m.round;
   const int payer = r.to_move;
-  const CardId card = a.cards.to_vector().front();
+  const CardId card = static_cast<CardId>(std::countr_zero(a.cards.has1));
   r.tribute_cards[r.tribute_step] = static_cast<int16_t>(card);
   ++r.tribute_step;
 
@@ -439,7 +439,7 @@ void Engine::apply_tribute(MatchState& m, const Action& a) const {
 void Engine::apply_back_tribute(MatchState& m, const Action& a) const {
   RoundState& r = m.round;
   const int giver = r.to_move;
-  const CardId card = a.cards.to_vector().front();
+  const CardId card = static_cast<CardId>(std::countr_zero(a.cards.has1));
   const int receiver = r.tribute_payers[r.tribute_step];
   r.hands[giver].remove(card);
   r.hands[receiver].add(card);
@@ -485,6 +485,7 @@ void Engine::end_round(MatchState& m, RoundResult& out) const {
   RoundState& r = m.round;
   seal_order(m);
   out = RoundResult{};
+  out.round_index = m.round_index;
   out.order = r.order;
   out.num_out = r.num_out;
   out.round_level = r.level;

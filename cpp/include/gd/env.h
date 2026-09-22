@@ -16,11 +16,14 @@ struct EnvConfig {
   ActionConfig actions{};
   int history_len = 0;      // v2 only, unused in v1
   bool encode = true;       // fill obs and cand buffers
+  bool log_public_actions = false;  // opt-in ordered events, forced passes included
+  int log_env_limit = -1;   // log only env_id < limit; -1 logs all environments
 };
 
 // Flat buffers describing every environment that currently needs a decision.
-// The spans alias the VecEnv's own pinned storage and stay valid until the next
-// call to pending() or step().
+// The spans alias the VecEnv's ordinary CPU storage and stay valid until the
+// next pending(), step(), reset(), or fork(). CUDA callers pin their staging
+// tensors explicitly; std::vector storage is not CUDA-pinned memory.
 struct DecisionBatch {
   std::span<const float> obs;       // [rows, kObsDim]
   std::span<const float> cand;      // [offsets.back(), kActDim]
@@ -28,7 +31,25 @@ struct DecisionBatch {
   std::span<const int32_t> env_id;  // [rows]
   std::span<const int32_t> seat;    // [rows]
   std::span<const int32_t> phase;   // [rows], Phase as int
+  std::span<const int32_t> round_index;   // [rows], zero based within match
+  std::span<const int64_t> match_id;      // [rows], per-environment generation
+  std::span<const int32_t> greedy_choice; // [rows], local candidate index
+  // Privileged supervision only. Never concatenate these into policy input.
+  std::span<const uint8_t> hidden_counts; // [rows, 3, 54], seats +1, +2, +3
   int rows = 0;
+};
+
+struct PublicActionEvent {
+  int32_t env_id = -1;
+  int64_t match_id = 0;
+  int32_t round_index = 0;
+  int32_t step = 0;           // play step before the action; tribute does not increment it
+  int8_t seat = 0;
+  Phase phase = Phase::Play;
+  Action action{};
+  std::array<float, kActDim> encoded_action{}; // tribute private flags always zeroed
+  int32_t cards_left = 0;    // actor's public count after this action
+  bool forced = false;
 };
 
 class VecEnv {
@@ -47,6 +68,8 @@ class VecEnv {
   void step(std::span<const int32_t> choice_index);
   // Rounds finished since the last call.
   std::span<const RoundResult> drain_finished_rounds();
+  // Optional public actions since the previous drain, ordered per environment.
+  std::span<const PublicActionEvent> drain_public_actions();
   // Copy environment `env_id` at its current decision point into `copies`
   // fresh slots. Used for the counterfactual tribute branches of DESIGN.md 8.3
   // and later for endgame search. Returns the new environment ids.

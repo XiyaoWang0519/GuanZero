@@ -20,13 +20,18 @@ standard: if the engine and that document disagree, one of them has a bug.
 ## Build and test
 
 ```sh
-.venv/bin/python -m pip install -r requirements-dev.txt   # once
+.venv/bin/python -m pip install -r requirements-dev.txt -r requirements-train.txt
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ./build/cpp/tests/gd_tests                 # C++ unit tests
 .venv/bin/python -m pytest -q tests oracle # Python suites and oracle
 ./scripts/check.sh                         # everything CI runs
+./scripts/preflight.sh cpu .work/preflight # real learner and checkpoint resume
 ```
+
+First-run configuration, checkpoint evaluation, and the GPU launch procedure
+are in `docs/TRAINING.md`. M1 implementation readiness is tracked separately
+from the playing-strength gate in `docs/M1_TODO.md`.
 
 Sanitizer build. `-DGD_SANITIZE=ON` is address plus undefined; the variable
 also takes an explicit `-fsanitize` list.

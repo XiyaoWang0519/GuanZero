@@ -1,0 +1,24 @@
+{
+  "num_envs": 8,
+  "num_threads": 2,
+  "torch_threads": 1,
+  "rollout_steps": 96,
+  "batch_size": 64,
+  "replay_capacity": 8192,
+  "min_replay": 32,
+  "learn_steps": 2,
+  "max_updates": 4,
+  "max_seconds": 120,
+  "checkpoint_seconds": 30,
+  "tensorboard": false,
+  "log_envs": 4,
+  "log_max_rounds": 32,
+  "model": {
+    "state_width": 64,
+    "state_layers": 2,
+    "action_width": 32,
+    "action_layers": 2,
+    "fusion_width": 32,
+    "fusion_layers": 2
+  }
+}

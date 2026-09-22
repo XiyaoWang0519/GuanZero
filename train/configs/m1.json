@@ -1,0 +1,17 @@
+{
+  "seed": 7,
+  "num_envs": 4096,
+  "num_threads": 8,
+  "torch_threads": 4,
+  "rollout_steps": 32,
+  "batch_size": 2048,
+  "replay_capacity": 262144,
+  "min_replay": 2048,
+  "learn_steps": 64,
+  "max_updates": 100000,
+  "max_seconds": 86400,
+  "checkpoint_seconds": 300,
+  "log_envs": 4,
+  "log_max_rounds": 10000,
+  "tensorboard": true
+}

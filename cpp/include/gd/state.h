@@ -73,7 +73,7 @@ struct MatchState {
   std::array<int8_t, 2> levels{{0, 0}};   // rank index per team
   std::array<int8_t, 2> fails{{0, 0}};    // cumulative failed level-A attempts
   int8_t owner = -1;                      // team whose level this round is played at
-  int8_t round_index = 0;
+  int32_t round_index = 0;              // zero based; long matches can exceed 127
   int8_t winner = -1;                     // team that passed A, -1 while running
   std::array<int8_t, 4> prev_order{{-1, -1, -1, -1}};
   bool has_prev = false;
@@ -99,6 +99,9 @@ struct DealSpec {
 };
 
 struct RoundResult {
+  int32_t env_id = -1;        // set by VecEnv; -1 for a standalone Engine
+  int64_t match_id = 0;       // per-environment generation, incremented on automatic restart
+  int32_t round_index = 0;    // index of the completed round within its match
   std::array<int8_t, 4> order{{-1, -1, -1, -1}};
   int8_t num_out = 0;          // seats that emptied their hands
   int8_t winning_team = -1;

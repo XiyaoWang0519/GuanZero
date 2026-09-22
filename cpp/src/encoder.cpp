@@ -102,7 +102,7 @@ void encode_action(const Action& a, const RoundState& r, int seat,
 
   if (a.type != Type::Tribute && a.type != Type::BackTribute) return;
   if (a.cards.empty()) return;
-  const CardId c = a.cards.to_vector().front();
+  const CardId c = static_cast<CardId>(std::countr_zero(a.cards.has1));
   const Hand& hand = r.hands[seat];
   const HandView v = make_view(hand, r.level);
   const auto sf = sf_relevant_mask(v);
@@ -177,6 +177,9 @@ void encode_observation(const MatchState& m, int seat, std::span<float> dst) {
     if (!r.has_acted[s]) continue;
     encode_action(r.last_action[s], r, s,
                   dst.subspan(kObsLastAction + (rel - 1) * kActDim, kActDim));
+    // A public action carries no private tribute structure from another hand.
+    const int off = kObsLastAction + (rel - 1) * kActDim;
+    std::fill(dst.begin() + off + kActTributeFlags, dst.begin() + off + kActDim, 0.0f);
   }
 
   int phase_index = -1;
@@ -203,15 +206,21 @@ void encode_observation(const MatchState& m, int seat, std::span<float> dst) {
     one_hot(dst, off + 58, rel_of(seat, t.receiver), 4);
   }
 
-  // Cards publicly known to sit in another seat's hand: what tribute gave them
-  // and they have not played since.
+  // Public transfers establish a lower bound on each holding. Returning an
+  // incoming card removes that guarantee, even if an unobserved second copy
+  // actually remains. Process transfers in order: an outgoing unknown copy
+  // must not cancel a copy received later. All tribute precedes public plays.
   for (int rel = 1; rel <= 3; ++rel) {
     const int s = seat_at(seat, rel);
+    std::array<int, kNumCardIds> known{};
     for (int i = 0; i < r.num_tribute_moves; ++i) {
       const TributeMove& t = r.tribute_moves[i];
-      if (t.receiver != s) continue;
-      if (r.played[s].count(t.card)) continue;
-      dst[kObsKnownHoldings + (rel - 1) * 54 + t.card] = 1.0f;
+      if (t.payer == s) known[t.card] = std::max(0, known[t.card] - 1);
+      if (t.receiver == s) ++known[t.card];
+    }
+    for (int c = 0; c < kNumCardIds; ++c) {
+      if (known[c] > r.played[s].count(static_cast<CardId>(c)))
+        dst[kObsKnownHoldings + (rel - 1) * 54 + c] = 1.0f;
     }
   }
 }

@@ -12,6 +12,10 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y ninja-build
           python -m pip install -r requirements-dev.txt
+      - name: Install CPU training dependencies
+        run: |
+          python -m pip install 'torch>=2.9,<3' --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements-train.txt
       - name: Configure and build
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -22,6 +26,8 @@ jobs:
         run: python oracle/test_gd_reference.py
       - name: Python suites
         run: python -m pytest -q tests
+      - name: Training smoke and resume
+        run: PY=python ./scripts/preflight.sh cpu .work/ci-preflight
       - name: Fuzzer
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGD_BUILD_FUZZ=ON
