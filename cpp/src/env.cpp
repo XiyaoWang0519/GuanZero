@@ -2,6 +2,7 @@
 #include "gd/env.h"
 
 #include <algorithm>
+#include <array>
 #include <condition_variable>
 #include <cstring>
 #include <functional>
@@ -101,6 +102,9 @@ struct VecEnv::Impl {
   // Flat batch buffers, reused across iterations.
   std::vector<float> obs, cand;
   std::vector<int32_t> offsets, env_id, seat, phase, round_index, greedy_choice;
+  std::vector<int32_t> styled_choice;
+  std::vector<float> styles;           // [envs, 4, StyleParams::kDim] or empty
+  std::vector<uint64_t> style_rng_base;  // per environment, derived from seed
   std::vector<int64_t> batch_match_id;
   std::vector<uint8_t> hidden_counts;
   std::vector<int> rows_env;                // environment index per row
@@ -119,6 +123,9 @@ struct VecEnv::Impl {
     match_ids.assign(num_envs, 0);
     cands.resize(num_envs);
     waiting.assign(num_envs, 0);
+    style_rng_base.resize(num_envs);
+    uint64_t root = s ^ 0xB0B5EED5B0B5EED5ULL;
+    for (int i = 0; i < num_envs; ++i) style_rng_base[i] = splitmix64(root) | 1ULL;
     finished_shards.resize(std::max(1, pool.size()));
     events.resize(num_envs);
     if (cfg.log_public_actions) engine.set_auto_pass(false);
@@ -251,6 +258,7 @@ DecisionBatch VecEnv::pending() {
   s.round_index.resize(rows);
   s.batch_match_id.resize(rows);
   s.greedy_choice.resize(rows);
+  s.styled_choice.resize(rows);
   s.hidden_counts.resize(size_t(rows) * 3 * kNumCardIds);
   if (s.cfg.encode) {
     s.obs.assign(size_t(rows) * kObsDim, 0.0f);
@@ -271,6 +279,19 @@ DecisionBatch VecEnv::pending() {
       s.batch_match_id[r] = s.match_ids[i];
       uint64_t bot_rng = m.rng; // inspecting a batch must never alter shuffle RNG
       s.greedy_choice[r] = greedy_bot(m, s.cands[i], bot_rng);
+      if (s.styles.empty()) {
+        s.styled_choice[r] = s.greedy_choice[r];
+      } else {
+        StyleParams style;
+        const size_t base = (size_t(i) * 4 + size_t(m.round.to_move)) * StyleParams::kDim;
+        std::memcpy(style.v.data(), s.styles.data() + base,
+                    sizeof(float) * StyleParams::kDim);
+        // A per-environment stream derived from the env seed. Mixing the state
+        // hash keeps the draw reproducible for a given seed and action sequence
+        // without mutating any shared RNG.
+        uint64_t style_rng = s.style_rng_base[i] ^ m.hash();
+        s.styled_choice[r] = styled_bot(m, s.cands[i], style, style_rng);
+      }
       for (int rel = 1; rel <= 3; ++rel)
         for (int card = 0; card < kNumCardIds; ++card)
           s.hidden_counts[(size_t(r) * 3 + rel - 1) * kNumCardIds + card] =
@@ -296,6 +317,7 @@ DecisionBatch VecEnv::pending() {
   b.round_index = s.round_index;
   b.match_id = s.batch_match_id;
   b.greedy_choice = s.greedy_choice;
+  b.styled_choice = s.styled_choice;
   b.hidden_counts = s.hidden_counts;
   s.batch_ready = true;
   return b;
@@ -323,6 +345,16 @@ void VecEnv::step(std::span<const int32_t> choice_index) {
   s.batch_ready = false;
 }
 
+void VecEnv::set_styles(std::span<const float> styles) {
+  Impl& s = *impl_;
+  const size_t want = s.states.size() * 4 * StyleParams::kDim;
+  if (styles.size() != want)
+    throw std::invalid_argument("styles must be [num_envs, 4, STYLE_DIM] float32");
+  s.styles.assign(styles.begin(), styles.end());
+}
+
+void VecEnv::clear_styles() { impl_->styles.clear(); }
+
 std::span<const RoundResult> VecEnv::drain_finished_rounds() {
   Impl& s = *impl_;
   s.drained.swap(s.finished);
@@ -347,6 +379,20 @@ std::vector<int> VecEnv::fork(int env_id, int copies) {
     s.cands.push_back(s.cands[env_id]);
     s.waiting.push_back(s.waiting[env_id]);
     s.events.emplace_back();
+    // A fresh stream for the copy that leaves the source environment's own
+    // stream untouched, so forking never changes the parent's decisions.
+    uint64_t derived = s.style_rng_base[env_id] + uint64_t(c) + 1ULL;
+    s.style_rng_base.push_back(splitmix64(derived) | 1ULL);
+    if (!s.styles.empty()) {
+      constexpr size_t kRow = 4 * StyleParams::kDim;
+      const std::array<float, kRow> row = [&] {
+        std::array<float, kRow> out{};
+        std::memcpy(out.data(), s.styles.data() + size_t(env_id) * kRow,
+                    sizeof(float) * kRow);
+        return out;
+      }();
+      s.styles.insert(s.styles.end(), row.begin(), row.end());
+    }
     ids.push_back(id);
   }
   s.batch_ready = false;

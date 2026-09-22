@@ -6,6 +6,7 @@
 #include <span>
 #include <vector>
 
+#include "gd/bots.h"
 #include "gd/encoder.h"
 #include "gd/state.h"
 
@@ -34,6 +35,9 @@ struct DecisionBatch {
   std::span<const int32_t> round_index;   // [rows], zero based within match
   std::span<const int64_t> match_id;      // [rows], per-environment generation
   std::span<const int32_t> greedy_choice; // [rows], local candidate index
+  // Local candidate index of the styled bot under this environment's and seat's
+  // style. Equal to greedy_choice while no styles are set.
+  std::span<const int32_t> styled_choice; // [rows]
   // Privileged supervision only. Never concatenate these into policy input.
   std::span<const uint8_t> hidden_counts; // [rows, 3, 54], seats +1, +2, +3
   int rows = 0;
@@ -66,6 +70,12 @@ class VecEnv {
   DecisionBatch pending();
   // One choice index per pending row, in the order pending() returned them.
   void step(std::span<const int32_t> choice_index);
+  // Per-seat styles for styled_choice, laid out [num_envs, 4, StyleParams::kDim]
+  // row-major. Copied into storage the environment owns. Forked slots inherit
+  // the style rows of their source environment.
+  void set_styles(std::span<const float> styles);
+  void clear_styles();
+
   // Rounds finished since the last call.
   std::span<const RoundResult> drain_finished_rounds();
   // Optional public actions since the previous drain, ordered per environment.

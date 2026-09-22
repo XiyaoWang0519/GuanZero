@@ -2,6 +2,7 @@
 #include "gd/bots.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 #include "gd/movegen.h"
@@ -44,6 +45,38 @@ int opponent_pressure(const MatchState& m) {
   }
   return least == std::numeric_limits<int>::max() ? 99 : least;
 }
+
+// How high this play sits inside its own ordering, normalised to [0, 1].
+// Single, Pair, Triple, FullHouse and Bomb are keyed by power; Straight, Tube,
+// Plate and StraightFlush are keyed by the sequence window (RULES.md 4). The
+// two orderings are never mixed: each type is normalised by its own span.
+double play_rank(const Action& a) {
+  if (is_bomb_class(a.type)) return 1.0;   // a bomb is overwhelming by class
+  switch (a.type) {
+    case Type::Single:
+    case Type::Pair:
+    case Type::Triple:
+    case Type::FullHouse:
+      return double(a.key) / double(kNumPowers - 1);
+    case Type::Straight:
+      return double(a.key) / double(kNumStraightWindows - 1);
+    case Type::Tube:
+      return double(a.key) / double(kNumTubeWindows - 1);
+    case Type::Plate:
+      return double(a.key) / double(kNumPlateWindows - 1);
+    default:
+      return 0.0;
+  }
+}
+
+// Weights of the style terms, in internal score units. StyleParams::kScoreUnit
+// is one logit, so a type preference of 1 is one logit by construction; the
+// lead and follow weights are deliberately smaller and larger than the key term
+// of play_cost so that the biases can reorder plays without ever outranking
+// emptying the hand.
+constexpr double kLeadWeight = 5'000.0;
+constexpr double kFollowWeight = 60'000.0;
+constexpr double kOutBonus = 10'000'000.0;
 
 }  // namespace
 
@@ -91,6 +124,113 @@ int greedy_bot(const MatchState& m, const std::vector<Action>& cands, uint64_t& 
   for (size_t i = 0; i < cands.size(); ++i) {
     const int64_t cost = play_cost(cands[i]);
     if (cost < best_cost) { best_cost = cost; best = static_cast<int>(i); }
+  }
+  return best;
+}
+
+int styled_bot(const MatchState& m, const std::vector<Action>& cands,
+               const StyleParams& style, uint64_t& rng) {
+  if (cands.empty()) return 0;
+  if (m.round.phase != Phase::Play) return tribute_bot(m, cands, rng);
+
+  const int self = m.round.to_move;
+  const int partner = (self + 2) % 4;
+  const bool leading = m.round.top.is_pass();
+  const bool partner_holds_top = !leading && m.round.holder == partner;
+  // The sentinel of a round where no opponent is still active is clamped to a
+  // full hand, so that the bomb gate spans the whole reachable range.
+  const int pressure = std::min(opponent_pressure(m), kHandSize);
+  const int partner_cards = m.round.hands[partner].size();
+
+  // bomb_threshold 1 unlocks the bomb class only at pressure <= 2, which is the
+  // greedy rule; 0 unlocks it at every pressure.
+  const double bomb_limit =
+      double(1.0f - style.bomb_threshold()) * double(kHandSize) + 2.0;
+  // partner_weight 1 demands more cards than a hand can hold, so the partner is
+  // never overtaken; 0 demands none.
+  const double partner_gate =
+      double(style.partner_weight()) * double(kHandSize + 1);
+
+  const auto allowed = [&](const Action& a, bool out) {
+    if (out) return true;                     // going out is always allowed
+    if (partner_holds_top && !(double(partner_cards) >= partner_gate)) return false;
+    if (is_bomb_class(a.type) && !(double(pressure) <= bomb_limit)) return false;
+    return true;
+  };
+
+  const auto score_of = [&](const Action& a, bool out) {
+    double s = -double(play_cost(a));
+    if (out) s += kOutBonus;
+    if (leading) {
+      s += double(style.type_pref(a.type)) * StyleParams::kScoreUnit;
+      s += double(style.lead_high_bias()) * kLeadWeight * play_rank(a);
+    } else {
+      s += double(style.follow_aggression()) * kFollowWeight * play_rank(a);
+    }
+    return s;
+  };
+
+  // Pass 1: the admissible set and its best score. A pass is never scored; like
+  // greedy_bot, the styled bot plays whenever anything is admissible.
+  int pass_index = -1;
+  int best = -1;
+  double best_score = -std::numeric_limits<double>::infinity();
+  int considered = 0;
+  for (size_t i = 0; i < cands.size(); ++i) {
+    const Action& a = cands[i];
+    if (a.is_pass()) { pass_index = static_cast<int>(i); continue; }
+    const bool out = empties_hand(m, a);
+    if (!allowed(a, out)) continue;
+    ++considered;
+    const double s = score_of(a, out);
+    if (s > best_score) { best_score = s; best = static_cast<int>(i); }
+  }
+
+  // Nothing admissible: pass if we may, otherwise take the best of everything.
+  bool fallback = false;
+  if (best < 0) {
+    if (pass_index >= 0) return pass_index;
+    fallback = true;
+    considered = 0;
+    for (size_t i = 0; i < cands.size(); ++i) {
+      const double s = score_of(cands[i], empties_hand(m, cands[i]));
+      ++considered;
+      if (s > best_score) { best_score = s; best = static_cast<int>(i); }
+    }
+  }
+  if (best < 0) return 0;
+
+  const double temp = double(style.temperature());
+  if (!(temp > 0.0) || considered < 2) return best;
+
+  // Softmax over the same scores, in logit units. Two more passes keep the hot
+  // loop free of allocation: one for the partition, one for the draw.
+  const double scale = StyleParams::kScoreUnit * temp;
+  const auto weight = [&](size_t i) {
+    const Action& a = cands[i];
+    const bool out = empties_hand(m, a);
+    const double e = (score_of(a, out) - best_score) / scale;
+    return e < -80.0 ? 0.0 : std::exp(e);
+  };
+  const auto usable = [&](size_t i) {
+    if (fallback) return true;
+    const Action& a = cands[i];
+    if (a.is_pass()) return false;
+    return allowed(a, empties_hand(m, a));
+  };
+
+  double total = 0.0;
+  for (size_t i = 0; i < cands.size(); ++i)
+    if (usable(i)) total += weight(i);
+  if (!(total > 0.0)) return best;
+
+  const double draw =
+      double(next_random(rng) >> 11) * (1.0 / 9007199254740992.0) * total;
+  double acc = 0.0;
+  for (size_t i = 0; i < cands.size(); ++i) {
+    if (!usable(i)) continue;
+    acc += weight(i);
+    if (draw < acc) return static_cast<int>(i);
   }
   return best;
 }

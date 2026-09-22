@@ -43,6 +43,14 @@ Hand hand_from(const std::vector<int>& cs) {
   return h;
 }
 
+// Play-type name to its index in the engine's enum, for the style vector's
+// per-type preference block.
+int type_index(const std::string& name) {
+  for (int i = 0; i < static_cast<int>(Type::kNumTypes); ++i)
+    if (name == type_name(static_cast<Type>(i))) return i;
+  throw py::value_error("unknown play type '" + name + "'");
+}
+
 // The oracle's key shape: a plain int, except Bomb which is (size, power).
 py::object key_object(Type t, int key, int bomb_size) {
   if (t == Type::Bomb) return py::make_tuple(bomb_size, key);
@@ -108,6 +116,13 @@ PYBIND11_MODULE(_gd_core, m) {
   m.attr("OBS_DIM") = kObsDim;
   m.attr("ACT_DIM") = kActDim;
   m.attr("NUM_ABSTRACT") = kNumAbstract;
+  m.attr("STYLE_DIM") = StyleParams::kDim;
+  m.attr("STYLE_BOMB_THRESHOLD") = StyleParams::kBombThreshold;
+  m.attr("STYLE_TYPE_PREF") = StyleParams::kTypePref;
+  m.attr("STYLE_FOLLOW_AGGRESSION") = StyleParams::kFollowAggression;
+  m.attr("STYLE_LEAD_HIGH_BIAS") = StyleParams::kLeadHighBias;
+  m.attr("STYLE_PARTNER_WEIGHT") = StyleParams::kPartnerWeight;
+  m.attr("STYLE_TEMPERATURE") = StyleParams::kTemperature;
   // Layout constants, so that the golden tests pin the offsets from Python too.
   m.attr("ACT_CARDS1") = kActCards1;
   m.attr("ACT_CARDS2") = kActCards2;
@@ -333,8 +348,61 @@ PYBIND11_MODULE(_gd_core, m) {
         e.legal_actions(s, out);
         uint64_t rng = seed;
         return greedy_bot(s, out, rng);
-      }, py::arg("state"), py::arg("seed") = 0);
+      }, py::arg("state"), py::arg("seed") = 0)
+      .def("styled", [](const Engine& e, const MatchState& s,
+                        py::array_t<float, py::array::c_style | py::array::forcecast> style,
+                        uint64_t seed) {
+        require_size(size_t(style.size()), size_t(StyleParams::kDim), "style vector");
+        StyleParams p;
+        std::memcpy(p.v.data(), style.data(), sizeof(float) * StyleParams::kDim);
+        std::vector<Action> out;
+        e.legal_actions(s, out);
+        uint64_t rng = seed;
+        return styled_bot(s, out, p, rng);
+      }, py::arg("state"), py::arg("style"), py::arg("seed") = 0);
 
+
+  // ---- styled bot ---------------------------------------------------------
+  py::class_<StyleParams>(m, "StyleParams")
+      .def(py::init<>())
+      .def_static("neutral", &StyleParams::neutral)
+      .def_static("from_array",
+                  [](py::array_t<float, py::array::c_style | py::array::forcecast> a) {
+                    require_size(size_t(a.size()), size_t(StyleParams::kDim), "style vector");
+                    StyleParams p;
+                    std::memcpy(p.v.data(), a.data(), sizeof(float) * StyleParams::kDim);
+                    return p;
+                  }, py::arg("values"))
+      .def("to_array", [](const StyleParams& p) {
+        py::array_t<float> a(StyleParams::kDim);
+        std::memcpy(a.mutable_data(), p.v.data(), sizeof(float) * StyleParams::kDim);
+        return a;
+      })
+      // A writable float32 view of the style's own storage, so that callers can
+      // sample styles in place. Valid while the StyleParams object lives.
+      .def_property_readonly("v", [](StyleParams& p) {
+        return py::array_t<float>({py::ssize_t(StyleParams::kDim)},
+                                  {py::ssize_t(sizeof(float))}, p.v.data(),
+                                  py::cast(&p, py::return_value_policy::reference));
+      })
+      .def_property_readonly_static("DIM", [](py::object) { return StyleParams::kDim; })
+      .def_property("bomb_threshold", &StyleParams::bomb_threshold,
+                    [](StyleParams& p, float x) { p.v[StyleParams::kBombThreshold] = x; })
+      .def_property("follow_aggression", &StyleParams::follow_aggression,
+                    [](StyleParams& p, float x) { p.v[StyleParams::kFollowAggression] = x; })
+      .def_property("lead_high_bias", &StyleParams::lead_high_bias,
+                    [](StyleParams& p, float x) { p.v[StyleParams::kLeadHighBias] = x; })
+      .def_property("partner_weight", &StyleParams::partner_weight,
+                    [](StyleParams& p, float x) { p.v[StyleParams::kPartnerWeight] = x; })
+      .def_property("temperature", &StyleParams::temperature,
+                    [](StyleParams& p, float x) { p.v[StyleParams::kTemperature] = x; })
+      .def("type_pref", [](const StyleParams& p, const std::string& name) {
+        return p.v[StyleParams::kTypePref + type_index(name)];
+      }, py::arg("type"))
+      .def("set_type_pref", [](StyleParams& p, const std::string& name, float x) {
+        p.v[StyleParams::kTypePref + type_index(name)] = x;
+      }, py::arg("type"), py::arg("value"))
+      .def("__len__", [](const StyleParams&) { return StyleParams::kDim; });
 
   // ---- cards and orderings ------------------------------------------------
   m.def("card_id", &card_from_string, py::arg("text"));
@@ -457,6 +525,7 @@ PYBIND11_MODULE(_gd_core, m) {
       .def_property_readonly("round_index", [](const DecisionBatch& b) { return view_of(b.round_index, b); })
       .def_property_readonly("match_id", [](const DecisionBatch& b) { return view_of(b.match_id, b); })
       .def_property_readonly("greedy_choice", [](const DecisionBatch& b) { return view_of(b.greedy_choice, b); })
+      .def_property_readonly("styled_choice", [](const DecisionBatch& b) { return view_of(b.styled_choice, b); })
       .def_property_readonly("hidden_counts", [](const DecisionBatch& b) {
         auto a = view_of(b.hidden_counts, b);
         a.resize({b.rows, 3, kNumCardIds});
@@ -511,6 +580,19 @@ PYBIND11_MODULE(_gd_core, m) {
         const auto events = e.drain_public_actions();
         return std::vector<PublicActionEvent>(events.begin(), events.end());
       })
+      .def("set_styles", [](VecEnv& e, py::array_t<float, py::array::c_style> styles) {
+        if (styles.ndim() != 3 || styles.shape(1) != 4 ||
+            styles.shape(2) != StyleParams::kDim)
+          throw py::value_error("styles must be a float32 array [num_envs, 4, STYLE_DIM]");
+        if (styles.shape(0) != e.num_envs())
+          throw py::value_error("styles must have one row per environment");
+        e.set_styles(std::span<const float>(styles.data(), size_t(styles.size())));
+      }, py::arg("styles").noconvert())
+      .def("clear_styles", &VecEnv::clear_styles)
+      .def("row_actions", [](const VecEnv& e, int row) {
+        const auto& actions = e.row_actions(row);
+        return std::vector<Action>(actions.begin(), actions.end());
+      }, py::arg("row"))
       .def("fork", &VecEnv::fork, py::arg("env_id"), py::arg("copies"))
       .def_property_readonly("num_envs", &VecEnv::num_envs);
 }
