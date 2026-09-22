@@ -1,0 +1,448 @@
+{
+  "schema_version": 1,
+  "task": "STAGE_B_TODO B0",
+  "protocol": "internal-house",
+  "rules": "gd.RuleConfig.house()",
+  "checkpoint": {
+    "path": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod/artifacts/pilot/final.pt",
+    "name": "final.pt@8a8e2b08dec2e739",
+    "model_digest": "8a8e2b08dec2e73998092a67cbc25c26df75b4c0d2f02fd0a791d5d16cd4f745",
+    "file_sha256": "74b4365acc3e423e827c3f40d971081227fda04f7f5a198d1aa0c27239c2dcb1",
+    "training_seed": 7,
+    "action_mode": "canonical",
+    "tribute": "heuristic",
+    "selection": "argmax Q, margin 0"
+  },
+  "seeds": {
+    "deal_seed": 20260922,
+    "duplicate_play_seed": 20260922,
+    "duplicate_play_seed_rule": "deal i uses seed + i",
+    "match_seed": 20260922,
+    "match_seed_rule": "match m uses seed + m; agent team is m % 2",
+    "bootstrap_seed": 20260922
+  },
+  "requested": {
+    "deals": 10000,
+    "matches": 1000,
+    "bootstrap_samples": 2000
+  },
+  "host": {
+    "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "cpu": "Apple M4 Pro",
+    "logical_cpus": 14,
+    "python": "3.14.4",
+    "torch": "2.14.0",
+    "torch_threads": 1,
+    "cuda_available": false,
+    "git_commit": "88827093433ce557a3b8842e3ba6fda7721dd289"
+  },
+  "interval_definitions": {
+    "duplicate": "95% percentile bootstrap over whole deals of mean net levels per round (agent minus opponent)",
+    "match": "95% Wilson score interval of agent match win rate"
+  },
+  "style_divergence_from_greedy": {
+    "rounds": 300,
+    "seed": 20260922,
+    "decisions": 21523,
+    "definition": "fraction of greedy self-play decisions where the style picks another action",
+    "styles": {
+      "bomb-happy": {
+        "differs": 2005,
+        "rate": 0.09315615852808623
+      },
+      "bomb-shy": {
+        "differs": 59,
+        "rate": 0.0027412535427217394
+      },
+      "high-lead": {
+        "differs": 3288,
+        "rate": 0.15276680760117084
+      },
+      "low-lead": {
+        "differs": 1395,
+        "rate": 0.06481438461181062
+      }
+    }
+  },
+  "pairs": {
+    "greedy": {
+      "duplicate": {
+        "deals": 10000,
+        "rounds": 20000,
+        "score_definition": "(A net level gain in leg 1 + A net level gain in leg 2) / 2",
+        "mean_net_levels_per_round": 1.51605,
+        "bootstrap_95_ci": [
+          1.4929475,
+          1.5404550000000001
+        ],
+        "mean_pair_difference": 3.0321,
+        "banker_rate": 0.7923,
+        "double_win_rate": 0.4697,
+        "opponent_double_win_rate": 0.06725,
+        "mean_finish_order_award_per_round": 1.91705
+      },
+      "seconds": 55.81155962499906,
+      "match": {
+        "matches": 1000,
+        "wins": 995,
+        "win_rate": 0.995,
+        "wilson_95_ci": [
+          0.9883490446266249,
+          0.9978624644726756
+        ],
+        "rounds": 7608,
+        "banker_rate": 0.8293901156677181,
+        "double_win_rate": 0.5574395373291272,
+        "opponent_double_win_rate": 0.05625657202944269,
+        "mean_finish_order_award_per_round": 2.108832807570978,
+        "net_level_definition": "signed DMC return; an owned A Banker/Dweller result returns zero to both teams",
+        "mean_net_levels_per_round": 1.767875920084122
+      },
+      "opponent": {
+        "spec": "greedy",
+        "name": "greedy",
+        "kind": "greedy"
+      }
+    },
+    "styled:bomb-happy": {
+      "duplicate": {
+        "deals": 10000,
+        "rounds": 20000,
+        "score_definition": "(A net level gain in leg 1 + A net level gain in leg 2) / 2",
+        "mean_net_levels_per_round": 0.78175,
+        "bootstrap_95_ci": [
+          0.7542,
+          0.8078
+        ],
+        "mean_pair_difference": 1.5635,
+        "banker_rate": 0.663,
+        "double_win_rate": 0.338,
+        "opponent_double_win_rate": 0.1402,
+        "mean_finish_order_award_per_round": 1.49635
+      },
+      "seconds": 56.493616541993106,
+      "match": {
+        "matches": 1000,
+        "wins": 902,
+        "win_rate": 0.902,
+        "wilson_95_ci": [
+          0.882005297700964,
+          0.9189179884766496
+        ],
+        "rounds": 9515,
+        "banker_rate": 0.6929059379926432,
+        "double_win_rate": 0.4098791382028376,
+        "opponent_double_win_rate": 0.13399894902785076,
+        "mean_finish_order_award_per_round": 1.6579085654230163,
+        "net_level_definition": "signed DMC return; an owned A Banker/Dweller result returns zero to both teams",
+        "mean_net_levels_per_round": 0.9885444035733053
+      },
+      "opponent": {
+        "spec": "styled:bomb-happy",
+        "name": "styled:bomb-happy",
+        "kind": "styled",
+        "style_changes_from_neutral": {
+          "bomb_threshold": 0.0
+        },
+        "style_vector": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ]
+      }
+    },
+    "styled:bomb-shy": {
+      "duplicate": {
+        "deals": 10000,
+        "rounds": 20000,
+        "score_definition": "(A net level gain in leg 1 + A net level gain in leg 2) / 2",
+        "mean_net_levels_per_round": 1.71605,
+        "bootstrap_95_ci": [
+          1.69449875,
+          1.7381
+        ],
+        "mean_pair_difference": 3.4321,
+        "banker_rate": 0.82745,
+        "double_win_rate": 0.51545,
+        "opponent_double_win_rate": 0.0542,
+        "mean_finish_order_award_per_round": 2.04595
+      },
+      "seconds": 58.39208950000466,
+      "match": {
+        "matches": 1000,
+        "wins": 998,
+        "win_rate": 0.998,
+        "wilson_95_ci": [
+          0.9927371921365079,
+          0.9994513564118793
+        ],
+        "rounds": 7091,
+        "banker_rate": 0.8646171202933296,
+        "double_win_rate": 0.6119024115075448,
+        "opponent_double_win_rate": 0.040473840078973346,
+        "mean_finish_order_award_per_round": 2.2453814694683403,
+        "net_level_definition": "signed DMC return; an owned A Banker/Dweller result returns zero to both teams",
+        "mean_net_levels_per_round": 1.9839232830348328
+      },
+      "opponent": {
+        "spec": "styled:bomb-shy",
+        "name": "styled:bomb-shy",
+        "kind": "styled",
+        "style_changes_from_neutral": {
+          "bomb_threshold": 1.1
+        },
+        "style_vector": [
+          1.100000023841858,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ]
+      }
+    },
+    "styled:high-lead": {
+      "duplicate": {
+        "deals": 10000,
+        "rounds": 20000,
+        "score_definition": "(A net level gain in leg 1 + A net level gain in leg 2) / 2",
+        "mean_net_levels_per_round": 2.73805,
+        "bootstrap_95_ci": [
+          2.72549875,
+          2.7501025
+        ],
+        "mean_pair_difference": 5.4761,
+        "banker_rate": 0.95285,
+        "double_win_rate": 0.89565,
+        "opponent_double_win_rate": 0.00185,
+        "mean_finish_order_award_per_round": 2.79105
+      },
+      "seconds": 59.118661542015616,
+      "match": {
+        "matches": 1000,
+        "wins": 1000,
+        "win_rate": 1.0,
+        "wilson_95_ci": [
+          0.996173241514445,
+          1.0
+        ],
+        "rounds": 5515,
+        "banker_rate": 0.9523118766999094,
+        "double_win_rate": 0.900997280145059,
+        "opponent_double_win_rate": 0.0034451495920217587,
+        "mean_finish_order_award_per_round": 2.797098821396192,
+        "net_level_definition": "signed DMC return; an owned A Banker/Dweller result returns zero to both teams",
+        "mean_net_levels_per_round": 2.739437896645512
+      },
+      "opponent": {
+        "spec": "styled:high-lead",
+        "name": "styled:high-lead",
+        "kind": "styled",
+        "style_changes_from_neutral": {
+          "lead_high_bias": 1.0
+        },
+        "style_vector": [
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          1.0,
+          0.0
+        ]
+      }
+    },
+    "styled:low-lead": {
+      "duplicate": {
+        "deals": 10000,
+        "rounds": 20000,
+        "score_definition": "(A net level gain in leg 1 + A net level gain in leg 2) / 2",
+        "mean_net_levels_per_round": 2.2718,
+        "bootstrap_95_ci": [
+          2.25454875,
+          2.29080125
+        ],
+        "mean_pair_difference": 4.5436,
+        "banker_rate": 0.91575,
+        "double_win_rate": 0.6647,
+        "opponent_double_win_rate": 0.016,
+        "mean_finish_order_award_per_round": 2.41105
+      },
+      "seconds": 69.57631379200029,
+      "match": {
+        "matches": 1000,
+        "wins": 1000,
+        "win_rate": 1.0,
+        "wilson_95_ci": [
+          0.996173241514445,
+          1.0
+        ],
+        "rounds": 6105,
+        "banker_rate": 0.937100737100737,
+        "double_win_rate": 0.7613431613431614,
+        "opponent_double_win_rate": 0.01162981162981163,
+        "mean_finish_order_award_per_round": 2.586895986895987,
+        "net_level_definition": "signed DMC return; an owned A Banker/Dweller result returns zero to both teams",
+        "mean_net_levels_per_round": 2.48009828009828
+      },
+      "opponent": {
+        "spec": "styled:low-lead",
+        "name": "styled:low-lead",
+        "kind": "styled",
+        "style_changes_from_neutral": {
+          "lead_high_bias": -1.0,
+          "prefer_Single": 1.0
+        },
+        "style_vector": [
+          1.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          -1.0,
+          1.0,
+          0.0
+        ]
+      }
+    },
+    "self": {
+      "duplicate": {
+        "deals": 10000,
+        "rounds": 20000,
+        "score_definition": "(A net level gain in leg 1 + A net level gain in leg 2) / 2",
+        "mean_net_levels_per_round": 0.0,
+        "bootstrap_95_ci": [
+          0.0,
+          0.0
+        ],
+        "mean_pair_difference": 0.0,
+        "banker_rate": 0.5,
+        "double_win_rate": 0.2094,
+        "opponent_double_win_rate": 0.2094,
+        "mean_finish_order_award_per_round": 1.0634
+      },
+      "seconds": 130.69764304099954,
+      "match": {
+        "matches": 1000,
+        "wins": 530,
+        "win_rate": 0.53,
+        "wilson_95_ci": [
+          0.49901030909301675,
+          0.56076008539785
+        ],
+        "rounds": 10940,
+        "banker_rate": 0.5089579524680073,
+        "double_win_rate": 0.23491773308957953,
+        "opponent_double_win_rate": 0.22394881170018283,
+        "mean_finish_order_award_per_round": 1.1190127970749544,
+        "net_level_definition": "signed DMC return; an owned A Banker/Dweller result returns zero to both teams",
+        "mean_net_levels_per_round": 0.048080438756855574
+      },
+      "opponent": {
+        "spec": "self",
+        "name": "final.pt@8a8e2b08dec2e739",
+        "kind": "checkpoint"
+      }
+    }
+  },
+  "dmc_throughput": {
+    "config": "/Users/xiyaowang/Documents/Projects/GuanZero/train/configs/m1.json",
+    "device": "cpu",
+    "num_envs": 4096,
+    "num_threads": 8,
+    "torch_threads": 4,
+    "rollout_steps": 32,
+    "learn_steps": 64,
+    "batch_size": 2048,
+    "requested_seconds": 60.0,
+    "wall_seconds": 60.02599954200559,
+    "iterations": 13,
+    "updates": 640,
+    "decisions": 1609728,
+    "rounds": 21321,
+    "samples": 1015023,
+    "collect_seconds": 38.926724580087466,
+    "learn_seconds": 21.06430362694664,
+    "decisions_per_second": 26817.17942695029,
+    "rollout_decisions_per_second": 41352.77286657297,
+    "updates_per_second": 10.662046527890542,
+    "learner_samples_per_second": 62224.70123926876,
+    "note": "fresh weights with the M1 architecture; includes env setup and the initial checkpoint save"
+  },
+  "runtime": {
+    "evaluation_seconds": 432.47925354199833,
+    "total_seconds": 493.3596007919987,
+    "budget_seconds": 3600.0,
+    "under_budget": true,
+    "workers": 10,
+    "torch_threads_per_worker": 1
+  },
+  "command": [
+    "python",
+    "-m",
+    "eval.stage_b_baseline",
+    "--checkpoint",
+    ".work/runpod/artifacts/pilot/final.pt",
+    "--deals",
+    "10000",
+    "--matches",
+    "1000",
+    "--workers",
+    "10",
+    "--threads",
+    "1",
+    "--throughput-seconds",
+    "60",
+    "--out",
+    "docs/reports/stage-b-baseline.json"
+  ]
+}
