@@ -73,7 +73,24 @@ def generate_deals(count: int, seed: int = 0, level: int | None = None) -> list[
 def play_round(engine: gd.Engine, state: gd.MatchState,
                policies: tuple[Policy, Policy], seed: int = 0,
                max_decisions: int = 2000) -> RoundScore:
-    """Play the current round and close it exactly once, updating match state."""
+    """Play the current round and close it exactly once, updating match state.
+
+    `policies[t]` plays both seats of team `t`.
+    """
+    return play_round_seats(engine, state, (policies[0], policies[1], policies[0], policies[1]),
+                            seed, max_decisions)
+
+
+def play_round_seats(engine: gd.Engine, state: gd.MatchState,
+                     policies: Sequence[Policy], seed: int = 0,
+                     max_decisions: int = 2000) -> RoundScore:
+    """Like `play_round`, but `policies[seat]` plays each of the four seats.
+
+    Seat RNGs are the same as in `play_round`, so seating one policy at both
+    seats of a team replays `play_round` exactly.
+    """
+    if len(policies) != 4:
+        raise ValueError("one policy per seat required")
     rngs = [random.Random(seed + seat * 0x9E3779B9) for seat in range(4)]
     decisions = 0
     while state.phase != gd.Phase.RoundEnd:
@@ -82,7 +99,7 @@ def play_round(engine: gd.Engine, state: gd.MatchState,
         if decisions >= max_decisions:
             raise RuntimeError(f"round exceeded {max_decisions} decisions")
         seat = state.to_move
-        action = choose_action(policies[seat % 2], engine, state, rngs[seat])
+        action = choose_action(policies[seat], engine, state, rngs[seat])
         engine.apply(state, action)
         decisions += 1
     result = engine.end_round(state)
@@ -98,6 +115,25 @@ def play_duplicate(deal: gd.DealSpec, agent: Policy, opponent: Policy,
         state = gd.MatchState()
         engine.set_deal(state, deal)
         scores.append(play_round(engine, state, policies, seed))
+    return DuplicateScore(*scores)
+
+
+def play_duplicate_teams(deal: gd.DealSpec, team: tuple[Policy, Policy],
+                         opponents: tuple[Policy, Policy], seed: int = 0,
+                         rules: gd.RuleConfig | None = None) -> DuplicateScore:
+    """Duplicate deal with per-seat teams.
+
+    A team `(a, b)` sits at seats `(s, s + 2)`: `s = 0` in the first leg and
+    `s = 1` in the swapped leg, so `a` always holds the lower seat of its team
+    and `b` is its partner two seats on. The opponents likewise.
+    """
+    engine = gd.Engine(rules or gd.RuleConfig.house())
+    scores = []
+    for seats in ((team[0], opponents[0], team[1], opponents[1]),
+                  (opponents[0], team[0], opponents[1], team[1])):
+        state = gd.MatchState()
+        engine.set_deal(state, deal)
+        scores.append(play_round_seats(engine, state, seats, seed))
     return DuplicateScore(*scores)
 
 
