@@ -126,6 +126,12 @@ def evaluate_duplicates(agent: Policy, opponent: Policy, deals: Iterable[gd.Deal
                         seed: int = 0, bootstrap_samples: int = 2000) -> dict:
     scores = [play_duplicate(deal, agent, opponent, seed + index)
               for index, deal in enumerate(deals)]
+    return summarize_duplicates(scores, seed, bootstrap_samples)
+
+
+def summarize_duplicates(scores: Sequence[DuplicateScore], seed: int = 0,
+                         bootstrap_samples: int = 2000) -> dict:
+    """Report for already played deals, in deal order; shared by parallel runners."""
     if not scores:
         raise ValueError("at least one duplicate deal is required")
     per_round = [score.levels_per_round for score in scores]
