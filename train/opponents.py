@@ -86,3 +86,80 @@ class GreedyOpponent:
 
     def on_match_end(self, env_ids: np.ndarray, learner_won: np.ndarray) -> None:
         del env_ids, learner_won
+
+
+class FrozenModelOpponent:
+    """A frozen Stage A network on every opponent seat (B5's default opponent).
+
+    Play rows take the batched argmax of the network's play head, exactly as
+    `eval.policies.ModelPolicy` plays a DMC checkpoint; tribute and
+    back-tribute rows take the engine heuristic (`greedy_choice`), the
+    deployed Stage A behaviour. Nothing here is trained. The network may be
+    shared with the learner's frozen pruning reference.
+    """
+
+    def __init__(self, model, device: str = "cpu", chunk_size: int = 32768,
+                 name: str = "frozen") -> None:
+        import torch
+
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be positive")
+        self.model = model.to(device).eval().requires_grad_(False)
+        self.device = torch.device(device)
+        self.chunk_size = chunk_size
+        self.name = name
+
+    @classmethod
+    def from_checkpoint(cls, path, device: str = "cpu",
+                        chunk_size: int = 32768) -> "FrozenModelOpponent":
+        from pathlib import Path
+
+        from train.ckpt import load_checkpoint
+        from train.model import GuandanModel, ModelConfig
+
+        payload = load_checkpoint(path, device=device)
+        if payload.get("stage", "dmc") != "dmc":
+            raise ValueError("FrozenModelOpponent plays a Stage A (DMC) checkpoint")
+        model = GuandanModel(ModelConfig(**payload["model_config"]))
+        model.load_state_dict(payload["model"])
+        return cls(model, device, chunk_size, name=f"frozen:{Path(path).name}")
+
+    def bind(self, env, learner_team: np.ndarray) -> None:
+        del env, learner_team
+
+    def on_match_start(self, env_ids: np.ndarray) -> None:
+        del env_ids
+
+    def on_match_end(self, env_ids: np.ndarray, learner_won: np.ndarray) -> None:
+        del env_ids, learner_won
+
+    def act(self, rows: OpponentRows) -> np.ndarray:
+        import torch
+
+        from train.model import select_actions
+
+        choices = np.array(rows.greedy_choice, dtype=np.int32, copy=True)
+        play = np.asarray(rows.phase) == 3
+        if not play.any():
+            return choices
+        offsets = np.asarray(rows.offsets, np.int64)
+        index = np.flatnonzero(play)
+        counts = offsets[index + 1] - offsets[index]
+        if index.size == rows.rows:
+            cand, local_offsets = rows.cand, offsets
+        else:
+            total = int(counts.sum())
+            starts = np.repeat(offsets[index], counts)
+            cand = rows.cand[starts + np.arange(total) - np.repeat(np.cumsum(counts) - counts, counts)]
+            local_offsets = np.concatenate(([0], np.cumsum(counts)))
+        with torch.inference_mode():
+            device_offsets = torch.as_tensor(local_offsets, device=self.device)
+            scores = self.model.score_candidates(
+                torch.as_tensor(np.asarray(rows.obs)[index], dtype=torch.float32, device=self.device),
+                torch.tensor(np.asarray(cand), dtype=torch.float32, device=self.device),
+                device_offsets, torch.full((index.size,), 3, device=self.device),
+                chunk_size=self.chunk_size, phase_code=3)
+            if not bool(torch.isfinite(scores).all()):
+                raise FloatingPointError("non-finite opponent scores")
+            choices[index] = select_actions(scores, device_offsets).cpu().numpy()
+        return choices
