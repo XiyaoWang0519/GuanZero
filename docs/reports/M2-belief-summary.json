@@ -1,0 +1,1252 @@
+{
+  "schema_version": 1,
+  "status": "complete",
+  "config": {
+    "seeds": [
+      31,
+      32,
+      33
+    ],
+    "split_seed": 20260928,
+    "steps": 6000,
+    "min_steps": 3000,
+    "validation_interval": 1000,
+    "patience": 2,
+    "batch_size": 64,
+    "width": 128,
+    "layers": 2,
+    "learning_rate": 0.0003,
+    "device": "cpu",
+    "threads": 4,
+    "max_seconds": 2400.0
+  },
+  "gate": "supports_v2_rl_experiment",
+  "rl_enabled": false,
+  "dataset_sha256": "6dc050ce9749bfea90b8ba9890c225182b86bba80650a0b227445c118c13da13",
+  "interpretation": "Shared dataset and test matches across optimizer seeds. Matched parameters and maximum updates, not equal wall-clock compute. Positive belief evidence still needs an equal-compute RL comparison. A negative bounded result is not proof that Transformers cannot help.",
+  "elapsed_seconds": 801.4966401669953,
+  "source_sha256": {
+    "train/belief_experiment.py": "fee91be784a7a07a514e53f78cd5bd8300c02df3b2babfda4e0658450a4bd5a2",
+    "train/belief_model.py": "a1da8c9db5f6ae331b39dafc531b09185b2be3e7cc03d3707543414cc7865450",
+    "train/belief_probe.py": "d4a791e5eb34a89a70a7eaa8c6541729b6f9aa3f9e9a8f23df686fc4cc21c63b",
+    "train/logs.py": "1a5269179898a14dab527aab00624536248f46e5886035e28c9684f03be55e42"
+  },
+  "date_local": "2026-09-21",
+  "protocol": {
+    "status": "predeclared_before_collection_and_fitting",
+    "purpose": "M2 Transformer hidden-hand belief gate; not playing-strength evidence",
+    "base_checkpoint": ".work/runpod/artifacts/pilot/final.pt",
+    "collection_rounds": 4096,
+    "collection_seed": 20260927,
+    "split_seed": 20260928,
+    "split": "70/15/15 percent of whole matches, sorted by seeded SHA256",
+    "fit_seeds": [
+      31,
+      32,
+      33
+    ],
+    "models": [
+      "v1",
+      "v2",
+      "no_history"
+    ],
+    "width": 128,
+    "layers": 2,
+    "maximum_steps": 6000,
+    "minimum_steps": 3000,
+    "validation_interval": 1000,
+    "patience": 2,
+    "batch_size": 64,
+    "learning_rate": 0.0003,
+    "selection": "minimum validation log loss; final test evaluated once per selected model",
+    "bootstrap_unit": "whole test match, paired model losses",
+    "gate": "at least 20 test matches; v2 improves v1 by >=1 percent test micro log loss and positive paired match CI in every seed; history improves no_history with positive mean every seed and positive CI in at least two seeds",
+    "limitations": "one collection distribution and shared test split across optimizer seeds; positive gate still needs equal-compute RL comparison",
+    "cloud_spend": 0
+  },
+  "full_report_path": ".work/belief-v2/experiment/report.json",
+  "full_report_sha256": "2d5b8c39c661fbdfdd9baa240fa695ea0041a8dcb7faea3f1379590412ed30ed",
+  "source_dependency_sha256": {
+    "train/model.py": "e079ac2a66b576d95d9f1153796da4a004efe7d24f4f30d6c2816b032554d51b"
+  },
+  "collection": {
+    "schema_version": 1,
+    "purpose": "architecture_probe",
+    "status": "complete",
+    "checkpoint_source": ".work/runpod/artifacts/pilot/final.pt",
+    "seed": 20260927,
+    "requested_rounds": 4096,
+    "num_envs": 64,
+    "collected_rounds": 4096,
+    "learner_updates": 0,
+    "collected_decisions": 211193,
+    "match_groups": 405,
+    "round_quotas": [
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64
+    ],
+    "completed_per_env": [
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64,
+      64
+    ],
+    "device": "cpu",
+    "threads": 4,
+    "max_seconds": 1200.0,
+    "rules": "house",
+    "obs_dim": 1849,
+    "act_dim": 154,
+    "torch_version": "2.14.0",
+    "collector_sha256": "79ced8b299d74256dc4c51aab8b3765384719f4ae772a20bb9db7aab2dbee68d",
+    "engine_source_sha256": "2227731f7fc6972d2d3766211fcfc5528ee3ff96b5f21590ecb58c9359f8bc55",
+    "elapsed_seconds": 12.82873166698846,
+    "checkpoint": "final.pt@8a8e2b08dec2e739",
+    "checkpoint_id": "8a8e2b08dec2e73998092a67cbc25c26df75b4c0d2f02fd0a791d5d16cd4f745",
+    "training_seed": 7,
+    "stage": "dmc",
+    "action_mode": "canonical",
+    "tribute_policy": "heuristic",
+    "sampling_margin": 0.0,
+    "play_mode": "fp32_argmax",
+    "engine_sha256": "97934efe146bcb83377ea046be192cb22ce8b7a18b1244c3a55c8ebf5dfb11d9"
+  },
+  "splits": {
+    "train": {
+      "rounds": 2861,
+      "decisions": 147349,
+      "matches": 285
+    },
+    "validation": {
+      "rounds": 597,
+      "decisions": 30931,
+      "matches": 60
+    },
+    "test": {
+      "rounds": 638,
+      "decisions": 32913,
+      "matches": 60
+    }
+  },
+  "cache_parity": {
+    "status": "passed",
+    "checkpoint_sha256": "13f7ef7feab3f1b8ab312dfd0f9d897c436c1e4ec4758b6e26e813e53c19c05a",
+    "rounds": 8,
+    "real_decision_queries": 331,
+    "maximum_prefix": 87,
+    "maximum_absolute_logit_difference": 3.814697265625e-06,
+    "atol": 1e-05,
+    "rtol": 1e-05,
+    "device": "cpu",
+    "dtype": "float32",
+    "cache_sha256": "f68e3ca7a61c81c81d2c05e1e91ba2838f527f1a18f9f0372cc1e0eeaf40b944"
+  },
+  "validation": {
+    "python_tests_passed": 341,
+    "python_test_log_sha256": "0d7d6612bbb8523762443c88e68dce45589a377791cfabe40e1b59e96d80b7e7",
+    "cpp": "No C++ changes this stage; prior A2 validation passed 58 cases."
+  },
+  "additional_cloud_spend_usd": 0,
+  "runs": [
+    {
+      "seed": 31,
+      "v2_vs_v1": {
+        "micro_log_loss_improvement": 0.032910376568359434,
+        "relative_micro_improvement": 0.09128115348905719,
+        "mean_match_log_loss_improvement": 0.03321999276304034,
+        "bootstrap_95_ci": [
+          0.03247388413380597,
+          0.03395740021424173
+        ],
+        "test_matches": 60,
+        "bootstrap_samples": 10000,
+        "sampling_unit": "whole paired match, equal weight per match"
+      },
+      "v2_vs_no_history": {
+        "micro_log_loss_improvement": 0.0014269682881845047,
+        "relative_micro_improvement": 0.004336562537741839,
+        "mean_match_log_loss_improvement": 0.0015271979894834957,
+        "bootstrap_95_ci": [
+          0.001162452199109398,
+          0.001896991691410903
+        ],
+        "test_matches": 60,
+        "bootstrap_samples": 10000,
+        "sampling_unit": "whole paired match, equal weight per match"
+      },
+      "models": {
+        "v1": {
+          "parameters": 935178,
+          "steps_run": 6000,
+          "selected_step": 6000,
+          "validation_log_loss": 0.361596528213446,
+          "early_stopped": false,
+          "best_at_budget_end": true,
+          "learn_seconds": 12.995417517842725,
+          "elapsed_seconds": 14.965321709023556,
+          "learning_curve": [
+            {
+              "step": 1000,
+              "last_train_batch_loss": 0.41749200224876404,
+              "validation_log_loss": 0.44923484621816673,
+              "learn_seconds": 2.2898595336300787
+            },
+            {
+              "step": 2000,
+              "last_train_batch_loss": 0.4142504632472992,
+              "validation_log_loss": 0.4189389061328107,
+              "learn_seconds": 4.4210827197821345
+            },
+            {
+              "step": 3000,
+              "last_train_batch_loss": 0.39438310265541077,
+              "validation_log_loss": 0.3944514964711722,
+              "learn_seconds": 6.581746578391176
+            },
+            {
+              "step": 4000,
+              "last_train_batch_loss": 0.3508146107196808,
+              "validation_log_loss": 0.37985379353502696,
+              "learn_seconds": 8.728638473607134
+            },
+            {
+              "step": 5000,
+              "last_train_batch_loss": 0.3658154010772705,
+              "validation_log_loss": 0.3694138158878233,
+              "learn_seconds": 10.868019959074445
+            },
+            {
+              "step": 6000,
+              "last_train_batch_loss": 0.2754431366920471,
+              "validation_log_loss": 0.361596528213446,
+              "learn_seconds": 12.995417517842725
+            }
+          ],
+          "checkpoint": ".work/belief-v2/experiment/v1-s31.pt",
+          "checkpoint_sha256": "7817427ca6f882105a276ec486ffb306f9c5557dfd3da9d35706551981fce11c",
+          "test": {
+            "log_loss": 0.36053857023514424,
+            "decisions": 32913,
+            "by_stage_and_seat": {
+              "early": {
+                "lho": {
+                  "log_loss": 0.7231902419307823,
+                  "decisions": 7027
+                },
+                "partner": {
+                  "log_loss": 0.7112517669357988,
+                  "decisions": 7027
+                },
+                "rho": {
+                  "log_loss": 0.694860219175079,
+                  "decisions": 7027
+                }
+              },
+              "middle": {
+                "lho": {
+                  "log_loss": 0.45166645341852596,
+                  "decisions": 9919
+                },
+                "partner": {
+                  "log_loss": 0.44194681984076206,
+                  "decisions": 9919
+                },
+                "rho": {
+                  "log_loss": 0.43277200026213614,
+                  "decisions": 9919
+                }
+              },
+              "late": {
+                "lho": {
+                  "log_loss": 0.16376335696137198,
+                  "decisions": 15967
+                },
+                "partner": {
+                  "log_loss": 0.1500982004989774,
+                  "decisions": 15967
+                },
+                "rho": {
+                  "log_loss": 0.15461690448868018,
+                  "decisions": 15967
+                }
+              }
+            },
+            "matches": 60
+          }
+        },
+        "v2": {
+          "parameters": 935398,
+          "steps_run": 6000,
+          "selected_step": 6000,
+          "validation_log_loss": 0.3289428037887829,
+          "early_stopped": false,
+          "best_at_budget_end": true,
+          "learn_seconds": 176.82922043267172,
+          "elapsed_seconds": 211.91942504199687,
+          "learning_curve": [
+            {
+              "step": 1000,
+              "last_train_batch_loss": 0.366081178188324,
+              "validation_log_loss": 0.40622343216275064,
+              "learn_seconds": 30.197946130967466
+            },
+            {
+              "step": 2000,
+              "last_train_batch_loss": 0.34936732053756714,
+              "validation_log_loss": 0.3622657784050433,
+              "learn_seconds": 59.577406905649696
+            },
+            {
+              "step": 3000,
+              "last_train_batch_loss": 0.3447200357913971,
+              "validation_log_loss": 0.3440166434102844,
+              "learn_seconds": 89.08234255173011
+            },
+            {
+              "step": 4000,
+              "last_train_batch_loss": 0.3016992509365082,
+              "validation_log_loss": 0.33557939838705597,
+              "learn_seconds": 118.05585231614532
+            },
+            {
+              "step": 5000,
+              "last_train_batch_loss": 0.31598466634750366,
+              "validation_log_loss": 0.33062825115829364,
+              "learn_seconds": 147.34038309176685
+            },
+            {
+              "step": 6000,
+              "last_train_batch_loss": 0.23658375442028046,
+              "validation_log_loss": 0.3289428037887829,
+              "learn_seconds": 176.82922043267172
+            }
+          ],
+          "checkpoint": ".work/belief-v2/experiment/v2-s31.pt",
+          "checkpoint_sha256": "13f7ef7feab3f1b8ab312dfd0f9d897c436c1e4ec4758b6e26e813e53c19c05a",
+          "test": {
+            "log_loss": 0.3276281936667848,
+            "decisions": 32913,
+            "by_stage_and_seat": {
+              "early": {
+                "lho": {
+                  "log_loss": 0.6911531567861944,
+                  "decisions": 7027
+                },
+                "partner": {
+                  "log_loss": 0.6829779979021261,
+                  "decisions": 7027
+                },
+                "rho": {
+                  "log_loss": 0.6673630152485593,
+                  "decisions": 7027
+                }
+              },
+              "middle": {
+                "lho": {
+                  "log_loss": 0.4050107263295277,
+                  "decisions": 9919
+                },
+                "partner": {
+                  "log_loss": 0.3978016112333633,
+                  "decisions": 9919
+                },
+                "rho": {
+                  "log_loss": 0.3880068656116835,
+                  "decisions": 9919
+                }
+              },
+              "late": {
+                "lho": {
+                  "log_loss": 0.13471091288977338,
+                  "decisions": 15967
+                },
+                "partner": {
+                  "log_loss": 0.1250249687130796,
+                  "decisions": 15967
+                },
+                "rho": {
+                  "log_loss": 0.12808681558695137,
+                  "decisions": 15967
+                }
+              }
+            },
+            "matches": 60
+          }
+        },
+        "no_history": {
+          "parameters": 935398,
+          "steps_run": 6000,
+          "selected_step": 6000,
+          "validation_log_loss": 0.3302509748491393,
+          "early_stopped": false,
+          "best_at_budget_end": true,
+          "learn_seconds": 26.205317343090428,
+          "elapsed_seconds": 29.31980341702001,
+          "learning_curve": [
+            {
+              "step": 1000,
+              "last_train_batch_loss": 0.36754193902015686,
+              "validation_log_loss": 0.40785592303863366,
+              "learn_seconds": 4.339933857583674
+            },
+            {
+              "step": 2000,
+              "last_train_batch_loss": 0.3515109717845917,
+              "validation_log_loss": 0.36461096687411343,
+              "learn_seconds": 8.669103641674155
+            },
+            {
+              "step": 3000,
+              "last_train_batch_loss": 0.34726619720458984,
+              "validation_log_loss": 0.3470841468386749,
+              "learn_seconds": 13.056923698401079
+            },
+            {
+              "step": 4000,
+              "last_train_batch_loss": 0.30471301078796387,
+              "validation_log_loss": 0.3375275176776317,
+              "learn_seconds": 17.444077672989806
+            },
+            {
+              "step": 5000,
+              "last_train_batch_loss": 0.31959208846092224,
+              "validation_log_loss": 0.3324359992276277,
+              "learn_seconds": 21.817648459866177
+            },
+            {
+              "step": 6000,
+              "last_train_batch_loss": 0.23875126242637634,
+              "validation_log_loss": 0.3302509748491393,
+              "learn_seconds": 26.205317343090428
+            }
+          ],
+          "checkpoint": ".work/belief-v2/experiment/no_history-s31.pt",
+          "checkpoint_sha256": "5b824d2da094e627bcd6183ba32e7e00c31806f25260da0a97e18f01d7dee709",
+          "test": {
+            "log_loss": 0.3290551619549693,
+            "decisions": 32913,
+            "by_stage_and_seat": {
+              "early": {
+                "lho": {
+                  "log_loss": 0.691546085126135,
+                  "decisions": 7027
+                },
+                "partner": {
+                  "log_loss": 0.6831181369296717,
+                  "decisions": 7027
+                },
+                "rho": {
+                  "log_loss": 0.6676319935794438,
+                  "decisions": 7027
+                }
+              },
+              "middle": {
+                "lho": {
+                  "log_loss": 0.40578183270664103,
+                  "decisions": 9919
+                },
+                "partner": {
+                  "log_loss": 0.39997111447024025,
+                  "decisions": 9919
+                },
+                "rho": {
+                  "log_loss": 0.38992494714273324,
+                  "decisions": 9919
+                }
+              },
+              "late": {
+                "lho": {
+                  "log_loss": 0.13603137817373553,
+                  "decisions": 15967
+                },
+                "partner": {
+                  "log_loss": 0.12792968782850309,
+                  "decisions": 15967
+                },
+                "rho": {
+                  "log_loss": 0.12931463358106152,
+                  "decisions": 15967
+                }
+              }
+            },
+            "matches": 60
+          }
+        }
+      }
+    },
+    {
+      "seed": 32,
+      "v2_vs_v1": {
+        "micro_log_loss_improvement": 0.03830449869682967,
+        "relative_micro_improvement": 0.10519848169684376,
+        "mean_match_log_loss_improvement": 0.038426527291322655,
+        "bootstrap_95_ci": [
+          0.037731882876785944,
+          0.03915154716035155
+        ],
+        "test_matches": 60,
+        "bootstrap_samples": 10000,
+        "sampling_unit": "whole paired match, equal weight per match"
+      },
+      "v2_vs_no_history": {
+        "micro_log_loss_improvement": 0.0006997882049153414,
+        "relative_micro_improvement": 0.0021432251890185494,
+        "mean_match_log_loss_improvement": 0.000658946718545772,
+        "bootstrap_95_ci": [
+          0.000302956512406413,
+          0.0009950741259318445
+        ],
+        "test_matches": 60,
+        "bootstrap_samples": 10000,
+        "sampling_unit": "whole paired match, equal weight per match"
+      },
+      "models": {
+        "v1": {
+          "parameters": 935178,
+          "steps_run": 6000,
+          "selected_step": 6000,
+          "validation_log_loss": 0.3653826293264574,
+          "early_stopped": false,
+          "best_at_budget_end": true,
+          "learn_seconds": 12.751837341464125,
+          "elapsed_seconds": 14.691105459001847,
+          "learning_curve": [
+            {
+              "step": 1000,
+              "last_train_batch_loss": 0.41643238067626953,
+              "validation_log_loss": 0.44829605615592627,
+              "learn_seconds": 2.1115350365289487
+            },
+            {
+              "step": 2000,
+              "last_train_batch_loss": 0.40215250849723816,
+              "validation_log_loss": 0.42226826325173755,
+              "learn_seconds": 4.215927200828446
+            },
+            {
+              "step": 3000,
+              "last_train_batch_loss": 0.37063470482826233,
+              "validation_log_loss": 0.39750701709545205,
+              "learn_seconds": 6.31510751938913
+            },
+            {
+              "step": 4000,
+              "last_train_batch_loss": 0.3548959195613861,
+              "validation_log_loss": 0.38298885415669304,
+              "learn_seconds": 8.471394222433446
+            },
+            {
+              "step": 5000,
+              "last_train_batch_loss": 0.3550845980644226,
+              "validation_log_loss": 0.3737067321839457,
+              "learn_seconds": 10.641265545360511
+            },
+            {
+              "step": 6000,
+              "last_train_batch_loss": 0.3840082287788391,
+              "validation_log_loss": 0.3653826293264574,
+              "learn_seconds": 12.751837341464125
+            }
+          ],
+          "checkpoint": ".work/belief-v2/experiment/v1-s32.pt",
+          "checkpoint_sha256": "c86d8ae12df109044222a14c7fd33862cb94c7b777f3b787c92b12020d9e8a43",
+          "test": {
+            "log_loss": 0.36411645946767424,
+            "decisions": 32913,
+            "by_stage_and_seat": {
+              "early": {
+                "lho": {
+                  "log_loss": 0.7256196400205526,
+                  "decisions": 7027
+                },
+                "partner": {
+                  "log_loss": 0.7129559663479709,
+                  "decisions": 7027
+                },
+                "rho": {
+                  "log_loss": 0.6996609587171975,
+                  "decisions": 7027
+                }
+              },
+              "middle": {
+                "lho": {
+                  "log_loss": 0.45560772152891177,
+                  "decisions": 9919
+                },
+                "partner": {
+                  "log_loss": 0.44556510403988187,
+                  "decisions": 9919
+                },
+                "rho": {
+                  "log_loss": 0.43927361910135737,
+                  "decisions": 9919
+                }
+              },
+              "late": {
+                "lho": {
+                  "log_loss": 0.16655917221269304,
+                  "decisions": 15967
+                },
+                "partner": {
+                  "log_loss": 0.1521999935153551,
+                  "decisions": 15967
+                },
+                "rho": {
+                  "log_loss": 0.15917773311569836,
+                  "decisions": 15967
+                }
+              }
+            },
+            "matches": 60
+          }
+        },
+        "v2": {
+          "parameters": 935398,
+          "steps_run": 6000,
+          "selected_step": 6000,
+          "validation_log_loss": 0.3274248016317954,
+          "early_stopped": false,
+          "best_at_budget_end": true,
+          "learn_seconds": 183.30967769984272,
+          "elapsed_seconds": 219.85232445900328,
+          "learning_curve": [
+            {
+              "step": 1000,
+              "last_train_batch_loss": 0.373982310295105,
+              "validation_log_loss": 0.4096573803114534,
+              "learn_seconds": 29.33546591515187
+            },
+            {
+              "step": 2000,
+              "last_train_batch_loss": 0.3346322774887085,
+              "validation_log_loss": 0.3624269020804319,
+              "learn_seconds": 59.6440447838977
+            },
+            {
+              "step": 3000,
+              "last_train_batch_loss": 0.31027260422706604,
+              "validation_log_loss": 0.34330341115023993,
+              "learn_seconds": 90.46309227796155
+            },
+            {
+              "step": 4000,
+              "last_train_batch_loss": 0.30617010593414307,
+              "validation_log_loss": 0.3342110021911519,
+              "learn_seconds": 121.25499796806253
+            },
+            {
+              "step": 5000,
+              "last_train_batch_loss": 0.30803340673446655,
+              "validation_log_loss": 0.33029313724963233,
+              "learn_seconds": 152.30416014170623
+            },
+            {
+              "step": 6000,
+              "last_train_batch_loss": 0.3383900821208954,
+              "validation_log_loss": 0.3274248016317954,
+              "learn_seconds": 183.30967769984272
+            }
+          ],
+          "checkpoint": ".work/belief-v2/experiment/v2-s32.pt",
+          "checkpoint_sha256": "0bf3e1a1fe9b8ef51e6e51ffeeefe866825cdf45e0401987fcac803becdcab1e",
+          "test": {
+            "log_loss": 0.32581196077084457,
+            "decisions": 32913,
+            "by_stage_and_seat": {
+              "early": {
+                "lho": {
+                  "log_loss": 0.6896273437359941,
+                  "decisions": 7027
+                },
+                "partner": {
+                  "log_loss": 0.6800348046190016,
+                  "decisions": 7027
+                },
+                "rho": {
+                  "log_loss": 0.666277740526559,
+                  "decisions": 7027
+                }
+              },
+              "middle": {
+                "lho": {
+                  "log_loss": 0.4018803146388072,
+                  "decisions": 9919
+                },
+                "partner": {
+                  "log_loss": 0.3946757847076102,
+                  "decisions": 9919
+                },
+                "rho": {
+                  "log_loss": 0.387510470534443,
+                  "decisions": 9919
+                }
+              },
+              "late": {
+                "lho": {
+                  "log_loss": 0.1326220848299472,
+                  "decisions": 15967
+                },
+                "partner": {
+                  "log_loss": 0.12335183133745699,
+                  "decisions": 15967
+                },
+                "rho": {
+                  "log_loss": 0.1272565772711555,
+                  "decisions": 15967
+                }
+              }
+            },
+            "matches": 60
+          }
+        },
+        "no_history": {
+          "parameters": 935398,
+          "steps_run": 6000,
+          "selected_step": 6000,
+          "validation_log_loss": 0.3280797201141696,
+          "early_stopped": false,
+          "best_at_budget_end": true,
+          "learn_seconds": 28.811447263491573,
+          "elapsed_seconds": 32.19235120801022,
+          "learning_curve": [
+            {
+              "step": 1000,
+              "last_train_batch_loss": 0.37253817915916443,
+              "validation_log_loss": 0.40940584563818955,
+              "learn_seconds": 4.835068467189558
+            },
+            {
+              "step": 2000,
+              "last_train_batch_loss": 0.3359476923942566,
+              "validation_log_loss": 0.3641818375509509,
+              "learn_seconds": 9.60513471547165
+            },
+            {
+              "step": 3000,
+              "last_train_batch_loss": 0.3103741705417633,
+              "validation_log_loss": 0.34435817368985605,
+              "learn_seconds": 14.409888594032964
+            },
+            {
+              "step": 4000,
+              "last_train_batch_loss": 0.3068801462650299,
+              "validation_log_loss": 0.33476786187808194,
+              "learn_seconds": 19.194916858599754
+            },
+            {
+              "step": 5000,
+              "last_train_batch_loss": 0.30762723088264465,
+              "validation_log_loss": 0.33101195377013737,
+              "learn_seconds": 23.948385432508076
+            },
+            {
+              "step": 6000,
+              "last_train_batch_loss": 0.34102052450180054,
+              "validation_log_loss": 0.3280797201141696,
+              "learn_seconds": 28.811447263491573
+            }
+          ],
+          "checkpoint": ".work/belief-v2/experiment/no_history-s32.pt",
+          "checkpoint_sha256": "0acc19a2706581ae900a1596fc87a450585cf112a36e694c47acef1504be8cdb",
+          "test": {
+            "log_loss": 0.3265117489757599,
+            "decisions": 32913,
+            "by_stage_and_seat": {
+              "early": {
+                "lho": {
+                  "log_loss": 0.6906782321338211,
+                  "decisions": 7027
+                },
+                "partner": {
+                  "log_loss": 0.6806564927185957,
+                  "decisions": 7027
+                },
+                "rho": {
+                  "log_loss": 0.668168305875703,
+                  "decisions": 7027
+                }
+              },
+              "middle": {
+                "lho": {
+                  "log_loss": 0.4022892091120187,
+                  "decisions": 9919
+                },
+                "partner": {
+                  "log_loss": 0.39537362749988314,
+                  "decisions": 9919
+                },
+                "rho": {
+                  "log_loss": 0.38820914869311357,
+                  "decisions": 9919
+                }
+              },
+              "late": {
+                "lho": {
+                  "log_loss": 0.13304057678313563,
+                  "decisions": 15967
+                },
+                "partner": {
+                  "log_loss": 0.1236785137116547,
+                  "decisions": 15967
+                },
+                "rho": {
+                  "log_loss": 0.12814917298304593,
+                  "decisions": 15967
+                }
+              }
+            },
+            "matches": 60
+          }
+        }
+      }
+    },
+    {
+      "seed": 33,
+      "v2_vs_v1": {
+        "micro_log_loss_improvement": 0.040835137580412406,
+        "relative_micro_improvement": 0.11134494055152011,
+        "mean_match_log_loss_improvement": 0.04089757065791358,
+        "bootstrap_95_ci": [
+          0.04019950746628319,
+          0.041587036764298216
+        ],
+        "test_matches": 60,
+        "bootstrap_samples": 10000,
+        "sampling_unit": "whole paired match, equal weight per match"
+      },
+      "v2_vs_no_history": {
+        "micro_log_loss_improvement": 0.0007070817663691886,
+        "relative_micro_improvement": 0.0021648692662809,
+        "mean_match_log_loss_improvement": 0.0005531527311682327,
+        "bootstrap_95_ci": [
+          0.00018656686027670967,
+          0.0009113046831373894
+        ],
+        "test_matches": 60,
+        "bootstrap_samples": 10000,
+        "sampling_unit": "whole paired match, equal weight per match"
+      },
+      "models": {
+        "v1": {
+          "parameters": 935178,
+          "steps_run": 6000,
+          "selected_step": 6000,
+          "validation_log_loss": 0.3686686833937852,
+          "early_stopped": false,
+          "best_at_budget_end": true,
+          "learn_seconds": 13.758235938817961,
+          "elapsed_seconds": 15.83837354197749,
+          "learning_curve": [
+            {
+              "step": 1000,
+              "last_train_batch_loss": 0.36953645944595337,
+              "validation_log_loss": 0.4509237478084577,
+              "learn_seconds": 2.263355965842493
+            },
+            {
+              "step": 2000,
+              "last_train_batch_loss": 0.4600346088409424,
+              "validation_log_loss": 0.4261868854503147,
+              "learn_seconds": 4.5556534119241405
+            },
+            {
+              "step": 3000,
+              "last_train_batch_loss": 0.4528055191040039,
+              "validation_log_loss": 0.40244695591422724,
+              "learn_seconds": 6.858653439296177
+            },
+            {
+              "step": 4000,
+              "last_train_batch_loss": 0.37137407064437866,
+              "validation_log_loss": 0.38730502254692395,
+              "learn_seconds": 9.126681982335867
+            },
+            {
+              "step": 5000,
+              "last_train_batch_loss": 0.40275949239730835,
+              "validation_log_loss": 0.37641033995642653,
+              "learn_seconds": 11.428376992378617
+            },
+            {
+              "step": 6000,
+              "last_train_batch_loss": 0.29670071601867676,
+              "validation_log_loss": 0.3686686833937852,
+              "learn_seconds": 13.758235938817961
+            }
+          ],
+          "checkpoint": ".work/belief-v2/experiment/v1-s33.pt",
+          "checkpoint_sha256": "c43f305ab0e952413a46480a589911df6bbb774c0cddc29ffd78797b924144f4",
+          "test": {
+            "log_loss": 0.36674443740456886,
+            "decisions": 32913,
+            "by_stage_and_seat": {
+              "early": {
+                "lho": {
+                  "log_loss": 0.7289062580479417,
+                  "decisions": 7027
+                },
+                "partner": {
+                  "log_loss": 0.7140879168251899,
+                  "decisions": 7027
+                },
+                "rho": {
+                  "log_loss": 0.7010961703323141,
+                  "decisions": 7027
+                }
+              },
+              "middle": {
+                "lho": {
+                  "log_loss": 0.46049259862468084,
+                  "decisions": 9919
+                },
+                "partner": {
+                  "log_loss": 0.4479149834428755,
+                  "decisions": 9919
+                },
+                "rho": {
+                  "log_loss": 0.4413283769973092,
+                  "decisions": 9919
+                }
+              },
+              "late": {
+                "lho": {
+                  "log_loss": 0.17008256692545007,
+                  "decisions": 15967
+                },
+                "partner": {
+                  "log_loss": 0.15400491972456984,
+                  "decisions": 15967
+                },
+                "rho": {
+                  "log_loss": 0.16175363385894598,
+                  "decisions": 15967
+                }
+              }
+            },
+            "matches": 60
+          }
+        },
+        "v2": {
+          "parameters": 935398,
+          "steps_run": 6000,
+          "selected_step": 6000,
+          "validation_log_loss": 0.32711621792496703,
+          "early_stopped": false,
+          "best_at_budget_end": true,
+          "learn_seconds": 188.40567589687998,
+          "elapsed_seconds": 225.4752522079798,
+          "learning_curve": [
+            {
+              "step": 1000,
+              "last_train_batch_loss": 0.321773499250412,
+              "validation_log_loss": 0.40884127918737106,
+              "learn_seconds": 30.498136914306087
+            },
+            {
+              "step": 2000,
+              "last_train_batch_loss": 0.3939454257488251,
+              "validation_log_loss": 0.3614248106576073,
+              "learn_seconds": 61.77062489325181
+            },
+            {
+              "step": 3000,
+              "last_train_batch_loss": 0.38743922114372253,
+              "validation_log_loss": 0.3417109964652314,
+              "learn_seconds": 93.45312492421363
+            },
+            {
+              "step": 4000,
+              "last_train_batch_loss": 0.30744603276252747,
+              "validation_log_loss": 0.33338884110591055,
+              "learn_seconds": 125.28950653356151
+            },
+            {
+              "step": 5000,
+              "last_train_batch_loss": 0.3535842001438141,
+              "validation_log_loss": 0.3291223098905013,
+              "learn_seconds": 157.53657071327325
+            },
+            {
+              "step": 6000,
+              "last_train_batch_loss": 0.25155365467071533,
+              "validation_log_loss": 0.32711621792496703,
+              "learn_seconds": 188.40567589687998
+            }
+          ],
+          "checkpoint": ".work/belief-v2/experiment/v2-s33.pt",
+          "checkpoint_sha256": "af79caae42e06c33d586e1e11b6635284d161b8c6b67747c2f84c058e188746f",
+          "test": {
+            "log_loss": 0.32590929982415645,
+            "decisions": 32913,
+            "by_stage_and_seat": {
+              "early": {
+                "lho": {
+                  "log_loss": 0.690843454546621,
+                  "decisions": 7027
+                },
+                "partner": {
+                  "log_loss": 0.6811992755668405,
+                  "decisions": 7027
+                },
+                "rho": {
+                  "log_loss": 0.6651047983056911,
+                  "decisions": 7027
+                }
+              },
+              "middle": {
+                "lho": {
+                  "log_loss": 0.4024572315229525,
+                  "decisions": 9919
+                },
+                "partner": {
+                  "log_loss": 0.3940475260806379,
+                  "decisions": 9919
+                },
+                "rho": {
+                  "log_loss": 0.386999627060558,
+                  "decisions": 9919
+                }
+              },
+              "late": {
+                "lho": {
+                  "log_loss": 0.13280920034144153,
+                  "decisions": 15967
+                },
+                "partner": {
+                  "log_loss": 0.1241276701958363,
+                  "decisions": 15967
+                },
+                "rho": {
+                  "log_loss": 0.12671332559551526,
+                  "decisions": 15967
+                }
+              }
+            },
+            "matches": 60
+          }
+        },
+        "no_history": {
+          "parameters": 935398,
+          "steps_run": 6000,
+          "selected_step": 6000,
+          "validation_log_loss": 0.32783242534453155,
+          "early_stopped": false,
+          "best_at_budget_end": true,
+          "learn_seconds": 31.581582199200056,
+          "elapsed_seconds": 35.30158870801097,
+          "learning_curve": [
+            {
+              "step": 1000,
+              "last_train_batch_loss": 0.31998828053474426,
+              "validation_log_loss": 0.40737870939860166,
+              "learn_seconds": 5.285071541293291
+            },
+            {
+              "step": 2000,
+              "last_train_batch_loss": 0.39403045177459717,
+              "validation_log_loss": 0.36241325419693443,
+              "learn_seconds": 10.524159163498553
+            },
+            {
+              "step": 3000,
+              "last_train_batch_loss": 0.38911333680152893,
+              "validation_log_loss": 0.3433960793582457,
+              "learn_seconds": 16.13115849721362
+            },
+            {
+              "step": 4000,
+              "last_train_batch_loss": 0.3087938129901886,
+              "validation_log_loss": 0.3342178910883972,
+              "learn_seconds": 21.17018366267439
+            },
+            {
+              "step": 5000,
+              "last_train_batch_loss": 0.35357943177223206,
+              "validation_log_loss": 0.3300564147778243,
+              "learn_seconds": 26.082803363038693
+            },
+            {
+              "step": 6000,
+              "last_train_batch_loss": 0.2511254549026489,
+              "validation_log_loss": 0.32783242534453155,
+              "learn_seconds": 31.581582199200056
+            }
+          ],
+          "checkpoint": ".work/belief-v2/experiment/no_history-s33.pt",
+          "checkpoint_sha256": "78d8b7a45c71b0e4962e2c7b8b48c13966ff79b313036c2771a9cd7f90c8495c",
+          "test": {
+            "log_loss": 0.32661638159052564,
+            "decisions": 32913,
+            "by_stage_and_seat": {
+              "early": {
+                "lho": {
+                  "log_loss": 0.6918196426408973,
+                  "decisions": 7027
+                },
+                "partner": {
+                  "log_loss": 0.6820885666542819,
+                  "decisions": 7027
+                },
+                "rho": {
+                  "log_loss": 0.6654193919431405,
+                  "decisions": 7027
+                }
+              },
+              "middle": {
+                "lho": {
+                  "log_loss": 0.40266259539354493,
+                  "decisions": 9919
+                },
+                "partner": {
+                  "log_loss": 0.3957639192426766,
+                  "decisions": 9919
+                },
+                "rho": {
+                  "log_loss": 0.38798105217946827,
+                  "decisions": 9919
+                }
+              },
+              "late": {
+                "lho": {
+                  "log_loss": 0.13303457784273437,
+                  "decisions": 15967
+                },
+                "partner": {
+                  "log_loss": 0.12484686758938254,
+                  "decisions": 15967
+                },
+                "rho": {
+                  "log_loss": 0.12737835244603257,
+                  "decisions": 15967
+                }
+              }
+            },
+            "matches": 60
+          }
+        }
+      }
+    }
+  ]
+}

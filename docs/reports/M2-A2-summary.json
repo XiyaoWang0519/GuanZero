@@ -1,0 +1,579 @@
+{
+  "schema_version": 1,
+  "date_local": "2026-09-21",
+  "stage": "a2",
+  "status": "complete",
+  "decision": "retain_heuristic",
+  "base_checkpoint": ".work/runpod/artifacts/pilot/final.pt",
+  "base_checkpoint_file_sha256": "74b4365acc3e423e827c3f40d971081227fda04f7f5a198d1aa0c27239c2dcb1",
+  "collection": {
+    "schema_version": 1,
+    "purpose": "tribute_counterfactual_training",
+    "status": "complete",
+    "base_checkpoint_id": "8a8e2b08dec2e73998092a67cbc25c26df75b4c0d2f02fd0a791d5d16cd4f745",
+    "base_training_seed": 7,
+    "seed": 20260925,
+    "requested_positions": 4096,
+    "positions": 4096,
+    "branches": 52257,
+    "sample_fraction": 1.0,
+    "sampling_unit": "round",
+    "rounds": 3250,
+    "sampled_rounds": 3250,
+    "matches_started": 293,
+    "phase_positions": {
+      "1": 639,
+      "2": 3457
+    },
+    "nonconstant_positions": 3724,
+    "play_mode": "fp32_argmax",
+    "other_tribute": "heuristic",
+    "action_mode": "canonical",
+    "device": "cpu",
+    "rules": "house",
+    "obs_dim": 1849,
+    "act_dim": 154,
+    "max_decisions_per_round": 2000,
+    "engine_sha256": "97934efe146bcb83377ea046be192cb22ce8b7a18b1244c3a55c8ebf5dfb11d9",
+    "engine_source_sha256": "2227731f7fc6972d2d3766211fcfc5528ee3ff96b5f21590ecb58c9359f8bc55",
+    "collector_sha256": "cec242a2b6b50e39ada74e3454725a1205885e07593a4466d5a8da3c5bde7e77",
+    "torch_version": "2.14.0",
+    "seed_streams": "independent deal, round-sampling, seat-policy and branch streams",
+    "elapsed_seconds": 205.71879870898556
+  },
+  "evaluation_seed": 20260926,
+  "unique_evaluation_deals": 1000,
+  "shared_deals_across_fit_seeds": true,
+  "scope": "Internal house-rules synthetic tribute-start rounds; not full-match or external benchmark evidence.",
+  "validation": {
+    "python_tests_passed": 289,
+    "cpp_test_cases_passed": 58,
+    "dataset_positions_independently_audited": 4096
+  },
+  "additional_cloud_spend_usd": 0,
+  "candidates": [
+    {
+      "fit_seed": 23,
+      "checkpoint_id": "56600dfd27876377f67424338e0baf1fbf827dd08add00cd9c8fe59258d54742",
+      "checkpoint_path": ".work/a2/fit-4096-s23/tribute.pt",
+      "checkpoint_file_sha256": "c2e298af81fe6d33a605298af4b22f326af848cd6cb694de91fbcf12fdc1d1f9",
+      "fit_report_path": ".work/a2/fit-4096-s23/report.json",
+      "fit_report_sha256": "ae903e93913cf88a2b675fa5f35f82ece0bd0eeb03c46d2974c29064b0808d1c",
+      "evaluation_path": ".work/a2/eval-4096-s23.json",
+      "evaluation_sha256": "04f6effb9118fa5f8c8f375a88907386aa6e01bdeaefb95241da117fd5f7c8fc",
+      "fit_steps": 1000,
+      "batch_positions": 32,
+      "learning_rate": 0.001,
+      "fit_elapsed_seconds": 5.043403582996689,
+      "train_matches": 235,
+      "holdout_matches": 58,
+      "frozen_weights_unchanged": true,
+      "train": {
+        "positions": 3268,
+        "huber": 0.7692645631253293,
+        "regret": 1.4446144430844554,
+        "heuristic_regret": 1.4666462668298654,
+        "advantage_over_heuristic": 0.022031823745410038,
+        "optimal": 0.4975520195838433,
+        "changed": 0.6719706242350061,
+        "by_phase": {
+          "1": {
+            "positions": 514,
+            "huber": 0.390665891307825,
+            "regret": 0.5914396887159533,
+            "heuristic_regret": 0.7217898832684825,
+            "advantage_over_heuristic": 0.1303501945525292,
+            "optimal": 0.7607003891050583,
+            "changed": 0.6595330739299611
+          },
+          "2": {
+            "positions": 2754,
+            "huber": 0.8399253174151614,
+            "regret": 1.6038489469862018,
+            "heuristic_regret": 1.6056644880174291,
+            "advantage_over_heuristic": 0.0018155410312273058,
+            "optimal": 0.4484386347131445,
+            "changed": 0.6742919389978214
+          }
+        }
+      },
+      "holdout": {
+        "positions": 828,
+        "huber": 0.8171126105975179,
+        "regret": 1.6557971014492754,
+        "heuristic_regret": 1.5495169082125604,
+        "advantage_over_heuristic": -0.10628019323671498,
+        "optimal": 0.46497584541062803,
+        "changed": 0.6847826086956522,
+        "by_phase": {
+          "1": {
+            "positions": 125,
+            "huber": 0.47313813122464854,
+            "regret": 0.88,
+            "heuristic_regret": 0.808,
+            "advantage_over_heuristic": -0.072,
+            "optimal": 0.68,
+            "changed": 0.632
+          },
+          "2": {
+            "positions": 703,
+            "huber": 0.8782745023779002,
+            "regret": 1.7937411095305833,
+            "heuristic_regret": 1.6813655761024182,
+            "advantage_over_heuristic": -0.112375533428165,
+            "optimal": 0.4267425320056899,
+            "changed": 0.6941678520625889
+          }
+        }
+      },
+      "play_model_exactly_equal": true,
+      "duplicate": {
+        "deals": 1000,
+        "mean_net_levels_per_round": -0.0815,
+        "bootstrap_95_ci": [
+          -0.143,
+          -0.02
+        ],
+        "rounds": 2000,
+        "score_definition": "(team-0 net return in learned-first leg minus team-0 net return in swapped leg) / 2",
+        "ci_sampling_unit": "whole paired deal; 95% percentile bootstrap",
+        "anti_tribute_deals": 101,
+        "deals_with_actual_choices": 899,
+        "deals_with_changed_choices": 722,
+        "phase_counts": {
+          "agent": {
+            "tribute": {
+              "decisions": 1141,
+              "multiple_candidates": 207,
+              "single_candidate": 934,
+              "different_from_heuristic": 139
+            },
+            "back_tribute": {
+              "decisions": 1141,
+              "multiple_candidates": 1141,
+              "single_candidate": 0,
+              "different_from_heuristic": 767
+            }
+          },
+          "opponent": {
+            "tribute": {
+              "decisions": 1141,
+              "multiple_candidates": 207,
+              "single_candidate": 934,
+              "different_from_heuristic": 0
+            },
+            "back_tribute": {
+              "decisions": 1141,
+              "multiple_candidates": 1141,
+              "single_candidate": 0,
+              "different_from_heuristic": 0
+            }
+          }
+        },
+        "breakdown": {
+          "single_opponent": {
+            "deals": 356,
+            "mean_net_levels_per_round": -0.08146067415730338,
+            "bootstrap_95_ci": [
+              -0.18261938202247185,
+              0.018258426966292134
+            ]
+          },
+          "single_partner": {
+            "deals": 341,
+            "mean_net_levels_per_round": -0.06598240469208211,
+            "bootstrap_95_ci": [
+              -0.18185483870967736,
+              0.04838709677419355
+            ]
+          },
+          "double": {
+            "deals": 303,
+            "mean_net_levels_per_round": -0.09900990099009901,
+            "bootstrap_95_ci": [
+              -0.20301155115511546,
+              0.0049504950495049506
+            ]
+          },
+          "anti_tribute": {
+            "deals": 101,
+            "mean_net_levels_per_round": 0.0,
+            "bootstrap_95_ci": [
+              0.0,
+              0.0
+            ]
+          },
+          "with_actual_choices": {
+            "deals": 899,
+            "mean_net_levels_per_round": -0.09065628476084539,
+            "bootstrap_95_ci": [
+              -0.15907953281423803,
+              -0.023915461624026697
+            ]
+          },
+          "without_actual_choices": {
+            "deals": 101,
+            "mean_net_levels_per_round": 0.0,
+            "bootstrap_95_ci": [
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "payoff_supported": false,
+        "conclusion": "positive_payoff_not_established",
+        "deployment_recommendation": "retain_heuristic",
+        "inference_note": "Tiny samples are diagnostics only; anti-tribute and single-candidate decisions do not demonstrate learned choice quality."
+      }
+    },
+    {
+      "fit_seed": 24,
+      "checkpoint_id": "869d478e9cf1feb7a739d46e6c3e058353e6b05092961dab82201b7258371bfb",
+      "checkpoint_path": ".work/a2/fit-4096-s24/tribute.pt",
+      "checkpoint_file_sha256": "fe50e2e46c2849a2d99a9f97b0cf5b7c4c76b4b960e98f277a01f190c92cfd99",
+      "fit_report_path": ".work/a2/fit-4096-s24/report.json",
+      "fit_report_sha256": "c578187b57d9f7f1894e25b8e224621e0b2871e5f8d62f6034542038b1cd824b",
+      "evaluation_path": ".work/a2/eval-4096-s24.json",
+      "evaluation_sha256": "20cec1fff2615b2a09d2059695e009246eb119a42629125dd39bb06a2c54ecc3",
+      "fit_steps": 1000,
+      "batch_positions": 32,
+      "learning_rate": 0.001,
+      "fit_elapsed_seconds": 4.924340832978487,
+      "train_matches": 235,
+      "holdout_matches": 58,
+      "frozen_weights_unchanged": true,
+      "train": {
+        "positions": 3268,
+        "huber": 0.7690499212216044,
+        "regret": 1.4605263157894737,
+        "heuristic_regret": 1.4666462668298654,
+        "advantage_over_heuristic": 0.006119951040391677,
+        "optimal": 0.4920440636474908,
+        "changed": 0.6554467564259486,
+        "by_phase": {
+          "1": {
+            "positions": 514,
+            "huber": 0.3907534764460987,
+            "regret": 0.5739299610894941,
+            "heuristic_regret": 0.7217898832684825,
+            "advantage_over_heuristic": 0.14785992217898833,
+            "optimal": 0.7645914396887159,
+            "changed": 0.7042801556420234
+          },
+          "2": {
+            "positions": 2754,
+            "huber": 0.8396542685762195,
+            "regret": 1.625998547567175,
+            "heuristic_regret": 1.6056644880174291,
+            "advantage_over_heuristic": -0.020334059549745823,
+            "optimal": 0.4411764705882353,
+            "changed": 0.6463326071169209
+          }
+        }
+      },
+      "holdout": {
+        "positions": 828,
+        "huber": 0.8166641249086902,
+        "regret": 1.683574879227053,
+        "heuristic_regret": 1.5495169082125604,
+        "advantage_over_heuristic": -0.13405797101449277,
+        "optimal": 0.44806763285024154,
+        "changed": 0.677536231884058,
+        "by_phase": {
+          "1": {
+            "positions": 125,
+            "huber": 0.4737170322524512,
+            "regret": 0.856,
+            "heuristic_regret": 0.808,
+            "advantage_over_heuristic": -0.048,
+            "optimal": 0.664,
+            "changed": 0.728
+          },
+          "2": {
+            "positions": 703,
+            "huber": 0.8776433376854041,
+            "regret": 1.8307254623044096,
+            "heuristic_regret": 1.6813655761024182,
+            "advantage_over_heuristic": -0.14935988620199148,
+            "optimal": 0.4096728307254623,
+            "changed": 0.6685633001422475
+          }
+        }
+      },
+      "play_model_exactly_equal": true,
+      "duplicate": {
+        "deals": 1000,
+        "mean_net_levels_per_round": -0.0645,
+        "bootstrap_95_ci": [
+          -0.1285,
+          1.2499999999931787e-05
+        ],
+        "rounds": 2000,
+        "score_definition": "(team-0 net return in learned-first leg minus team-0 net return in swapped leg) / 2",
+        "ci_sampling_unit": "whole paired deal; 95% percentile bootstrap",
+        "anti_tribute_deals": 101,
+        "deals_with_actual_choices": 899,
+        "deals_with_changed_choices": 705,
+        "phase_counts": {
+          "agent": {
+            "tribute": {
+              "decisions": 1141,
+              "multiple_candidates": 207,
+              "single_candidate": 934,
+              "different_from_heuristic": 138
+            },
+            "back_tribute": {
+              "decisions": 1141,
+              "multiple_candidates": 1141,
+              "single_candidate": 0,
+              "different_from_heuristic": 753
+            }
+          },
+          "opponent": {
+            "tribute": {
+              "decisions": 1141,
+              "multiple_candidates": 207,
+              "single_candidate": 934,
+              "different_from_heuristic": 0
+            },
+            "back_tribute": {
+              "decisions": 1141,
+              "multiple_candidates": 1141,
+              "single_candidate": 0,
+              "different_from_heuristic": 0
+            }
+          }
+        },
+        "breakdown": {
+          "single_opponent": {
+            "deals": 356,
+            "mean_net_levels_per_round": -0.007022471910112359,
+            "bootstrap_95_ci": [
+              -0.10958567415730332,
+              0.09691011235955056
+            ]
+          },
+          "single_partner": {
+            "deals": 341,
+            "mean_net_levels_per_round": -0.05571847507331378,
+            "bootstrap_95_ci": [
+              -0.1642595307917888,
+              0.060117302052785926
+            ]
+          },
+          "double": {
+            "deals": 303,
+            "mean_net_levels_per_round": -0.1419141914191419,
+            "bootstrap_95_ci": [
+              -0.24921617161716164,
+              -0.034653465346534656
+            ]
+          },
+          "anti_tribute": {
+            "deals": 101,
+            "mean_net_levels_per_round": 0.0,
+            "bootstrap_95_ci": [
+              0.0,
+              0.0
+            ]
+          },
+          "with_actual_choices": {
+            "deals": 899,
+            "mean_net_levels_per_round": -0.07174638487208009,
+            "bootstrap_95_ci": [
+              -0.1418242491657397,
+              -0.0016546162402670394
+            ]
+          },
+          "without_actual_choices": {
+            "deals": 101,
+            "mean_net_levels_per_round": 0.0,
+            "bootstrap_95_ci": [
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "payoff_supported": false,
+        "conclusion": "positive_payoff_not_established",
+        "deployment_recommendation": "retain_heuristic",
+        "inference_note": "Tiny samples are diagnostics only; anti-tribute and single-candidate decisions do not demonstrate learned choice quality."
+      }
+    },
+    {
+      "fit_seed": 25,
+      "checkpoint_id": "5d1e4bfa47608e076cac440bbc3f2a1b673a0239c3f388dff753c8a56ba6fa6f",
+      "checkpoint_path": ".work/a2/fit-4096-s25/tribute.pt",
+      "checkpoint_file_sha256": "eb6b896f15144ccad23cc51dba53af94c336f1893b029b084b76648a874a0aa9",
+      "fit_report_path": ".work/a2/fit-4096-s25/report.json",
+      "fit_report_sha256": "5d1cf3b594128f0c7c5cfe7e712a5f3c2d5e6ebf82b5c18c9af30e8420a37aa6",
+      "evaluation_path": ".work/a2/eval-4096-s25.json",
+      "evaluation_sha256": "a4fac25d8b015ec190a6c690706e7cc329d1ef52ba75f366e17b2c59d4f06492",
+      "fit_steps": 1000,
+      "batch_positions": 32,
+      "learning_rate": 0.001,
+      "fit_elapsed_seconds": 4.408210583002074,
+      "train_matches": 235,
+      "holdout_matches": 58,
+      "frozen_weights_unchanged": true,
+      "train": {
+        "positions": 3268,
+        "huber": 0.7700837565419064,
+        "regret": 1.4697062423500613,
+        "heuristic_regret": 1.4666462668298654,
+        "advantage_over_heuristic": -0.0030599755201958386,
+        "optimal": 0.48225214198286415,
+        "changed": 0.6808445532435741,
+        "by_phase": {
+          "1": {
+            "positions": 514,
+            "huber": 0.3942840750202957,
+            "regret": 0.5583657587548638,
+            "heuristic_regret": 0.7217898832684825,
+            "advantage_over_heuristic": 0.16342412451361868,
+            "optimal": 0.7626459143968871,
+            "changed": 0.6712062256809338
+          },
+          "2": {
+            "positions": 2754,
+            "huber": 0.8402221139500793,
+            "regret": 1.6397966594045026,
+            "heuristic_regret": 1.6056644880174291,
+            "advantage_over_heuristic": -0.03413217138707335,
+            "optimal": 0.429920116194626,
+            "changed": 0.6826434277414669
+          }
+        }
+      },
+      "holdout": {
+        "positions": 828,
+        "huber": 0.8195217735948691,
+        "regret": 1.6944444444444444,
+        "heuristic_regret": 1.5495169082125604,
+        "advantage_over_heuristic": -0.14492753623188406,
+        "optimal": 0.43719806763285024,
+        "changed": 0.7089371980676329,
+        "by_phase": {
+          "1": {
+            "positions": 125,
+            "huber": 0.4845697261923924,
+            "regret": 0.856,
+            "heuristic_regret": 0.808,
+            "advantage_over_heuristic": -0.048,
+            "optimal": 0.688,
+            "changed": 0.672
+          },
+          "2": {
+            "positions": 703,
+            "huber": 0.8790793922652953,
+            "regret": 1.8435277382645803,
+            "heuristic_regret": 1.6813655761024182,
+            "advantage_over_heuristic": -0.16216216216216217,
+            "optimal": 0.39260312944523473,
+            "changed": 0.7155049786628734
+          }
+        }
+      },
+      "play_model_exactly_equal": true,
+      "duplicate": {
+        "deals": 1000,
+        "mean_net_levels_per_round": -0.0905,
+        "bootstrap_95_ci": [
+          -0.156,
+          -0.0265
+        ],
+        "rounds": 2000,
+        "score_definition": "(team-0 net return in learned-first leg minus team-0 net return in swapped leg) / 2",
+        "ci_sampling_unit": "whole paired deal; 95% percentile bootstrap",
+        "anti_tribute_deals": 101,
+        "deals_with_actual_choices": 899,
+        "deals_with_changed_choices": 727,
+        "phase_counts": {
+          "agent": {
+            "tribute": {
+              "decisions": 1141,
+              "multiple_candidates": 207,
+              "single_candidate": 934,
+              "different_from_heuristic": 139
+            },
+            "back_tribute": {
+              "decisions": 1141,
+              "multiple_candidates": 1141,
+              "single_candidate": 0,
+              "different_from_heuristic": 774
+            }
+          },
+          "opponent": {
+            "tribute": {
+              "decisions": 1141,
+              "multiple_candidates": 207,
+              "single_candidate": 934,
+              "different_from_heuristic": 0
+            },
+            "back_tribute": {
+              "decisions": 1141,
+              "multiple_candidates": 1141,
+              "single_candidate": 0,
+              "different_from_heuristic": 0
+            }
+          }
+        },
+        "breakdown": {
+          "single_opponent": {
+            "deals": 356,
+            "mean_net_levels_per_round": -0.025280898876404494,
+            "bootstrap_95_ci": [
+              -0.12780898876404495,
+              0.07865168539325842
+            ]
+          },
+          "single_partner": {
+            "deals": 341,
+            "mean_net_levels_per_round": -0.08357771260997067,
+            "bootstrap_95_ci": [
+              -0.1935483870967742,
+              0.03522727272727253
+            ]
+          },
+          "double": {
+            "deals": 303,
+            "mean_net_levels_per_round": -0.17491749174917492,
+            "bootstrap_95_ci": [
+              -0.2887788778877888,
+              -0.0594059405940594
+            ]
+          },
+          "anti_tribute": {
+            "deals": 101,
+            "mean_net_levels_per_round": 0.0,
+            "bootstrap_95_ci": [
+              0.0,
+              0.0
+            ]
+          },
+          "with_actual_choices": {
+            "deals": 899,
+            "mean_net_levels_per_round": -0.10066740823136819,
+            "bootstrap_95_ci": [
+              -0.1718715239154616,
+              -0.030033370411568408
+            ]
+          },
+          "without_actual_choices": {
+            "deals": 101,
+            "mean_net_levels_per_round": 0.0,
+            "bootstrap_95_ci": [
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "payoff_supported": false,
+        "conclusion": "positive_payoff_not_established",
+        "deployment_recommendation": "retain_heuristic",
+        "inference_note": "Tiny samples are diagnostics only; anti-tribute and single-candidate decisions do not demonstrate learned choice quality."
+      }
+    }
+  ],
+  "dataset_sha256": "eb216fe39b18354c65b14b74d3751b6355220a24e4c0d3e5594b8887692ebd5b"
+}

@@ -2,6 +2,28 @@
 
 Status: v0.4, Sept. 21, 2026. v0.2 fixed the house rules (RULES.md section 13). v0.3 added phase heads and brought learned tribute forward to M2. v0.4 adds the Transformer history encoder (v2), the match memory experiment (v3) and the belief probe that gates them. Owner: Irvin. Companion documents: `RULES.md` (rules and acceptance tests), `gd_reference.py` (Python rules oracle).
 
+Implementation update, Sept. 21: the pre-training M1 pipeline is implemented
+and verified on CPU and an RTX 5090. See `M1_TODO.md`, `TRAINING.md`,
+`reports/M1-preflight.md`, and `reports/M1-runpod.md`. The bounded GPU pilot
+completed 34,496 updates and 71.27M decisions, with checkpoints retrieved and
+the pod deleted. This does not mark the M1 strength gate complete; internal
+learning measurements cannot replace the unavailable external benchmark agents.
+
+M2 update, Sept. 21: Stage A2 collection, frozen-head fitting and paired tribute
+evaluation are implemented. A 4,096-position, three-seed experiment did not
+improve on heuristic exchanges, so the heuristic remains the baseline. See
+`M2_TODO.md` and `reports/M2-A2.md`. The public known-holdings encoder was also
+corrected before collection; PPO, the critic and league remain pending.
+
+Transformer follow-up: the larger §7.4 belief experiment passed its gate on
+4,096 frozen-policy rounds and three fit seeds. The corrected query network
+improves flat-model log loss by 9.1–11.1%; history itself adds 0.21–0.43% over
+a separately trained no-history control, with positive paired intervals.
+Shared-cache inference is implemented and tested. Full v2 policy/sequence RL
+integration and equal-compute playing-strength evaluation are next; see
+`reports/M2-belief.md`. The earlier small prototype omitted the post-attention
+MLP, so its negative result does not apply to this corrected architecture.
+
 ## 1. Summary
 
 Build a reinforcement learning agent for Guandan (掼蛋) that beats every published baseline and is competitive with experienced human players, trained on one rented GPU node on a personal budget.
@@ -166,7 +188,13 @@ class VecEnv {
 };
 ```
 
-Python sees the buffers as NumPy arrays that alias pinned memory. Tribute and back-tribute decisions use the same batch path with their own candidate lists, so a learned tribute policy can be added without touching the interface. Until then a heuristic handles them inside the engine.
+Python sees read-only NumPy views of reusable CPU buffers. The learner copies
+features into owned storage and pins transfer tensors when using CUDA; the
+engine storage itself is not pinned. Tribute and back-tribute decisions use
+the same batch path with their own candidate lists and an in-engine heuristic
+choice. Stage A uses that choice. Private hidden-hand labels are separate from
+observations, and every decision/result is keyed by environment, match and
+round. See `PY_API.md` for the implemented interface.
 
 ### 5.4 Testing strategy
 
@@ -225,7 +253,9 @@ Two towers with late fusion. This interface is fixed across versions. v1, v2 and
 
 DouZero and DanZero run the entire network once per candidate. With about 100 candidates on a lead, the two-tower layout costs a small fraction of that.
 
-Inference runs in bf16 with batch sizes bucketed for CUDA graphs. Ragged candidate sets are handled with offsets and a segment-wise max or softmax.
+Stage A supports bf16 inference on capable CUDA devices, bounded candidate
+chunks, and ragged segment-wise selection. CUDA graph bucketing is a future
+performance optimization, to be justified by measurements on the selected GPU.
 
 ### 7.1 v1: MLP state tower
 
@@ -260,6 +290,13 @@ Once v1 self-play produces logs, run a supervised experiment with no RL in it: t
 1. If v2 predicts hidden hands clearly better, build v2 into the RL pipeline and confirm with an equal-compute duplicate-deal comparison against v1.
 2. If the two are close, v2 is demoted and the compute goes to the critic, the league and endgame search, which are the larger levers by the record of prior work: PerfectDou passed DouZero through its critic and GS2 passed SDMC through search.
 
+Measured status, Sept. 21: the larger corrected prototype passes the supervised
+gate across three seeds and 60 shared held-out matches. Its history-specific
+gain is small, so retain the improved no-history model in the next equal-compute
+RL comparison. This supports implementing v2 experiments, not promoting an
+untested playing policy. All models were still improving at the 6,000-update
+budget; convergence and production-size scaling remain unmeasured.
+
 The same probe, with opponents of fixed style and the log loss measured round by round within a match, is the first test for v3.
 
 Expectation, stated in advance so that results can be judged against it: v2 is a moderate and fairly certain gain, a few points of win rate at equal compute, not a step change. v3 has the highest ceiling and the highest chance of showing nothing.
@@ -278,7 +315,12 @@ Expectation, stated in advance so that results can be judged against it: v2 is a
 4. Bootstrapping out of random play: early on, a share of opposing seats is driven by the in-engine greedy bot, decaying from 50% to 0. Only network-driven seats produce training samples. This is the SDMC lesson without needing an expert.
 5. Play-time policy: sample uniformly among candidates whose Q is within a small margin of the best one, to be less predictable.
 
-Because collection and learning share a process, samples are at most one iteration old and the staleness clipping used by DanZero is unnecessary.
+Collection and learning share a process. Completed-round samples are used for
+one learner phase and then discarded; incomplete rounds retain their recorded
+decisions across phases until the return exists. The initial configuration
+collects 32 vector steps and performs 64 minibatch updates of 2,048 samples,
+with explicit sample/throughput metrics for tuning. No staleness clipping is
+applied in Stage A.
 
 ### 8.3 Stage A2: tribute and back-tribute heads
 
@@ -297,6 +339,13 @@ Stage A therefore uses a heuristic, and Stage A2 learns the heads with a low-var
 
 Cost: with about ten candidates per back-tribute decision, labelling 2% of rounds adds roughly 20% to rollout compute.
 
+First measured decision (Sept. 21): retain the heuristic. The three fitted
+heads scored -0.0815, -0.0645 and -0.0905 net levels per round against it on
+1,000 shared fresh duplicate deals per candidate; no candidate had a positive
+lower 95% bound. This is evidence for the current v1/data/budget configuration,
+not a general claim that tribute learning cannot help. Full evidence and the
+observation-semantics correction are recorded in `reports/M2-A2.md`.
+
 ### 8.4 Stage B: PPO with a perfect-information critic and a league
 
 1. Policy: softmax over fusion logits, initialized from Stage A as `Q / temperature`. Candidates are pruned to the top `k` by the frozen Stage A network, with `k` around 32, plus pass.
@@ -310,9 +359,18 @@ Cost: with about ten candidates per back-tribute decision, labelling 2% of round
 
 When few cards remain unseen, sample hidden hands consistent with public information, weighted by the hidden hand head. For each of the top few candidates, roll the round out with the policy in every seat and average the returns. Override the policy only when the margin is clear. The engine's trivially copyable state makes rollouts cheap.
 
-### 8.6 Load estimate (to be replaced by measurements)
+### 8.6 Measured first-run load
 
-At 8,192 environments and about 30 candidates per decision, one iteration is roughly 8,000 state tower passes and 250,000 cheap candidate passes. On a 4090-class GPU that is a few tens of milliseconds, and stepping the environments costs a few milliseconds on 16 cores if the engine meets its target. That suggests on the order of 10^5 decisions per second, or 10^8 rounds per day. If this holds, the learner rather than the simulator is the bottleneck, and a node with about 16 vCPUs and one consumer GPU is enough. M0 and the first M1 smoke run replace this paragraph with numbers.
+The September 21 RTX 5090 pilot used 4,096 environments, eight engine threads,
+four Torch threads and the full 3.08M-parameter v1 model with bf16. In five
+minutes it processed 18.77M decisions (about 62,500/s), 324,987 rounds and
+9,024 optimizer updates. Peak host RSS was about 4.2 GiB; CUDA peak allocation
+was 666 MiB, with a largest candidate batch of 803,808. A typical 32-step
+collection phase took 1.8–1.9 seconds versus about 0.15–0.22 seconds for 64
+learner updates. Collection, including inference and Python trajectory work,
+dominates this configuration. These measurements replace the earlier estimate
+that the learner would be the bottleneck. They are from a short supervised
+run, not a sustained daily throughput guarantee. See `reports/M1-runpod.md`.
 
 ## 9. Evaluation
 
@@ -335,7 +393,7 @@ At 8,192 environments and about 30 candidates per decision, one iteration is rou
 
 Settled in M0, and not as hoped. The repository ships no agents and no weights: it contains the rules server, an Electron client and the move generator jar, nothing else. It also carries no LICENSE file, so nothing from it is vendored here and the adapter locates a local clone through `OGD_ROOT`.
 
-The consequence is that the opponents named in the M2 and M3 gates cannot currently be played against. The fallback from the risk table becomes the plan: train a DanZero-style baseline with our own pipeline and use it as the reference point, treating the published win rates as calibration rather than as a ladder. This needs a decision before M2 begins, because it changes what those gates can mean. See `docs/reports/M0.md` section 5.
+The consequence is that the opponents named in the M1, M2 and M3 gates cannot currently be played against. The fallback from the risk table becomes the plan: train a DanZero-style baseline with our own pipeline and use it as the reference point, treating the published win rates as calibration rather than as a ladder. This needs a decision before M2 begins, because it changes what those gates can mean. See `docs/reports/M0.md` section 5.
 
 M0 also replaced the socket route with something cheaper: the repository's `guandan-java/` directory exposes the Java move generator to Python directly, which is what the trace logger and replay diff use.
 
