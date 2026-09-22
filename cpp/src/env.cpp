@@ -131,6 +131,34 @@ struct VecEnv::Impl {
     if (cfg.log_public_actions) engine.set_auto_pass(false);
   }
 
+  // Styled-bot choice of pending row `r` under the current style rows. Needs
+  // greedy_choice[r] and rows_env to be filled for the current batch.
+  int32_t styled_for_row(int r) const {
+    const int i = rows_env[r];
+    if (styles.empty()) return greedy_choice[r];
+    const MatchState& m = states[i];
+    StyleParams style;
+    const size_t base = (size_t(i) * 4 + size_t(m.round.to_move)) * StyleParams::kDim;
+    std::memcpy(style.v.data(), styles.data() + base, sizeof(float) * StyleParams::kDim);
+    // A per-environment stream derived from the env seed. Mixing the state
+    // hash keeps the draw reproducible for a given seed and action sequence
+    // without mutating any shared RNG.
+    uint64_t style_rng = style_rng_base[i] ^ m.hash();
+    return styled_bot(m, cands[i], style, style_rng);
+  }
+
+  // A style change while a batch is pending must reach that batch: a match can
+  // restart inside pending(), and the opponent source only learns of it after
+  // pending() returned. Recomputes in place, so spans and numpy views of
+  // styled_choice already handed out see the new values.
+  void refresh_styled_choice() {
+    if (!batch_ready) return;
+    const int rows = static_cast<int>(rows_env.size());
+    pool.run([&](int shard, int shards) {
+      for (int r = shard; r < rows; r += shards) styled_choice[r] = styled_for_row(r);
+    });
+  }
+
   void apply(int i, const Action& action, bool forced) {
     if (!cfg.log_public_actions || (cfg.log_env_limit >= 0 && i >= cfg.log_env_limit)) {
       engine.apply(states[i], action);
@@ -279,19 +307,7 @@ DecisionBatch VecEnv::pending() {
       s.batch_match_id[r] = s.match_ids[i];
       uint64_t bot_rng = m.rng; // inspecting a batch must never alter shuffle RNG
       s.greedy_choice[r] = greedy_bot(m, s.cands[i], bot_rng);
-      if (s.styles.empty()) {
-        s.styled_choice[r] = s.greedy_choice[r];
-      } else {
-        StyleParams style;
-        const size_t base = (size_t(i) * 4 + size_t(m.round.to_move)) * StyleParams::kDim;
-        std::memcpy(style.v.data(), s.styles.data() + base,
-                    sizeof(float) * StyleParams::kDim);
-        // A per-environment stream derived from the env seed. Mixing the state
-        // hash keeps the draw reproducible for a given seed and action sequence
-        // without mutating any shared RNG.
-        uint64_t style_rng = s.style_rng_base[i] ^ m.hash();
-        s.styled_choice[r] = styled_bot(m, s.cands[i], style, style_rng);
-      }
+      s.styled_choice[r] = s.styled_for_row(r);
       for (int rel = 1; rel <= 3; ++rel)
         for (int card = 0; card < kNumCardIds; ++card)
           s.hidden_counts[(size_t(r) * 3 + rel - 1) * kNumCardIds + card] =
@@ -351,9 +367,13 @@ void VecEnv::set_styles(std::span<const float> styles) {
   if (styles.size() != want)
     throw std::invalid_argument("styles must be [num_envs, 4, STYLE_DIM] float32");
   s.styles.assign(styles.begin(), styles.end());
+  s.refresh_styled_choice();
 }
 
-void VecEnv::clear_styles() { impl_->styles.clear(); }
+void VecEnv::clear_styles() {
+  impl_->styles.clear();
+  impl_->refresh_styled_choice();
+}
 
 std::span<const RoundResult> VecEnv::drain_finished_rounds() {
   Impl& s = *impl_;

@@ -16,7 +16,13 @@ Contract, in the order the loop calls it:
 2. `on_match_start(env_ids)` whenever an environment begins a new match,
    detected by the loop from a changed `match_id` (and for every environment
    after `bind`). The source fixes one opponent for that environment for the
-   whole match. It is called before the first opponent row of that match.
+   whole match. A match can end and the next one open inside a single
+   `pending()`, so the loop must call `on_match_start` for every environment
+   whose `match_id` changed in the current batch BEFORE it builds
+   `OpponentRows` or reads `styled_choice`, and must read `styled_choice` from
+   the batch after that call. `VecEnv.set_styles` recomputes the pending
+   `styled_choice` in place (the batch's numpy view updates), so restyling in
+   `on_match_start` reaches the first decision of the new match.
 3. `act(rows)` with every pending opponent row of the current step. Returns
    int32 local candidate indices, one per row, in row order.
 4. `on_match_end(env_ids, learner_won)` when `RoundResult.match_winner >= 0`.
@@ -48,7 +54,8 @@ class OpponentRows:
     phase: np.ndarray          # [rows] int32
     match_id: np.ndarray       # [rows] int64
     greedy_choice: np.ndarray  # [rows] int32, local index
-    styled_choice: np.ndarray  # [rows] int32, local index under the env's styles
+    # [rows] int32, local index under the env's styles; read after on_match_start
+    styled_choice: np.ndarray
 
     @property
     def rows(self) -> int:
