@@ -25,6 +25,20 @@ KL(pi || pi_M1) on the pruned set, where pi_M1 = softmax(Q_M1 / temperature),
 plus the DMC auxiliary hidden-hand and finish losses on the policy network.
 The critic is trained jointly on MSE to the GAE returns with its own optimizer.
 
+League (B8). `opponent = "league:<pool.json>"` builds a `train.league.League`
+from the pool file (network paths resolved like other artifacts, sampler
+seeded from the trainer RNG). Every `snapshot_every` updates (pool config, or
+`league_snapshot_every`) the policy is written to an immutable
+`league/update-<n>.pt` and added with `League.add_snapshot`, and a checkpoint
+follows at once. Metrics carry `League.stats()`; checkpoints carry the league
+state (entries, EMAs, tallies, snapshots, sampler RNG) and a resume continues
+the same pool. League entries that are the frozen M1 itself at argmax are
+"external": their play rows go through the rollout's shared reference forward
+(the B5b fusion) instead of a second copy of the network; every other network
+entry runs its own batched forward inside the league. With actor processes
+each actor has its own league and the learner keeps one weight table; see
+`train/ppo_actors.py` for the semantics.
+
 Checkpoints use the `dmc.py` layout (`latest.pt`, hard-linked snapshots in
 `checkpoints/`, `metrics.jsonl`, `config.json`, `runtime-*.json`) and write a
 Stage B payload (`stage="ppo"`) that `eval.policies.load_policy` plays. As in
@@ -34,7 +48,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import json
 import math
 import os
@@ -64,6 +78,7 @@ from train.rollout_buffer import (HIDDEN_DIM, RolloutBuffer, RolloutBufferConfig
                                   to_device)
 
 PLAY = int(gd.Phase.Play)
+LEAGUE = "league:"
 M1_FINAL = ".work/runpod/artifacts/pilot/final.pt"
 CRITIC_FIT = ".work/critic-fit/perfect/best.pt"
 
@@ -77,8 +92,12 @@ class PPOConfig:
     critic_init: str = CRITIC_FIT
     critic_width: int = 512
     critic_layers: int = 4
-    # "frozen" (the init checkpoint, argmax Q), "frozen:<path>", or "greedy".
+    # "frozen" (the init checkpoint, argmax Q), "frozen:<path>", "greedy", or
+    # "league:<pool.json>", the B7 opponent league (train/league.py) with
+    # learner snapshots every `snapshot_every` updates of the pool config.
     opponent: str = "frozen"
+    # League only: overrides the pool's snapshot_every when positive.
+    league_snapshot_every: int = 0
     tribute_policy: str = "heuristic"
     action_mode: str = "canonical"
     num_envs: int = 1024
@@ -124,7 +143,8 @@ class PPOConfig:
     # each of W actor processes (train/ppo_actors.py), each with num_threads
     # engine threads and torch_threads torch threads, synchronously: actors
     # wait while the learner trains, so there is no policy lag. Needs a
-    # config opponent (frozen, frozen:<path>, greedy).
+    # config opponent (frozen, frozen:<path>, greedy, league:<pool.json>);
+    # the league's semantics across actors are in train/ppo_actors.py.
     actor_processes: int = 0
 
     def validate(self) -> None:
@@ -138,7 +158,8 @@ class PPOConfig:
                 raise ValueError(f"{name} must be positive and finite")
         nonnegative = ("policy_lr", "critic_lr", "entropy_coef", "kl_coef", "target_kl",
                        "value_coef", "hidden_weight", "finish_weight", "buffer_steps",
-                       "buffer_candidates", "buffer_trajectories", "actor_processes")
+                       "buffer_candidates", "buffer_trajectories", "actor_processes",
+                       "league_snapshot_every")
         for name in nonnegative:
             value = getattr(self, name)
             if not math.isfinite(value) or value < 0:
@@ -156,8 +177,9 @@ class PPOConfig:
         if self.action_mode not in ("canonical", "full"):
             raise ValueError("action_mode must be canonical or full")
         if not (self.opponent in ("frozen", "greedy")
-                or (self.opponent.startswith("frozen:") and len(self.opponent) > 7)):
-            raise ValueError("opponent must be frozen, frozen:<path> or greedy")
+                or (self.opponent.startswith("frozen:") and len(self.opponent) > 7)
+                or (self.opponent.startswith(LEAGUE) and len(self.opponent) > len(LEAGUE))):
+            raise ValueError("opponent must be frozen, frozen:<path>, greedy or league:<pool.json>")
         if not self.init_checkpoint:
             raise ValueError("init_checkpoint is required")
         if self.actor_processes and (self.num_envs % self.actor_processes
@@ -192,6 +214,32 @@ def resolve_artifact(path: str | Path) -> Path:
         if (parent / path).exists():
             return parent / path
     raise FileNotFoundError(f"{path} not found here or in any parent checkout")
+
+
+def resolve_policy_spec(spec: str) -> str:
+    """A league entry spec with its checkpoint path (if any) made absolute via
+    `resolve_artifact`, so actor processes and worktrees load the same file."""
+    from train.league import entry_kind
+
+    if entry_kind(spec) != "network":
+        return spec
+    head, path = "", spec
+    if spec.startswith("sample:") or spec.startswith("sample="):
+        head, _, path = spec.partition(":")
+        head += ":"
+    return head + str(resolve_artifact(path))
+
+
+def league_setup(pool: str | Path, device: torch.device) -> tuple[Any, list[dict[str, Any]]]:
+    """LeagueConfig and resolved entry dicts of a pool file, for this device.
+    Entry names default to the spec as written in the file."""
+    from train.league import load_pool
+
+    league_config, raw = load_pool(resolve_artifact(pool))
+    entries = [{"spec": resolve_policy_spec(item["spec"]),
+                "name": item.get("name") or item["spec"],
+                "weight": float(item.get("weight", 1.0))} for item in raw]
+    return replace(league_config, device=str(device)), entries
 
 
 def segment_sum(values: torch.Tensor, offsets: torch.Tensor) -> torch.Tensor:
@@ -301,8 +349,9 @@ class RolloutCollector:
     Shared by `PPOTrainer` (in-process rollout) and the actor processes of
     `train/ppo_actors.py`. Needs `config`, `device`, `policy`, `env`,
     `learner_team`, `env_match`, `buffer`, `opponent`, `fused_opponent`,
-    `upload`, `timers`, `generator`, `progress`, `window`, `phase_code`,
-    `bound` and `should_stop()`.
+    `league_fused` (the opponent is a `League` whose `external` specs are the
+    frozen reference), `upload`, `timers`, `generator`, `progress`, `window`,
+    `phase_code`, `bound` and `should_stop()`.
     """
 
     def _finish_rounds(self, results) -> None:
@@ -501,6 +550,17 @@ class RolloutCollector:
                 self._fast_act(batch, learner_rows, opponent_play, offsets, env_id, seat,
                                phase, match_id, choices)
             else:
+                fused_rows = opponent_rows[:0]
+                if self.league_fused and opponent_rows.size:
+                    # League matches against the frozen M1 itself: its play
+                    # rows join the shared reference forward (argmax, as the
+                    # league's own model of that checkpoint would play), its
+                    # tribute rows keep greedy_choice (heuristic tribute).
+                    external = self.opponent.external_rows(env_id[opponent_rows])
+                    if external.any():
+                        fused = opponent_rows[external]
+                        fused_rows = fused[phase[fused] == PLAY]
+                        opponent_rows = opponent_rows[~external]
                 if opponent_rows.size:
                     with self._phase("opponent act"):
                         picked = np.asarray(self.opponent.act(self._opponent_rows(
@@ -509,9 +569,9 @@ class RolloutCollector:
                     if picked.shape != opponent_rows.shape:
                         raise ValueError("opponent returned the wrong number of choices")
                     choices[opponent_rows] = picked
-                if learner_rows.size:
+                if learner_rows.size or fused_rows.size:
                     if self.config.fast_rollout:
-                        self._fast_act(batch, learner_rows, learner_rows[:0], offsets, env_id,
+                        self._fast_act(batch, learner_rows, fused_rows, offsets, env_id,
                                        seat, phase, match_id, choices)
                     else:
                         with self._phase("learner act (B5 path)"):
@@ -557,8 +617,10 @@ class PPOTrainer(RolloutCollector):
             payload = load_checkpoint(resume, self.device)
             if payload.get("stage") != "ppo":
                 raise ValueError("PPO resume requires a Stage B (ppo) checkpoint")
+            defaults = asdict(PPOConfig())   # fields added after the checkpoint was written
             for key, value in asdict(config).items():
-                if key not in MUTABLE_ON_RESUME and value != payload["config"].get(key):
+                if key not in MUTABLE_ON_RESUME and value != payload["config"].get(key,
+                                                                                  defaults[key]):
                     raise ValueError(f"resume config differs at {key}")
             self.policy = policy_from_payload(payload, self.device)
             if self.policy.config != policy_config:
@@ -623,6 +685,26 @@ class PPOTrainer(RolloutCollector):
         # As in dmc.py, environments restart on resume from a seed drawn from the restored RNG.
         self.actors = None
         self.window = {"matches": 0, "wins": 0, "rounds": 0, "learner_return": 0.0}
+        # The authoritative league (weights, snapshots, tallies): the opponent
+        # itself in-process, an unbound copy fed by the actors otherwise.
+        self.league = None
+        self.league_entries: list[dict[str, Any]] = []
+        self.league_external: frozenset[str] = frozenset()
+        self.league_fused = False
+        self.league_snapshot_taken = False
+        self.actor_league_info: dict[str, float] = {}
+        if config.opponent.startswith(LEAGUE):
+            if opponent is not None:
+                raise ValueError("pass either an opponent object or a league: config opponent")
+            from train.league import League
+            self.league_config, self.league_entries = league_setup(
+                config.opponent[len(LEAGUE):], self.device)
+            if config.league_snapshot_every:
+                self.league_config = replace(self.league_config,
+                                             snapshot_every=config.league_snapshot_every)
+            self.league_external = self._fused_league_specs(self.league_entries)
+            self.league_fused = bool(self.league_external)
+            league_state = payload.get("league_state") if payload is not None else None
         if config.actor_processes:
             # Environments, opponents and shard buffers live in actor processes
             # (train/ppo_actors.py); the buffers are shared memory read here.
@@ -632,7 +714,16 @@ class PPOTrainer(RolloutCollector):
             from train.ppo_actors import ActorPool, shard_sizes
             self.env = self.buffer = self.opponent = None
             self.fused_opponent = False
-            self.actors = ActorPool(self, shard_sizes(config.num_envs, config.actor_processes))
+            actor_rng = None
+            if self.league_entries:
+                self.league = League(self.league_entries, self.league_config)
+                if league_state is not None:
+                    self.league.load_state_dict(league_state)
+                saved = payload.get("league_actor_rng") if payload is not None else None
+                if saved is not None and len(saved) == config.actor_processes:
+                    actor_rng = saved
+            self.actors = ActorPool(self, shard_sizes(config.num_envs, config.actor_processes),
+                                    league_rng=actor_rng)
             self.buffers = self.actors.buffers
         else:
             self.env = gd.VecEnv(config.num_envs, num_threads=config.num_threads,
@@ -642,7 +733,16 @@ class PPOTrainer(RolloutCollector):
             self.env_match = np.full(config.num_envs, -1, np.int64)
             self.buffer = RolloutBuffer(config.buffer_config())
             self.buffers = [self.buffer]
-            self.opponent = opponent if opponent is not None else self._default_opponent()
+            if self.league_entries:
+                # Seeded from the trainer RNG, so PPOConfig.seed fixes the draws.
+                self.league = League(self.league_entries, replace(
+                    self.league_config, seed=int(self.rng.integers(0, 2**63))))
+                self.league.external = self.league_external
+                if league_state is not None:
+                    self.league.load_state_dict(league_state)
+                self.opponent = self.league
+            else:
+                self.opponent = opponent if opponent is not None else self._default_opponent()
             self.opponent.bind(self.env, self.learner_team)
             # FrozenModelOpponent.act is a pure function of its rows: argmax of
             # its network's play head on play rows, the heuristic otherwise.
@@ -665,6 +765,30 @@ class PPOTrainer(RolloutCollector):
             from torch.utils.tensorboard import SummaryWriter
             self.writer = SummaryWriter(str(self.run_dir / "tensorboard"))
         (self.run_dir / "config.json").write_text(json.dumps(asdict(config), indent=2) + "\n")
+
+    def _fused_league_specs(self, entries: list[dict[str, Any]]) -> frozenset[str]:
+        """League specs that ARE the frozen pruning reference playing argmax
+        (a Stage A checkpoint with the reference's weights digest). Their play
+        rows are scored by the rollout's shared reference forward instead of
+        a second copy of the same network; see `RolloutCollector.collect`.
+        Only on the fast path with heuristic tribute, where that forward is
+        exactly what the league's model would compute."""
+        from eval.policies import model_digest
+        from train.league import entry_kind
+
+        if not (self.config.fast_rollout and self.phase_code == PLAY):
+            return frozenset()
+        fused = set()
+        for item in entries:
+            spec = item["spec"]
+            if entry_kind(spec) != "network" or spec.startswith("sample"):
+                continue
+            payload = load_checkpoint(spec, "cpu")
+            if (payload.get("stage", "dmc") == "dmc"
+                    and payload.get("tribute_policy", "heuristic") == "heuristic"
+                    and model_digest(payload["model"]) == self.policy.reference_checkpoint_id):
+                fused.add(spec)
+        return frozenset(fused)
 
     def _default_opponent(self) -> OpponentSource:
         spec = self.config.opponent
@@ -851,10 +975,18 @@ class PPOTrainer(RolloutCollector):
             "critic_optimizer": self.critic_optimizer.state_dict(),
             "sampler": self.generator.get_state(),
             "init_source": self.init_source, "critic_source": self.critic_source,
-            "league": {"stage": "B", "opponents": [
-                self.config.opponent if self.opponent is None
-                else getattr(self.opponent, "name", type(self.opponent).__name__)]},
+            "league": {"stage": "B", "opponents": (
+                [e.name for e in self.league.entries] if self.league is not None
+                else [self.config.opponent if self.opponent is None
+                      else getattr(self.opponent, "name", type(self.opponent).__name__)])},
         })
+        if self.league is not None:
+            # Entry EMAs, tallies, snapshot list and sampler RNG; in actor mode
+            # also each actor's sampler RNG (actors are idle between updates).
+            payload["league_state"] = self.league.state_dict()
+            if self.actors is not None:
+                payload["league_actor_rng"] = self.actors.request("league_rng")
+        self.league_snapshot_taken = False
         save_checkpoint(self.run_dir / "latest.pt", payload)
         if snapshot:
             snapshots = self.run_dir / "checkpoints"
@@ -870,7 +1002,9 @@ class PPOTrainer(RolloutCollector):
 
     def maintenance(self) -> None:
         snapshot = self.progress["updates"] - self.progress["snapshot_update"] >= self.config.snapshot_updates
-        if snapshot or time.monotonic() - self.last_save >= self.config.checkpoint_seconds:
+        # A new league snapshot is saved at once, so a resume sees the same pool.
+        if (snapshot or self.league_snapshot_taken
+                or time.monotonic() - self.last_save >= self.config.checkpoint_seconds):
             self.save(snapshot=snapshot)
 
     def metric(self, values: dict[str, Any]) -> dict[str, Any]:
@@ -911,8 +1045,41 @@ class PPOTrainer(RolloutCollector):
         else:
             stats.update(self.actor_stats)
         self.progress["updates"] += 1
+        if self.league is not None:
+            if self.league.should_snapshot(self.progress["updates"]):
+                stats["league_snapshot"] = str(self.league_snapshot())
+            stats.update(self.league_stats())
         return self.metric({**stats, "collect_seconds": collect_seconds,
                             "learn_seconds": time.monotonic() - learn_start})
+
+    def league_snapshot(self) -> Path:
+        """Write the current policy to an immutable file and add it to the
+        league (one entry per snapshot temperature). Never `latest.pt`: league
+        models load lazily and must not change under a running match. In actor
+        mode the actors pick it up at the next update boundary."""
+        updates = self.progress["updates"]
+        directory = self.run_dir / "league"
+        suffix = ""
+        if (directory / f"update-{updates:09d}.pt").exists():
+            # An earlier run crashed after writing it; never overwrite a snapshot.
+            suffix = f"-r{self.progress['resumes']:02d}"
+        path = directory / f"update-{updates:09d}{suffix}.pt"
+        save_checkpoint(path, self.policy.checkpoint_payload(
+            optimizer={}, config=asdict(self.config), progress=dict(self.progress), rng={},
+            tribute_policy=self.config.tribute_policy))
+        self.league.add_snapshot(path, name=f"snapshot@{updates}{suffix}")
+        self.league_snapshot_taken = True
+        return path
+
+    def league_stats(self) -> dict[str, float]:
+        """League.stats() of the authoritative league, finite values only
+        (entries without games have no win rate), plus per-actor model counts."""
+        stats = {k: v for k, v in self.league.stats().items() if math.isfinite(v)}
+        if self.actors is not None:
+            for key in ("active_models", "cached_models", "forward_calls"):
+                stats.pop(f"league/{key}", None)
+            stats.update(self.actor_league_info)
+        return stats
 
     def run(self) -> dict[str, Any]:
         def stop(_signum, _frame):

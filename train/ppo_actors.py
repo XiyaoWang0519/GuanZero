@@ -28,9 +28,36 @@ and minibatches are permuted over the union of shards. The distribution of
 the data and of the updates is the same.
 
 Opponents are built per actor from the config spec (`frozen`,
-`frozen:<path>`, `greedy`); each actor drives its own `OpponentSource` in the
-contract's order for its shard. An opponent object passed to `PPOTrainer` is
-not supported here (a stateful league would need one sampler across shards).
+`frozen:<path>`, `greedy`, `league:<pool.json>`); each actor drives its own
+`OpponentSource` in the contract's order for its shard. An opponent object
+passed to `PPOTrainer` is not supported here.
+
+League (`opponent = "league:<pool.json>"`, B8). Every actor owns a `League`
+for its shard (own sampler RNG, own model cache, own `max_active_models` cap,
+so its network opponents batch within the actor: up to W x cap distinct
+models can be live across the run). The learner owns the authoritative
+league, which is never bound to an environment. At each synchronous update
+boundary:
+
+1. the learner broadcasts its league state (entries in order, sampling
+   EMA and tallies, snapshot list, no RNG) with the collect command; each
+   actor adopts it (`League.load_state_dict`), so every shard samples from
+   the same weight table and sees every snapshot added since the last
+   boundary (entries are matched by name, so a match already running
+   against an evicted snapshot finishes against it);
+2. during the rollout each actor updates its local copy from its own
+   match results only, exactly as in-process, and logs (entry, learner won);
+3. the learner applies all logs to the authoritative league in actor order
+   (`League.apply_results`), which is the same update the in-process league
+   makes for the same results in that order. With one actor the two paths
+   hold identical weights at every boundary; with W actors a shard does not
+   see the other shards' results until the next boundary.
+
+Snapshots are written by the learner after the update (`PPOTrainer.
+league_snapshot`) and reach the actors at the next boundary. Checkpoints hold
+the authoritative league state plus every actor's sampler RNG; a resume with
+the same number of actors restores those, otherwise the actor samplers are
+reseeded from the trainer RNG.
 """
 from __future__ import annotations
 
@@ -91,7 +118,7 @@ def check_shared_memory(needed: int) -> None:
 class ActorPool:
     """Learner-side handle of the actor processes."""
 
-    def __init__(self, trainer, sizes: list[int]) -> None:
+    def __init__(self, trainer, sizes: list[int], league_rng: list | None = None) -> None:
         from train.ppo import resolve_artifact
 
         cfg = trainer.config
@@ -121,7 +148,14 @@ class ActorPool:
                 "reference_checkpoint_id": trainer.policy.reference_checkpoint_id,
                 "phase_code": trainer.phase_code,
                 "buffer_config": asdict(buffer_config),
+                "league": None,
             }
+            if trainer.league is not None:
+                league_config = asdict(trainer.league_config)
+                league_config["seed"] = int(trainer.rng.integers(0, 2**63))
+                spec["league"] = {"config": league_config, "entries": trainer.league_entries,
+                                  "external": sorted(trainer.league_external),
+                                  "rng": None if league_rng is None else league_rng[index]}
             parent, child = ctx.Pipe()
             process = ctx.Process(target=actor_main, daemon=True, name=f"ppo-actor-{index}",
                                   args=(child, spec, self.net_weights, reference_weights, tensors))
@@ -142,11 +176,14 @@ class ActorPool:
 
     def collect(self, trainer, steps: int) -> dict[str, float]:
         publish(trainer.policy.net, self.net_weights)
+        league_state = (None if trainer.league is None
+                        else trainer.league.state_dict(include_rng=False))
         for connection in self.connections:
-            connection.send(("collect", steps))
-        seconds = []
+            connection.send(("collect", (steps, league_state)))
+        seconds, replies = [], []
         for buffer, connection in zip(self.buffers, self.connections):
             reply = self._receive(connection)
+            replies.append(reply)
             buffer.n_steps, buffer.n_cand, buffer.n_traj = reply["counters"]
             buffer.n_samples = 0
             buffer.finalized = False
@@ -155,6 +192,15 @@ class ActorPool:
             for key, value in reply["window"].items():
                 trainer.window[key] += value
             seconds.append(reply["seconds"])
+        if trainer.league is not None:
+            # Actor order, each actor's results in match-end order.
+            for reply in replies:
+                trainer.league.apply_results(reply["league_results"])
+            info = [reply["league_info"] for reply in replies]
+            trainer.actor_league_info = {
+                "league/actor_active_models_max": float(max(i["active"] for i in info)),
+                "league/actor_cached_models_max": float(max(i["cached"] for i in info)),
+                "league/forward_calls": float(sum(i["forward_calls"] for i in info))}
         return {"actor_collect_seconds_max": max(seconds),
                 "actor_collect_seconds_min": min(seconds)}
 
@@ -194,6 +240,10 @@ def actor_main(connection, spec: dict, net_weights: dict, reference_weights: dic
                 first = False
             elif command == "weights_digest":
                 connection.send(("ok", actor.weights_digest()))
+            elif command == "league_rng":
+                connection.send(("ok", actor.league_rng()))
+            elif command == "league_state":
+                connection.send(("ok", actor.league_state()))
             else:
                 raise ValueError(f"unknown actor command {command}")
     except (EOFError, KeyboardInterrupt):
@@ -243,7 +293,20 @@ class Actor:
         collector.buffer = RolloutBuffer(RolloutBufferConfig(**spec["buffer_config"]),
                                          arrays={k: t.numpy() for k, t in tensors.items()})
         opponent_spec = spec["opponent"]
-        if opponent_spec == "greedy":
+        self.league = None
+        collector.league_fused = False
+        if spec["league"] is not None:
+            from train.league import League, LeagueConfig
+
+            setup = spec["league"]
+            opponent = League(setup["entries"], LeagueConfig.from_dict(setup["config"]))
+            opponent.external = frozenset(setup["external"])
+            opponent.record_results = True
+            if setup["rng"] is not None:
+                opponent.rng.bit_generator.state = setup["rng"]
+            collector.league_fused = bool(opponent.external)
+            self.league = opponent
+        elif opponent_spec == "greedy":
             opponent = GreedyOpponent()
         elif opponent_spec == "frozen":
             opponent = FrozenModelOpponent(policy.reference, str(device), cfg.candidate_chunk)
@@ -264,9 +327,13 @@ class Actor:
         collector.should_stop = lambda: False
         self.collector = collector
 
-    def collect_once(self, steps: int, first: bool) -> dict:
+    def collect_once(self, argument: tuple, first: bool) -> dict:
+        steps, league_state = argument
         c = self.collector
         start = time.monotonic()
+        if self.league is not None:
+            self.league.load_state_dict(league_state)   # the learner's weights and snapshots
+            self.league.pop_results()
         if not first:
             c.buffer.next_iteration()
         c.net.load_state_dict(self.net_weights)
@@ -274,9 +341,22 @@ class Actor:
         c.window = {"matches": 0, "wins": 0, "rounds": 0, "learner_return": 0.0}
         c.config.rollout_steps = steps
         c.collect()
-        return {"counters": (c.buffer.n_steps, c.buffer.n_cand, c.buffer.n_traj),
-                "progress": {k: c.progress[k] - before[k] for k in PROGRESS_KEYS},
-                "window": dict(c.window), "seconds": time.monotonic() - start}
+        reply = {"counters": (c.buffer.n_steps, c.buffer.n_cand, c.buffer.n_traj),
+                 "progress": {k: c.progress[k] - before[k] for k in PROGRESS_KEYS},
+                 "window": dict(c.window), "seconds": time.monotonic() - start}
+        if self.league is not None:
+            reply["league_results"] = self.league.pop_results()
+            reply["league_info"] = {"active": len(self.league.active),
+                                    "cached": len(self.league.cache),
+                                    "forward_calls": self.league.forward_calls}
+        return reply
+
+    def league_rng(self) -> dict | None:
+        return None if self.league is None else self.league.rng.bit_generator.state
+
+    def league_state(self) -> dict | None:
+        """This actor's league state (tests: snapshots reach actors at a boundary)."""
+        return None if self.league is None else self.league.state_dict()
 
     def weights_digest(self) -> float:
         with torch.no_grad():

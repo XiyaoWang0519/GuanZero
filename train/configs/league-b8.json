@@ -1,0 +1,26 @@
+{
+  "config": {
+    "seed": 8,
+    "max_active_models": 4,
+    "model_cache_size": 8,
+    "ema_alpha": 0.05,
+    "initial_beat_rate": 0.5,
+    "weight_floor": 0.05,
+    "priority_power": 1.0,
+    "uniform_mix": 0.1,
+    "snapshot_every": 100,
+    "max_snapshots": 4,
+    "snapshot_temperatures": [null, 0.02, 0.1],
+    "snapshot_weight": 1.0
+  },
+  "entries": [
+    {"spec": ".work/runpod/artifacts/pilot/final.pt", "name": "m1"},
+    {"spec": ".work/runpod-b6/results/runs/dmc/run/latest.pt", "name": "b6-dmc"},
+    {"spec": "greedy"},
+    {"spec": "styled:bomb-happy"},
+    {"spec": "styled:bomb-shy"},
+    {"spec": "styled:high-lead"},
+    {"spec": "styled:low-lead"},
+    {"spec": "sampled-style"}
+  ]
+}

@@ -21,6 +21,11 @@ rounds and let CUDA pick its kernels. Examples:
     .venv/bin/python bench/ppo_throughput.py --config train/configs/ppo.json \\
         --device cuda --compare --actors 0 4 8 --updates 8
 
+    # the B8 league config (league:train/configs/league-b8.json), in-process
+    # and with actors; snapshot every 2 updates so learner snapshots are in play
+    .venv/bin/python bench/ppo_throughput.py --config train/configs/ppo-league.json \\
+        --device cuda --actors 0 4 8 --league-snapshot-every 2 --updates 8
+
 Prints one JSON object per measured variant; `--out` also writes them.
 """
 from __future__ import annotations
@@ -98,6 +103,7 @@ def _measure(trainer: PPOTrainer, config: PPOConfig, warmup: int, updates: int, 
     decisions = trainer.progress["decisions"] - decisions0
     result = {
         "fast_rollout": config.fast_rollout, "fused_opponent": trainer.fused_opponent,
+        "league_fused": trainer.league_fused,
         "actor_processes": config.actor_processes,
         "device": str(trainer.device),
         "gpu": torch.cuda.get_device_name(trainer.device) if trainer.device.type == "cuda" else None,
@@ -116,6 +122,11 @@ def _measure(trainer: PPOTrainer, config: PPOConfig, warmup: int, updates: int, 
     }
     if trainer.device.type == "cuda":
         result["cuda_peak_allocated_mib"] = torch.cuda.max_memory_allocated(trainer.device) / 2**20
+    if trainer.league is not None:
+        # Pool-level league counters at the end (per-entry rows are in metrics).
+        result["league"] = {k.removeprefix("league/"): v
+                            for k, v in trainer.league_stats().items() if k.count("/") == 1}
+        result["league_snapshot_every"] = trainer.league.config.snapshot_every
     if profile:
         result["phases_seconds"] = dict(sorted(trainer.timers.items(), key=lambda kv: -kv[1]))
         result["phases_percent_of_wall"] = {k: round(100 * v / wall, 1)
@@ -135,7 +146,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--epochs", type=int)
     parser.add_argument("--minibatch-size", type=int)
     parser.add_argument("--candidate-chunk", type=int)
-    parser.add_argument("--opponent")
+    parser.add_argument("--opponent", help="frozen, frozen:<path>, greedy or league:<pool.json>")
+    parser.add_argument("--league-snapshot-every", type=int,
+                        help="league only: snapshot the learner every N updates (measures a "
+                        "pool that already holds learner snapshots)")
     parser.add_argument("--actors", type=int, nargs="+",
                         help="actor_processes values to measure (fast path), e.g. 0 4 8")
     parser.add_argument("--warmup", type=int, default=2, help="unmeasured updates first")
@@ -154,7 +168,8 @@ def main(argv: list[str] | None = None) -> int:
     overrides = {"num_envs": args.num_envs, "num_threads": args.num_threads,
                  "torch_threads": args.torch_threads, "rollout_steps": args.rollout_steps,
                  "epochs": args.epochs, "minibatch_size": args.minibatch_size,
-                 "candidate_chunk": args.candidate_chunk, "opponent": args.opponent}
+                 "candidate_chunk": args.candidate_chunk, "opponent": args.opponent,
+                 "league_snapshot_every": args.league_snapshot_every}
     config = replace(config, **{k: v for k, v in overrides.items() if v is not None},
                      tensorboard=False, max_updates=10**9, max_seconds=10**9,
                      checkpoint_seconds=600)
