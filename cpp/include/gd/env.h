@@ -72,7 +72,10 @@ class VecEnv {
   void step(std::span<const int32_t> choice_index);
   // Per-seat styles for styled_choice, laid out [num_envs, 4, StyleParams::kDim]
   // row-major. Copied into storage the environment owns. Forked slots inherit
-  // the style rows of their source environment.
+  // the style rows of their source environment. While a batch is pending, both
+  // calls recompute its styled_choice in place (the batch span and any view of
+  // it see the new values), identical to what a fresh pending() would give, so
+  // a caller may restyle an environment whose match restarted inside pending().
   void set_styles(std::span<const float> styles);
   void clear_styles();
 
