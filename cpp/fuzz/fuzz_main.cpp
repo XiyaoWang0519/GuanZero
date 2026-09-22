@@ -92,7 +92,27 @@ void check_order(const gd::MatchState& m) {
     report("a finished seat is to move", m);
 }
 
-void worker(long long rounds, uint64_t seed, bool canonical, bool verbose, int deep_every) {
+// Which player drives the walk. The styled driver resamples a style for every
+// seat at the start of each round, which is how the league will use it.
+enum class Driver { Random, Greedy, Styled };
+
+gd::StyleParams sample_style(uint64_t& rng) {
+  gd::StyleParams p;
+  const auto unit = [&] {
+    return double(splitmix64(rng) >> 11) * (1.0 / 9007199254740992.0);
+  };
+  p.v[gd::StyleParams::kBombThreshold] = float(unit());
+  for (int t = 0; t < gd::StyleParams::kNumPlayTypes; ++t)
+    p.v[gd::StyleParams::kTypePref + t] = float(unit() * 4.0 - 2.0);
+  p.v[gd::StyleParams::kFollowAggression] = float(unit());
+  p.v[gd::StyleParams::kLeadHighBias] = float(unit() * 2.0 - 1.0);
+  p.v[gd::StyleParams::kPartnerWeight] = float(unit());
+  p.v[gd::StyleParams::kTemperature] = float(unit() * 1.5);
+  return p;
+}
+
+void worker(long long rounds, uint64_t seed, bool canonical, bool verbose, int deep_every,
+            Driver driver) {
   gd::RuleConfig rules = gd::RuleConfig::house();
   gd::ActionConfig acfg = canonical ? gd::ActionConfig{} : gd::ActionConfig::full();
   gd::Engine engine(rules, acfg);
@@ -105,6 +125,8 @@ void worker(long long rounds, uint64_t seed, bool canonical, bool verbose, int d
   std::array<int8_t, 2> prev_levels = m.levels;
   long long done = 0;
   int round_steps = 0;
+  std::array<gd::StyleParams, 4> styles;
+  for (auto& st : styles) st = sample_style(rng);
 
   while (done < rounds) {
     if (m.round.phase == gd::Phase::RoundEnd) {
@@ -117,6 +139,7 @@ void worker(long long rounds, uint64_t seed, bool canonical, bool verbose, int d
       ++done;
       g_rounds.fetch_add(1, std::memory_order_relaxed);
       round_steps = 0;
+      for (auto& st : styles) st = sample_style(rng);   // a fresh style per round
       if (m.winner >= 0) {
         engine.new_match(m, splitmix64(rng));
         prev_levels = m.levels;
@@ -142,7 +165,23 @@ void worker(long long rounds, uint64_t seed, bool canonical, bool verbose, int d
       if (copy.hash() != before) report("copy changed the hash", m);
     }
 
-    const gd::Action& pick = cands[splitmix64(rng) % cands.size()];
+    int index = 0;
+    switch (driver) {
+      case Driver::Random:
+        index = static_cast<int>(splitmix64(rng) % cands.size());
+        break;
+      case Driver::Greedy:
+        index = gd::greedy_bot(m, cands, rng);
+        break;
+      case Driver::Styled:
+        index = gd::styled_bot(m, cands, styles[m.round.to_move], rng);
+        break;
+    }
+    if (index < 0 || size_t(index) >= cands.size()) {
+      report("driver returned an index outside the candidate list", m);
+      index = 0;
+    }
+    const gd::Action& pick = cands[index];
     engine.apply(m, pick);
 
     if (deep) {
@@ -169,7 +208,16 @@ int main(int argc, char** argv) {
   bool canonical = true;
   bool verbose = false;
   int deep_every = 64;      // run the costly re-reading checks on 1 decision in N
+  Driver driver = Driver::Random;
   for (int i = 1; i < argc; ++i) {
+    if (!std::strcmp(argv[i], "--driver") && i + 1 < argc) {
+      const std::string name = argv[++i];
+      if (name == "random") driver = Driver::Random;
+      else if (name == "greedy") driver = Driver::Greedy;
+      else if (name == "styled") driver = Driver::Styled;
+      else { std::fprintf(stderr, "unknown driver '%s'\n", name.c_str()); return 2; }
+      continue;
+    }
     if (!std::strcmp(argv[i], "--rounds") && i + 1 < argc) rounds = std::atoll(argv[++i]);
     else if (!std::strcmp(argv[i], "--threads") && i + 1 < argc) threads = std::atoi(argv[++i]);
     else if (!std::strcmp(argv[i], "--full")) canonical = false;
@@ -182,11 +230,13 @@ int main(int argc, char** argv) {
   std::vector<std::thread> pool;
   for (int t = 0; t < threads; ++t)
     pool.emplace_back(worker, per, 0x5EED0000ULL + uint64_t(t) * 7919ULL, canonical,
-                      verbose, deep_every);
+                      verbose, deep_every, driver);
   for (auto& th : pool) th.join();
 
-  std::printf("rounds=%lld decisions=%lld failures=%lld mode=%s deep_every=%d\n",
+  const char* driver_name = driver == Driver::Random ? "random"
+                          : driver == Driver::Greedy ? "greedy" : "styled";
+  std::printf("rounds=%lld decisions=%lld failures=%lld mode=%s deep_every=%d driver=%s\n",
               g_rounds.load(), g_decisions.load(), g_failures.load(),
-              canonical ? "canonical" : "full", deep_every);
+              canonical ? "canonical" : "full", deep_every, driver_name);
   return g_failures.load() == 0 ? 0 : 1;
 }

@@ -53,11 +53,15 @@ b.cand       -> np.ndarray [sum_k, gd.ACT_DIM] float32
 b.offsets    -> np.ndarray [B + 1] int32
 b.env_id, b.seat, b.phase -> np.ndarray [B] int32
 b.round_index, b.greedy_choice -> np.ndarray [B] int32
+b.styled_choice -> np.ndarray [B] int32
 b.match_id   -> np.ndarray [B] int64
 b.hidden_counts -> np.ndarray [B, 3, 54] uint8
 env.step(choices)             # np.ndarray [B] int32, one index per pending row
 env.drain_finished_rounds()   # list[RoundResult]
 env.drain_public_actions()    # list[PublicActionEvent], only when logging enabled
+env.row_actions(row)          # list[Action] of a pending row, after pending()
+env.set_styles(styles)        # np.ndarray [num_envs, 4, gd.STYLE_DIM] float32
+env.clear_styles()
 env.fork(env_id, copies)      # list[int] of new env ids
 ```
 
@@ -67,6 +71,49 @@ env.fork(env_id, copies)      # list[int] of new env ids
 the acting player's hand and public information. `greedy_choice` is a local
 candidate index from the in-engine greedy player, including the tribute
 heuristic. Reading it does not advance any environment RNG.
+
+## Styled heuristic opponents
+
+`gd.STYLE_DIM` is the width of the continuous style vector that drives
+`styled_bot` (M2_TODO task 1, DESIGN.md 7.3). Styles are sampled parameters,
+not a fixed list of bots. The slot layout, with `T = 13` play types in the
+order of the engine's `Type` enum:
+
+| Slot | Constant | Name | Range | Neutral |
+|---|---|---|---|---|
+| 0 | `gd.STYLE_BOMB_THRESHOLD` | bomb-early threshold | `[0, 1]` | 1 |
+| 1 .. 13 | `gd.STYLE_TYPE_PREF + int(type)` | per-play-type log-weight when leading | any | 0 |
+| 14 | `gd.STYLE_FOLLOW_AGGRESSION` | follow aggressiveness | `[0, 1]` | 0 |
+| 15 | `gd.STYLE_LEAD_HIGH_BIAS` | lead high/low bias | `[-1, 1]` | 0 |
+| 16 | `gd.STYLE_PARTNER_WEIGHT` | partner cooperation | `[0, 1]` | 1 |
+| 17 | `gd.STYLE_TEMPERATURE` | sampling temperature | `>= 0` | 0 |
+
+`StyleParams.neutral()` reproduces `greedy_bot` exactly. The `Pass`, `Tribute`
+and `BackTribute` preference slots exist only so that the block is indexed by
+the enum; the bot never reads them, and tribute phases always delegate to the
+tribute heuristic, so styles do not affect tribute.
+
+```python
+gd.StyleParams()                      # all zeros
+gd.StyleParams.neutral()              # greedy-equivalent
+gd.StyleParams.from_array(values)     # float32 [STYLE_DIM]
+p.to_array() -> np.ndarray [STYLE_DIM] float32   # an owned copy
+p.v          -> np.ndarray [STYLE_DIM] float32   # a writable view of p
+p.bomb_threshold, p.follow_aggression, p.lead_high_bias,
+p.partner_weight, p.temperature                  # readable and writable
+p.type_pref("Straight"), p.set_type_pref("Straight", 1.0)
+engine.styled(state, style, seed=0) -> int       # like engine.greedy
+```
+
+`VecEnv.set_styles` takes a C-contiguous float32 array shaped
+`[num_envs, 4, gd.STYLE_DIM]`, indexed by environment and absolute seat, and
+copies it into storage the environment owns. `DecisionBatch.styled_choice` is
+then that seat's styled choice; with no styles set, or after
+`clear_styles()`, it equals `greedy_choice` on every row. Forked slots inherit
+the style rows of their source environment. Sampling at a non-zero temperature
+uses a per-environment stream derived from the environment seed, so a run is
+reproducible from its seed and action sequence, and reading a batch never
+advances the shuffle RNG.
 
 The observation's known-holdings block contains one public-presence bit per
 card and other seat. It tracks lower bounds from tribute and back-tribute

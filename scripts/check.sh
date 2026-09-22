@@ -15,4 +15,5 @@ cmake --build build -j
 PYTHONPATH="$ROOT/python:$ROOT/oracle:$ROOT" "$PY" -m pytest -q tests
 ./build/cpp/fuzz/gd_fuzz --rounds 20000 --threads 4 --deep-every 1
 ./build/cpp/fuzz/gd_fuzz --rounds 20000 --threads 4 --deep-every 1 --full
+./build/cpp/fuzz/gd_fuzz --rounds 20000 --threads 4 --deep-every 1 --driver styled
 echo "all checks passed"
