@@ -30,10 +30,31 @@ outgoing back-tribute removes a previously received card's public guarantee.
 Tensor dimensions are unchanged, but affected observations differ from the
 old pilot. Both sides of every new comparison use the corrected engine.
 
-Next, integrate v2 into the playing policy and DMC loop: whole-round replay,
-causal training masks, batched per-environment public caches, and rebuilding
-caches when published weights change. Keep the improved no-history architecture
-as a control because most belief improvement came from the private pathway.
-Measure playing strength at equal compute before promotion. Stage B's separate
-critic, PPO, league and exploiter remain pending. The A2 artifacts are not
-promoted into the frozen internal DMC reference.
+## Revised next steps, September 21, 2026
+
+Decision: the v2 belief result was measured on a two-layer, width-128
+prototype, 4,096 self-play rounds and 6,000 updates, with all seeds still
+improving. Self-play copies have no habits (DESIGN.md 7.3), so that data
+cannot show cross-round opponent modelling at all. Before any v2 or v3 RL
+integration, scale the probe and give it opponents with habits. The v2
+integration row above is therefore deferred behind the tasks below.
+Sample diversity is a first-class requirement: styles are continuous
+parameters sampled per match, never a fixed list of bots, and every probe
+result must hold on held-out style regions.
+
+| # | Task | Status | Acceptance |
+|---|---|---|---|
+| 1 | Style-parameterised heuristic bot in `cpp/src/bots.cpp`: one bot driven by a continuous style vector (bomb-early threshold, per-type preference weights, follow aggressiveness, lead high/low bias, partner-cooperation weight, sampling temperature). Style sampled once per match from a configurable distribution; fields live in a `BotConfig`, none hardcoded. | pending | Behaviour histograms (bomb timing, type frequency, lead rank) shift monotonically with each parameter; unit tests; fuzz clean |
+| 2 | Style vector and match/round index recorded per decision in `eval/collect_belief.py` logs; opponent seats driven by task 1 bots; collection of at least 100,000 rounds, whole-match splits. Training styles drawn from a sub-region, a held-out style region reserved for test. | pending | Log schema test; coverage report of style-space and behaviour histograms |
+| 3 | Scaled belief probe in `train/belief_experiment.py`: four layers, width 256, trained to validation plateau; flat vs no-history vs history; loss broken down by round index within the match. Report to `reports/M2-belief-scaled.md`. | pending | Three seeds; held-out-style test matches; paired intervals |
+| 4 | v3 match-memory probe: per-seat per-round summary vectors from the task 3 stream, private query attends to them; adaptation metric (DESIGN.md 9.1 item 6) on held-out styles; memory-masked control. | pending | Adaptation gain positive with positive lower bound on held-out styles, absent in the masked control |
+| 5 | Decision gate: task 3 picks the Stage B state tower (v1 vs no-history v2 vs history v2); task 4 decides whether v3 enters the Stage B league plan. Update DESIGN.md. | pending | Written decision with numbers |
+| 6 | Stage B, in the order critic, PPO, league. League includes task 1 bots with per-match styles, checkpoints at several temperatures and, later, a style-conditioned learner policy (style vector as network input, small style-shaping reward) as the learned source of diversity. | pending | Rows above; exploiter test compared with and without match memory if v3 is adopted |
+| 7 | Minimal `play/` logging UI, pulled forward from M3 only as far as recording human games. Human data is calibration and test only, never training. | deferred, optional | Recruiting players is the hard part; revisit once tasks 1–3 give a baseline. Behaviour histograms from any human games calibrate the task 1 sampling distribution |
+
+No public human Guandan game dataset was found (search, Sept. 21). Scraping
+online platforms is excluded by DESIGN.md 1.3 and by the platforms' terms.
+Synthetic styled opponents are the training source; humans only calibrate.
+
+Stage B's separate critic, PPO, league and exploiter remain pending. The A2
+artifacts are not promoted into the frozen internal DMC reference.
