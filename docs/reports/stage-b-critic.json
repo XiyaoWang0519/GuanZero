@@ -1,0 +1,445 @@
+{
+  "task": "STAGE_B_TODO B2",
+  "gate": "G1",
+  "dataset": {
+    "path": ".work/critic-m1",
+    "schema_version": 1,
+    "checkpoint_id": "8a8e2b08dec2e73998092a67cbc25c26df75b4c0d2f02fd0a791d5d16cd4f745",
+    "checkpoint_updates": 34496,
+    "play_mode": "fp32_argmax self-play, all four seats"
+  },
+  "critic_input": "actor observation (1849) then hidden_counts rows seats +1,+2,+3 (162), identical to RolloutBuffer.critic_input",
+  "fits": {
+    "perfect": {
+      "stop_reason": "early_stop",
+      "steps": 8500,
+      "samples": 34816000,
+      "best": {
+        "step": 5500,
+        "samples": 22528000,
+        "train_mse": 1.7255521678924561,
+        "val_mse": 2.47493052482605,
+        "seconds": 241.18912279198412
+      },
+      "val_rounds": 4668,
+      "val_decisions": 250025,
+      "parameters": 1818625,
+      "seconds": 295.3413556669839,
+      "config": {
+        "hidden_mode": "perfect",
+        "width": 512,
+        "layers": 4,
+        "batch_size": 4096,
+        "lr": 0.0005,
+        "max_steps": 20000,
+        "max_seconds": 1080.0,
+        "eval_every": 500,
+        "patience": 6,
+        "min_delta": 0.0001,
+        "val_decisions": 250000,
+        "mix_shards": 4,
+        "seed": 20260924,
+        "threads": 6
+      },
+      "checkpoint": ".work/critic-fit/perfect/best.pt",
+      "checkpoint_sha256": "fa4fb027726e6af90bdbcbe42086909ba90343b7dffab36a0ede9736935736df",
+      "val_curve": [
+        [
+          500,
+          2.5045,
+          2.6322
+        ],
+        [
+          1000,
+          2.1672,
+          2.5987
+        ],
+        [
+          1500,
+          2.1389,
+          2.5089
+        ],
+        [
+          2000,
+          2.0903,
+          2.4791
+        ],
+        [
+          2500,
+          1.825,
+          2.7075
+        ],
+        [
+          3000,
+          1.8407,
+          2.5889
+        ],
+        [
+          3500,
+          1.9106,
+          2.4971
+        ],
+        [
+          4000,
+          1.9316,
+          2.4825
+        ],
+        [
+          4500,
+          1.6797,
+          2.4878
+        ],
+        [
+          5000,
+          1.6579,
+          2.4763
+        ],
+        [
+          5500,
+          1.7256,
+          2.4749
+        ],
+        [
+          6000,
+          1.7193,
+          2.5572
+        ],
+        [
+          6500,
+          1.6184,
+          2.6532
+        ],
+        [
+          7000,
+          1.4538,
+          2.6322
+        ],
+        [
+          7500,
+          1.5365,
+          2.5144
+        ],
+        [
+          8000,
+          1.602,
+          2.5092
+        ],
+        [
+          8500,
+          1.4755,
+          2.81
+        ]
+      ]
+    },
+    "public": {
+      "stop_reason": "early_stop",
+      "steps": 5000,
+      "samples": 20480000,
+      "best": {
+        "step": 2000,
+        "samples": 8192000,
+        "train_mse": 2.630550700187683,
+        "val_mse": 2.972562313079834,
+        "seconds": 36.35053937500925
+      },
+      "val_rounds": 4668,
+      "val_decisions": 250025,
+      "parameters": 1818625,
+      "seconds": 89.03711837498122,
+      "config": {
+        "hidden_mode": "public",
+        "width": 512,
+        "layers": 4,
+        "batch_size": 4096,
+        "lr": 0.0005,
+        "max_steps": 20000,
+        "max_seconds": 1080.0,
+        "eval_every": 500,
+        "patience": 6,
+        "min_delta": 0.0001,
+        "val_decisions": 250000,
+        "mix_shards": 4,
+        "seed": 20260924,
+        "threads": 6
+      },
+      "checkpoint": ".work/critic-fit/public/best.pt",
+      "checkpoint_sha256": "53232370bdc0fd73e3571d52a8d3b9feb3233af7a7d018f052c36263599dd42c",
+      "val_curve": [
+        [
+          500,
+          2.9487,
+          3.0464
+        ],
+        [
+          1000,
+          2.6689,
+          3.0455
+        ],
+        [
+          1500,
+          2.6663,
+          3.0231
+        ],
+        [
+          2000,
+          2.6306,
+          2.9726
+        ],
+        [
+          2500,
+          2.3839,
+          3.2591
+        ],
+        [
+          3000,
+          2.4114,
+          3.156
+        ],
+        [
+          3500,
+          2.503,
+          3.0318
+        ],
+        [
+          4000,
+          2.5113,
+          3.052
+        ],
+        [
+          4500,
+          2.2551,
+          3.0581
+        ],
+        [
+          5000,
+          2.2432,
+          3.0446
+        ]
+      ]
+    }
+  },
+  "report": {
+    "split": "test",
+    "rounds": 20449,
+    "decisions": 1098523,
+    "play_decisions": 1054661,
+    "matches": 2091,
+    "target_variance_play": 5.3783642883482505,
+    "bootstrap": {
+      "resamples": 2000,
+      "unit": "round",
+      "seed": 7,
+      "interval": "percentile 95%"
+    },
+    "checkpoints": {
+      "perfect": ".work/critic-fit/perfect/best.pt",
+      "public": ".work/critic-fit/public/best.pt"
+    },
+    "play": {
+      "overall": {
+        "decisions": 1054661,
+        "rounds": 20449,
+        "mse": {
+          "perfect": 2.3927363404979447,
+          "public": 2.884959705133122,
+          "m1_max_q": 2.7888160343217603,
+          "perfect-m1_max_q": -0.39607969382381536,
+          "public-m1_max_q": 0.0961436708113618,
+          "public-perfect": 0.4922233646351772
+        },
+        "ci95_rounds": {
+          "perfect": [
+            2.3570623513905926,
+            2.431555412430978
+          ],
+          "public": [
+            2.849672886682112,
+            2.9229276877887744
+          ],
+          "m1_max_q": [
+            2.7576952878985934,
+            2.822343473507356
+          ],
+          "perfect-m1_max_q": [
+            -0.42052605250337777,
+            -0.373080355334935
+          ],
+          "public-m1_max_q": [
+            0.08133820868445418,
+            0.11167110381360047
+          ],
+          "public-perfect": [
+            0.4686295342840032,
+            0.5172990598552136
+          ]
+        }
+      },
+      "early": {
+        "decisions": 226574,
+        "rounds": 20449,
+        "mse": {
+          "perfect": 3.808976919046081,
+          "public": 4.216811789106576,
+          "m1_max_q": 4.171295862171709,
+          "perfect-m1_max_q": -0.36231894312562796,
+          "public-m1_max_q": 0.045515926934867466,
+          "public-perfect": 0.4078348700604954
+        },
+        "ci95_rounds": {
+          "perfect": [
+            3.7540677797178224,
+            3.86758092681829
+          ],
+          "public": [
+            4.161031297325838,
+            4.274792397900935
+          ],
+          "m1_max_q": [
+            4.123022459966946,
+            4.220148090864444
+          ],
+          "perfect-m1_max_q": [
+            -0.39871084064280926,
+            -0.3270436148898825
+          ],
+          "public-m1_max_q": [
+            0.027418993895308743,
+            0.06428391654867369
+          ],
+          "public-perfect": [
+            0.3703831163927548,
+            0.4439292191185623
+          ]
+        }
+      },
+      "middle": {
+        "decisions": 322932,
+        "rounds": 20449,
+        "mse": {
+          "perfect": 3.013060917069135,
+          "public": 3.583198655430108,
+          "m1_max_q": 3.477558517562449,
+          "perfect-m1_max_q": -0.4644976004933134,
+          "public-m1_max_q": 0.10564013786765931,
+          "public-perfect": 0.5701377383609728
+        },
+        "ci95_rounds": {
+          "perfect": [
+            2.960290774609233,
+            3.0690961688746587
+          ],
+          "public": [
+            3.532322384310974,
+            3.635065629860478
+          ],
+          "m1_max_q": [
+            3.433510849444437,
+            3.5246308051402457
+          ],
+          "perfect-m1_max_q": [
+            -0.5016743783041219,
+            -0.42665604533614054
+          ],
+          "public-m1_max_q": [
+            0.08157954843686478,
+            0.12768261996706673
+          ],
+          "public-perfect": [
+            0.5338265129345994,
+            0.6091423818728726
+          ]
+        }
+      },
+      "late": {
+        "decisions": 505155,
+        "rounds": 20449,
+        "mse": {
+          "perfect": 1.3609620355712335,
+          "public": 1.841227078965891,
+          "m1_max_q": 1.7284464999943634,
+          "perfect-m1_max_q": -0.36748446442313004,
+          "public-m1_max_q": 0.1127805789715276,
+          "public-perfect": 0.4802650433946576
+        },
+        "ci95_rounds": {
+          "perfect": [
+            1.333712768789417,
+            1.3911272687024905
+          ],
+          "public": [
+            1.8101785211926331,
+            1.8723102001904166
+          ],
+          "m1_max_q": [
+            1.7005094531942615,
+            1.7575506213924486
+          ],
+          "perfect-m1_max_q": [
+            -0.3885151358599729,
+            -0.3460996553347693
+          ],
+          "public-m1_max_q": [
+            0.0964376473132171,
+            0.12937083551985734
+          ],
+          "public-perfect": [
+            0.4587924876677887,
+            0.5021622509048114
+          ]
+        }
+      }
+    },
+    "overall_ci95_matches": {
+      "perfect": [
+        2.354837697536356,
+        2.427510898707085
+      ],
+      "public": [
+        2.848353405376966,
+        2.921353057565861
+      ],
+      "m1_max_q": [
+        2.7571985337667098,
+        2.8202205511153267
+      ],
+      "perfect-m1_max_q": [
+        -0.41969538280198054,
+        -0.37332953917900735
+      ],
+      "public-m1_max_q": [
+        0.08014207703167801,
+        0.11278437510382983
+      ],
+      "public-perfect": [
+        0.46896094902237134,
+        0.5176389158246788
+      ]
+    },
+    "tribute": {
+      "decisions": 43862,
+      "mse": {
+        "perfect": 3.7617340641680306,
+        "public": 4.113290856072931
+      },
+      "ci95_rounds": {
+        "perfect": [
+          3.6977028078494105,
+          3.8295867625420117
+        ],
+        "public": [
+          4.043564307604239,
+          4.183690654403641
+        ]
+      }
+    },
+    "g1_critic": "perfect",
+    "g1_pass": true,
+    "g1_rule": "upper 95% bound of (critic MSE - M1 max-Q MSE) below zero, overall and in each stage bin, on play decisions of the test split"
+  },
+  "host": "Apple M4 Pro, CPU only, torch threads 6",
+  "val_curve_columns": [
+    "step",
+    "train_mse",
+    "val_mse"
+  ]
+}
