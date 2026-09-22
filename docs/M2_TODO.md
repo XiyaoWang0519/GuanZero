@@ -104,8 +104,12 @@ smoke model, not the trained M1 pilot checkpoint
 (`.work/runpod/artifacts/pilot/final.pt`, 34,496 updates). The task 3 tower
 decision is therefore provisional: it was measured with near-random policy
 seats. A re-collection with the trained checkpoint (`collect-100k-m1`, same
-seeds and style space) is in progress; task 4 runs on it, and task 3 is to be
-re-run on it before the Stage B tower choice is treated as final. The earlier
+seeds and style space) completed on Sept. 22: 100,000 rounds, 18,384 matches,
+5,553,998 decisions (the trained policy makes fewer, larger plays: about half
+the decisions per round of the smoke run, and a bomb fraction of 10.3% versus
+3.5%). Coverage report: no empty style bins, regions disjoint. Task 4 runs on
+it, and task 3 is to be re-run on it before the Stage B tower choice is
+treated as final. The earlier
 4,096-round probe in `reports/M2-belief.md` did use the trained checkpoint.
 
 The task 4 GPU run is prepared under `.work/runpod-memory/` but not started:
