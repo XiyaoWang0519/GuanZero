@@ -372,6 +372,67 @@ Pass `--heldout-style-test` to `train.belief_experiment` to restrict the test
 matches to the held-out style region; without it the existing seeded whole-match
 split is unchanged.
 
+### Scaled belief probe on a styled collection
+
+The scaled probe is the same runner at four layers and width 256, trained to a
+validation plateau on the 100,000-round styled collection.
+
+```sh
+PYTHONPATH=python:. .venv/bin/python -m train.belief_experiment \
+  --logs .work/belief-styled/collect-100k --output .work/belief-styled/scaled \
+  --seeds 31 32 33 --width 256 --layers 4 --batch-size 64 \
+  --steps 50000 --min-steps 2000 --validation-interval 1000 --patience 3 \
+  --decisions-per-round 20 --validation-decisions 20000 \
+  --heldout-style-test --threads 4 --max-seconds 86400
+```
+
+| Flag | Meaning |
+|---|---|
+| `--decisions-per-round` | Keep at most this many decisions of each round (0 = all). Whole rounds and their full public token streams are always kept, so every surviving decision still has its exact history prefix |
+| `--data-seed` | Seed of the per-round subsample and of the validation cap |
+| `--validation-decisions` | Cap the decisions each validation pass scores (0 = all). Selection only; the test set is never subsampled |
+| `--cell-bootstrap-samples` | Bootstrap resamples for the per-cell paired intervals (default 2,000; the overall interval keeps 10,000) |
+
+Memory. Rounds stay in RAM at their on-disk dtypes, so `obs` is `uint8` at
+1,849 B per decision and is cast to float32 only per batch. The full 100,000
+round collection is roughly 10M decisions, about 20 GB of `obs` and `hidden`
+plus 1.6 GB of tokens and 1 GB of index tuples, which does not leave headroom
+inside a 32 GB budget. `--decisions-per-round 20` keeps every round but about
+2M decisions, roughly 4.2 GB; 40 gives about 8.4 GB. `report.json` records the
+measured `dataset_bytes` and `loaded_decisions`.
+
+New result fields, per model and seed:
+
+| Field | Meaning |
+|---|---|
+| `stop_reason` | `plateau` when patience stopped the fit, `step_cap` when it ran out of `--steps` |
+| `best_validation_step` | Step of the selected weights, equal to `selected_step` |
+| `validation_evaluations` | Number of validation passes the fit ran |
+| `test.cells` | Test log loss per breakdown cell: `round_bin:{0,1,2-3,4-5,6+}` (match-relative round index), `style_region:{train,heldout,unknown}` and `target_driver:{bot,policy,unknown}` for the seat whose hand is predicted. Each cell reports `log_loss`, `decisions` and `test_matches` |
+| `v2_vs_v1.cells`, `v2_vs_no_history.cells` | The same cells, each with a paired bootstrap 95% interval over whole test matches |
+
+Schema 1 logs have no round index, style region or per-seat driver, so all of
+their cells are labelled `unknown` and keep loading unchanged. Round bins
+separate the first two rounds of a match, where an opponent model has seen the
+least, and pool later rounds so the cells stay large. `target_driver` cells
+score each predicted seat separately, so their `decisions` count seat targets:
+three per decision.
+
+Cost, measured on this host at `--width 256 --layers 4`, batch 64, four CPU
+threads, on real histories (mean prefix 43 public tokens):
+
+| Model | Seconds per training step | 20,000 steps | 50,000 steps | 100,000 steps |
+|---|---|---|---|---|
+| `v1` flat | 0.0068 | 0.04 h | 0.09 h | 0.19 h |
+| `no_history` | 0.0170 | 0.09 h | 0.24 h | 0.47 h |
+| `v2` history | 0.1674 | 0.93 h | 2.33 h | 4.65 h |
+| all three, one seed | 0.191 | 1.1 h | 2.7 h | 5.3 h |
+
+Three seeds therefore cost about 3.2 h, 8.0 h and 15.9 h of training at those
+step counts, before validation and test passes. Fifty thousand steps on three
+seeds fits an overnight CPU run; a hundred thousand is the point at which a
+rented GPU pays for itself.
+
 If `gd.STYLE_DIM` is missing the styled bot is not built. Collection then warns
 loudly, plays the opponent seats greedily, records their style vectors as NaN
 and sets `"styled_bot_unavailable": true` in provenance. Such a collection is a

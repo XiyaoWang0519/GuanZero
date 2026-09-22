@@ -3,6 +3,36 @@
 The original small probe is preserved in belief_probe.py. This stricter runner
 uses only provenance-verified, frozen-policy architecture-probe collections.
 It never selects checkpoints or hyperparameters using the final test set.
+
+Result breakdowns. Besides the overall held-out log loss and the loss by stage
+of round and relative seat, every fit reports `cells`: the test loss inside the
+match-relative round bins ``0``, ``1``, ``2-3``, ``4-5`` and ``6+`` (habits need
+several rounds of a match to show, so early rounds are separated one by one and
+later ones pooled), inside the style region of the test match (``train``,
+``heldout`` or ``unknown``) and by whether the seat whose hand is predicted is
+bot-driven or policy-driven. Schema 1 logs carry no round index, style region or
+per-seat driver, so their cells are labelled ``unknown`` and stay loadable. The
+paired flat-vs-history and no-history-vs-history differences are bootstrapped
+inside each cell with whole matches as the resampling unit.
+
+Memory. Rounds are held in RAM at their on-disk dtypes: the v1 encoder is
+binary, so `obs` stays `uint8` (1,849 B per decision) instead of being widened
+to float32 (7,396 B), and batches are cast to float32 only in `collate`. A
+100,000-round styled collection is about 10M decisions, so the resident cost is
+roughly 10M x (1849 + 162) B = 20 GB plus about 1.6 GB of public tokens and 1 GB
+of index tuples - too close to a 32 GB budget to be safe. `--decisions-per-round`
+caps how many decisions of each round are kept, deterministically and without
+dropping any round, so the public token stream and history prefixes of every
+kept decision remain exact. At the collection's ~100 decisions per round, a cap
+of 20 loads about 2M decisions, roughly 4.2 GB, and a cap of 40 about 8.4 GB.
+`dataset_bytes` in the report records the measured resident size.
+
+Plateau cost. Validation runs every `--validation-interval` steps and stops the
+fit once `--patience` consecutive validations fail to improve, so `--steps` can
+be set far above the expected plateau. `--validation-decisions` caps how many
+validation decisions each of those evaluations scores, which keeps a long run
+affordable; the test set is never subsampled. Each fit records `stop_reason`
+(``plateau`` or ``step_cap``) and `best_validation_step`.
 """
 from __future__ import annotations
 
@@ -28,13 +58,54 @@ def check_time(deadline: float | None) -> None:
         raise TimeoutError("belief experiment exceeded its cooperative walltime bound")
 
 
+DRIVER_LABELS = {0: "policy", 1: "bot"}
+DRIVER_UNKNOWN = -1
+# Match-relative round bins. Early rounds are separated because an opponent
+# model has seen the least there; later rounds are pooled to keep cells large.
+ROUND_BINS = ((0, 0, "0"), (1, 1, "1"), (2, 3, "2-3"), (4, 5, "4-5"), (6, None, "6+"))
+
+
+def round_bin(index: int) -> str:
+    """Bin a match-relative round index; schema 1 logs have no index at all."""
+    if index < 0:
+        return "unknown"
+    for low, high, label in ROUND_BINS:
+        if index >= low and (high is None or index <= high):
+            return label
+    return "unknown"
+
+
+def driver_label(code: int) -> str:
+    """Name the driver of a seat: the frozen policy, a styled bot, or unknown."""
+    return DRIVER_LABELS.get(int(code), "unknown")
+
+
+def dataset_bytes(rounds: list[dict]) -> int:
+    """Resident bytes of the loaded round arrays, at their on-disk dtypes."""
+    keys = ("obs", "hidden", "seat", "prefix", "tokens", "driver")
+    return int(sum(r[key].nbytes for r in rounds for key in keys))
+
+
 def write_json(path: Path, value: dict) -> None:
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
     temporary.replace(path)
 
 
-def load_dataset(directory: Path, deadline: float | None = None) -> tuple[list[dict], dict, str]:
+def load_dataset(directory: Path, deadline: float | None = None, *,
+                 decisions_per_round: int = 0, data_seed: int = 20260930
+                 ) -> tuple[list[dict], dict, str]:
+    """Load, validate and fingerprint one collection, optionally subsampled.
+
+    A positive `decisions_per_round` keeps at most that many decisions of each
+    round, chosen without replacement from a generator keyed by `data_seed` and
+    the file name, so the choice is reproducible. Whole rounds are always kept
+    and the public token stream is never subsampled, so the history prefix of
+    every surviving decision is still exact. Validation and the provenance
+    decision count both run on the full round, before any row is dropped.
+    """
+    if decisions_per_round < 0:
+        raise ValueError("decisions_per_round must not be negative")
     provenance = json.loads((directory / "provenance.json").read_text())
     if (provenance.get("status") != "complete"
             or provenance.get("purpose") != "architecture_probe"
@@ -55,6 +126,7 @@ def load_dataset(directory: Path, deadline: float | None = None) -> tuple[list[d
             or provenance["seed"] == provenance["training_seed"]):
         raise ValueError("distinct known collection and base training seeds are required")
     rounds = []
+    total_decisions = 0
     digest = hashlib.sha256()
     for path in sorted(directory.glob("round-*.npz")):
         check_time(deadline)
@@ -70,6 +142,10 @@ def load_dataset(directory: Path, deadline: float | None = None) -> tuple[list[d
             r["schema_version"] = version
             r["style_region"] = str(data["style_region"]) if version >= 2 else "unknown"
             r["driver"] = data["driver"].copy() if version >= 2 else np.zeros(len(r["seat"]), np.int64)
+            r["round_index"] = int(data["round_index"]) if version >= 2 else -1
+            r["round_bin"] = round_bin(r["round_index"])
+            r["seat_driver"] = (data["seat_driver"].copy() if version >= 2
+                                else np.full(4, DRIVER_UNKNOWN, np.int64))
         n = len(r["obs"])
         if (not n or r["obs"].shape != (n, 1849)
                 or r["hidden"].shape != (n, 3, 54)
@@ -100,10 +176,18 @@ def load_dataset(directory: Path, deadline: float | None = None) -> tuple[list[d
                 or not np.array_equal(r["hidden"].sum(2), cards_left.argmax(2))
                 or np.any(r["hidden"] < r["obs"][:, 1687:1849].reshape(n, 3, 54))):
             raise ValueError("relative hidden hands disagree with public seat counts or known holdings")
+        total_decisions += n
+        if decisions_per_round and n > decisions_per_round:
+            seed = int.from_bytes(hashlib.sha256(
+                f"{data_seed}:{path.name}".encode()).digest()[:8], "big")
+            keep = np.sort(np.random.default_rng(seed).choice(
+                n, decisions_per_round, replace=False))
+            for key in ("obs", "hidden", "seat", "prefix", "driver"):
+                r[key] = r[key][keep].copy()
         rounds.append(r)
     if (len(rounds) != provenance.get("collected_rounds") or not rounds
             or len(rounds) != provenance.get("requested_rounds")
-            or sum(len(r["obs"]) for r in rounds) != provenance.get("collected_decisions")
+            or total_decisions != provenance.get("collected_decisions")
             or len({r["group"] for r in rounds}) != provenance.get("match_groups")):
         raise ValueError("round count disagrees with complete provenance")
     return rounds, provenance, digest.hexdigest()
@@ -142,12 +226,27 @@ def split_rounds(rounds: list[dict], split_seed: int,
             "test": [r for r in rounds if r["group"] in test]}
 
 
+def accumulate(cells: dict, name: str, group: str, value: float) -> None:
+    entry = cells.setdefault(name, {}).setdefault(group, [0., 0])
+    entry[0] += value
+    entry[1] += 1
+
+
 @torch.inference_mode()
 def evaluate(model, items: list, device: str, batch_size: int,
              deadline: float | None = None) -> dict:
+    """Held-out loss overall, by stage and seat, and in the task 3 cells.
+
+    `cells` carries one entry per breakdown cell with its own per-match table,
+    so `paired_cells` can bootstrap a paired difference inside each cell with
+    whole matches as the resampling unit. Round-bin and style-region cells
+    average a decision's three hidden hands; `target_driver` cells score each
+    predicted seat on its own, so their `decisions` count seat targets.
+    """
     model.eval()
     sums, counts = np.zeros((3, 3)), np.zeros((3, 3), dtype=np.int64)
     matches: dict[str, list[float]] = {}
+    cells: dict[str, dict[str, list[float]]] = {}
     for start in range(0, len(items), batch_size):
         check_time(deadline)
         part = items[start:start + batch_size]
@@ -161,10 +260,20 @@ def evaluate(model, items: list, device: str, batch_size: int,
         for stage in range(3):
             sums[stage] += losses[stages == stage].sum(0)
             counts[stage] += (stages == stage).sum()
-        for (record, _), loss in zip(part, losses.mean(1)):
-            entry = matches.setdefault(record["group"], [0., 0])
-            entry[0] += float(loss)
+        seats = batch["seat"].cpu().numpy()
+        for row, ((record, _), loss) in enumerate(zip(part, losses)):
+            group, mean = record["group"], float(loss.mean())
+            entry = matches.setdefault(group, [0., 0])
+            entry[0] += mean
             entry[1] += 1
+            accumulate(cells, "round_bin:" + record.get("round_bin", "unknown"), group, mean)
+            accumulate(cells, "style_region:" + record.get("style_region", "unknown"), group, mean)
+            drivers = record.get("seat_driver")
+            for j in range(3):
+                # Relative target j is lho, partner then rho of the acting seat.
+                code = (DRIVER_UNKNOWN if drivers is None
+                        else drivers[(int(seats[row]) + 1 + j) % 4])
+                accumulate(cells, "target_driver:" + driver_label(code), group, float(loss[j]))
     return {"log_loss": float(sums.sum() / counts.sum()), "decisions": len(items),
             "matches": {g: {"log_loss": total / n, "decisions": n}
                         for g, (total, n) in sorted(matches.items())},
@@ -172,7 +281,13 @@ def evaluate(model, items: list, device: str, batch_size: int,
                 stage: {seat: {"log_loss": float(sums[i, j] / counts[i, j]) if counts[i, j] else None,
                                "decisions": int(counts[i, j])}
                         for j, seat in enumerate(("lho", "partner", "rho"))}
-                for i, stage in enumerate(("early", "middle", "late"))}}
+                for i, stage in enumerate(("early", "middle", "late"))},
+            "cells": {name: {
+                "log_loss": sum(t for t, _ in table.values()) / sum(n for _, n in table.values()),
+                "decisions": sum(n for _, n in table.values()),
+                "matches": {g: {"log_loss": t / n, "decisions": n}
+                            for g, (t, n) in sorted(table.items())}}
+                for name, table in sorted(cells.items())}}
 
 
 def paired_improvement(reference: dict, candidate: dict, seed: int, samples: int = 10000) -> dict:
@@ -196,12 +311,31 @@ def paired_improvement(reference: dict, candidate: dict, seed: int, samples: int
             "sampling_unit": "whole paired match, equal weight per match"}
 
 
+def paired_cells(reference: dict, candidate: dict, seed: int, samples: int = 2000) -> dict:
+    """Paired bootstrap inside every breakdown cell the two evaluations share.
+
+    Both models score the identical test decisions, so a cell present in both
+    always holds the same matches; a cell that somehow does not is skipped
+    rather than paired across different denominators.
+    """
+    paired = {}
+    for name in sorted(set(reference["cells"]) & set(candidate["cells"])):
+        ref, cand = reference["cells"][name], candidate["cells"][name]
+        if set(ref["matches"]) != set(cand["matches"]):
+            continue
+        paired[name] = paired_improvement(ref, cand, seed, samples)
+    return paired
+
+
 def run(directory: Path, output: Path, *, seeds=(31, 32, 33), split_seed=20260928,
         steps=6000, min_steps=3000, validation_interval=1000, patience=2,
         batch_size=64, width=128, layers=2, learning_rate=.0003,
-        device="cpu", threads=4, max_seconds=2400, heldout_style_test=False) -> dict:
+        device="cpu", threads=4, max_seconds=2400, heldout_style_test=False,
+        decisions_per_round=0, data_seed=20260930, cell_bootstrap_samples=2000,
+        validation_decisions=0) -> dict:
     if (not seeds or len(set(seeds)) != len(seeds) or min(steps, min_steps, validation_interval,
-            patience, batch_size, threads) <= 0 or min_steps > steps
+            patience, batch_size, threads, cell_bootstrap_samples) <= 0 or min_steps > steps
+            or decisions_per_round < 0 or validation_decisions < 0
             or not np.isfinite(learning_rate) or learning_rate <= 0
             or not np.isfinite(max_seconds) or max_seconds <= 0):
         raise ValueError("invalid experiment budget or seeds")
@@ -214,7 +348,10 @@ def run(directory: Path, output: Path, *, seeds=(31, 32, 33), split_seed=2026092
                   validation_interval=validation_interval, patience=patience, batch_size=batch_size,
                   width=width, layers=layers, learning_rate=learning_rate, device=device,
                   threads=threads, max_seconds=max_seconds,
-                  heldout_style_test=bool(heldout_style_test))
+                  heldout_style_test=bool(heldout_style_test),
+                  decisions_per_round=decisions_per_round, data_seed=data_seed,
+                  cell_bootstrap_samples=cell_bootstrap_samples,
+                  validation_decisions=validation_decisions)
     report = {"schema_version": 1, "status": "running", "config": config, "runs": [],
               "gate": "pending", "rl_enabled": False,
               "source_sha256": {name: hashlib.sha256((Path(__file__).resolve().parents[1] / name).read_bytes()).hexdigest()
@@ -223,14 +360,24 @@ def run(directory: Path, output: Path, *, seeds=(31, 32, 33), split_seed=2026092
     write_json(output / "report.json", report)
     try:
         torch.set_num_threads(threads)
-        rounds, provenance, fingerprint = load_dataset(directory, deadline)
+        rounds, provenance, fingerprint = load_dataset(
+            directory, deadline, decisions_per_round=decisions_per_round, data_seed=data_seed)
         if set(seeds) & {provenance["seed"], provenance["training_seed"]}:
             raise ValueError("fit seeds must differ from collection and base training seeds")
         splits = split_rounds(rounds, split_seed, heldout_styles=bool(heldout_style_test))
         data = {name: examples(records) for name, records in splits.items()}
+        # A plateau needs many validations, so the validation set may be capped.
+        # The test set is never subsampled; only model selection sees this cap.
+        if validation_decisions and len(data["validation"]) > validation_decisions:
+            data["validation"] = random.Random(data_seed).sample(
+                data["validation"], validation_decisions)
         report.update(dataset_sha256=fingerprint, collection=provenance,
+                      dataset_bytes=dataset_bytes(rounds),
+                      loaded_decisions=sum(len(r["obs"]) for r in rounds),
                       splits={name: {"matches": sorted({r['group'] for r in records}),
-                                     "rounds": len(records), "decisions": len(data[name])}
+                                     "rounds": len(records),
+                                     "decisions": sum(len(r["obs"]) for r in records),
+                                     "decisions_used": len(data[name])}
                               for name, records in splits.items()})
         write_json(output / "report.json", report)
         for seed in seeds:
@@ -285,16 +432,24 @@ def run(directory: Path, output: Path, *, seeds=(31, 32, 33), split_seed=2026092
                 temporary.replace(path)
                 result["models"][name] = {"parameters": count_parameters(model),
                     "steps_run": step, "selected_step": best_step, "validation_log_loss": best,
+                    "best_validation_step": best_step, "validation_evaluations": len(curve),
+                    "stop_reason": "plateau" if step < steps else "step_cap",
                     "early_stopped": step < steps, "best_at_budget_end": best_step == steps,
                     "learn_seconds": learn_seconds, "elapsed_seconds": time.monotonic() - model_started,
                     "learning_curve": curve, "test": final_test, "checkpoint": str(path),
                     "checkpoint_sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
                 write_json(output / f"seed-{seed}-partial.json", result)
                 model.to("cpu")
-            result["v2_vs_v1"] = paired_improvement(result["models"]["v1"]["test"],
-                                                      result["models"]["v2"]["test"], split_seed)
-            result["v2_vs_no_history"] = paired_improvement(result["models"]["no_history"]["test"],
-                                                      result["models"]["v2"]["test"], split_seed)
+            for reference, key in (("v1", "v2_vs_v1"), ("no_history", "v2_vs_no_history")):
+                check_time(deadline)
+                base, candidate = result["models"][reference]["test"], result["models"]["v2"]["test"]
+                result[key] = paired_improvement(base, candidate, split_seed)
+                result[key]["cells"] = paired_cells(base, candidate, split_seed,
+                                                    cell_bootstrap_samples)
+            # The per-cell match tables are only needed for the pairing above.
+            for metrics in result["models"].values():
+                for cell in metrics["test"]["cells"].values():
+                    cell["test_matches"] = len(cell.pop("matches"))
             report["runs"].append(result)
             write_json(output / "report.json", report)
         primary = all(r["v2_vs_v1"]["test_matches"] >= 20
@@ -325,7 +480,9 @@ def main() -> None:
     p.add_argument("--seeds", type=int, nargs="+", default=[31, 32, 33])
     for name, default in (("split-seed", 20260928), ("steps", 6000), ("min-steps", 3000),
                           ("validation-interval", 1000), ("patience", 2), ("batch-size", 64),
-                          ("width", 128), ("layers", 2), ("threads", 4)):
+                          ("width", 128), ("layers", 2), ("threads", 4),
+                          ("decisions-per-round", 0), ("data-seed", 20260930),
+                          ("cell-bootstrap-samples", 2000), ("validation-decisions", 0)):
         p.add_argument("--" + name, type=int, default=default)
     p.add_argument("--learning-rate", type=float, default=.0003)
     p.add_argument("--max-seconds", type=float, default=2400)
