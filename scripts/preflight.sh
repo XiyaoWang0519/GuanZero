@@ -6,6 +6,8 @@
 #   scripts/preflight.sh ppo [cpu|cuda] [RUN_DIR]    Stage B PPO learner (B5):
 #     2 updates, checkpoint, resume to 4 updates, checkpoint again. Needs the
 #     M1 final and the B2 critic under .work (found in the main checkout too).
+#     PPO_CONFIG=train/configs/ppo-league-smoke.json runs it against the B8
+#     league (learner snapshots every update, league state resumed).
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
@@ -14,7 +16,7 @@ if [[ "${1:-}" == ppo ]]; then
   DEVICE=${2:-cpu}
   RUN_DIR=${3:-$(mktemp -d "${TMPDIR:-/tmp}/guanzero-ppo-preflight.XXXXXX")}
   export PYTHONPATH="$ROOT/python:$ROOT${PYTHONPATH:+:$PYTHONPATH}"
-  CONFIG=train/configs/ppo-smoke.json
+  CONFIG=${PPO_CONFIG:-train/configs/ppo-smoke.json}
   "$PY" -m train.ppo --config "$CONFIG" --run-dir "$RUN_DIR" \
     --device "$DEVICE" --max-updates 2 --max-seconds 300
   "$PY" - "$RUN_DIR/latest.pt" 2 <<'PY'
@@ -33,6 +35,15 @@ from eval.policies import load_policy
 checkpoint = torch.load(sys.argv[1], map_location="cpu", weights_only=False)
 assert checkpoint["progress"]["updates"] == int(sys.argv[2]), "resume did not reach four PPO updates"
 assert checkpoint["progress"]["resumes"] == 1, "checkpoint was not resumed"
+league = checkpoint.get("league_state")
+if league is not None:
+    snapshots = [path for path, _ in league["snapshots"]]
+    assert snapshots, "league run without learner snapshots"
+    for path in snapshots:
+        load_policy(path)
+    played = {e["name"]: e["games"] for e in league["entries"] if e["games"]}
+    print(f"preflight: league pool {len(league['entries'])} entries, "
+          f"{len(snapshots)} snapshots load, games per entry {played}")
 policy = load_policy(sys.argv[1])
 print(f"preflight: {policy.name} loads through load_policy")
 PY

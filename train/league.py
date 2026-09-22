@@ -258,6 +258,14 @@ class League:
         self.unresolved: list[deque[Entry]] = []
         self.styles = np.zeros((0, 4, self.space.dim), np.float32)
         self.forward_calls = 0
+        # Network specs whose rows the caller decides itself (see
+        # `external_rows`); they are drawn, capped and credited as usual but
+        # never loaded here. PPO puts the frozen M1 here to fuse its forward.
+        self.external: frozenset[str] = frozenset()
+        # With `record_results`, on_match_end also logs (entry name, learner
+        # won) for `pop_results`: PPO actor processes ship them to the learner.
+        self.record_results = False
+        self.results: list[tuple[str, bool]] = []
 
     @classmethod
     def from_file(cls, path: str | Path, loader: Loader | None = None,
@@ -439,9 +447,86 @@ class League:
             # FIFO, so the result reaches the finished match's opponent whether
             # the loop reports the end before or after the next match's start.
             entry = queue.popleft()
-            entry.games += 1
-            entry.learner_wins += int(bool(won))
-            entry.beat_ema += alpha * ((0.0 if won else 1.0) - entry.beat_ema)
+            self._credit(entry, bool(won), alpha)
+            if self.record_results:
+                self.results.append((entry.name, bool(won)))
+
+    @staticmethod
+    def _credit(entry: Entry, won: bool, alpha: float) -> None:
+        entry.games += 1
+        entry.learner_wins += int(won)
+        entry.beat_ema += alpha * ((0.0 if won else 1.0) - entry.beat_ema)
+
+    def external_rows(self, env_id: np.ndarray) -> np.ndarray:
+        """Boolean mask: rows whose environment plays an `external` spec."""
+        if not self.external:
+            return np.zeros(len(env_id), bool)
+        return np.fromiter((self.assigned[int(e)].spec in self.external for e in env_id),
+                           bool, len(env_id))
+
+    # --- results, state and synchronisation -------------------------------
+
+    def pop_results(self) -> list[tuple[str, bool]]:
+        out, self.results = self.results, []
+        return out
+
+    def apply_results(self, results: Sequence[tuple[str, bool]]) -> int:
+        """Credit match results by entry name, in order, exactly as
+        `on_match_end` would have. Results of entries no longer in the pool
+        (evicted snapshots) are dropped: in a single process they go to an
+        Entry that is no longer sampled. Returns the number applied."""
+        by_name = {e.name: e for e in self.entries}
+        applied = 0
+        for name, won in results:
+            entry = by_name.get(name)
+            if entry is not None:
+                self._credit(entry, bool(won), self.config.ema_alpha)
+                applied += 1
+        return applied
+
+    def state_dict(self, include_rng: bool = True) -> dict[str, Any]:
+        """The pool (entries in order, snapshots, per-entry EMA and tallies)
+        and, optionally, the sampler RNG. Assignments are not included: they
+        belong to the bound environments, which restart on resume."""
+        state: dict[str, Any] = {
+            "entries": [{"name": e.name, "spec": e.spec, "weight": e.weight,
+                         "snapshot": e.snapshot, "beat_ema": e.beat_ema, "games": e.games,
+                         "learner_wins": e.learner_wins} for e in self.entries],
+            "snapshots": [[path, [e.name for e in added]] for path, added in self.snapshots]}
+        if include_rng:
+            state["rng"] = self.rng.bit_generator.state
+        return state
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        """Adopt `state` (from `state_dict`). Entries are matched by name and
+        reused, so an environment already playing one keeps its Entry object;
+        new names join, missing ones leave the pool (running matches finish
+        first, as with snapshot eviction). The RNG is restored if present."""
+        from .styles import fixed_style
+
+        old = {e.name: e for e in self.entries}
+        entries = []
+        for item in state["entries"]:
+            entry = old.get(item["name"])
+            if entry is None or entry.spec != item["spec"]:
+                kind = entry_kind(item["spec"])
+                entry = Entry(name=item["name"], spec=item["spec"], kind=kind,
+                              style=(fixed_style(item["spec"][len(STYLED_PREFIX):])
+                                     if kind == "styled" else None))
+            entry.weight = float(item["weight"])
+            entry.snapshot = bool(item["snapshot"])
+            entry.beat_ema = float(item["beat_ema"])
+            entry.games = int(item["games"])
+            entry.learner_wins = int(item["learner_wins"])
+            entries.append(entry)
+        if not entries:
+            raise ValueError("league state has no entries")
+        self.entries = entries
+        by_name = {e.name: e for e in entries}
+        self.snapshots = deque((str(path), [by_name[n] for n in names])
+                               for path, names in state["snapshots"])
+        if "rng" in state:
+            self.rng.bit_generator.state = state["rng"]
 
     # --- logging ----------------------------------------------------------
 
@@ -450,7 +535,8 @@ class League:
         out: dict[str, float] = {"league/pool_size": float(len(self.entries)),
                                  "league/active_models": float(len(self.active)),
                                  "league/cached_models": float(len(self.cache)),
-                                 "league/snapshots": float(len(self.snapshots))}
+                                 "league/snapshots": float(len(self.snapshots)),
+                                 "league/forward_calls": float(self.forward_calls)}
         for entry, weight in zip(self.entries, self.weights()):
             key = f"league/{entry.name}"
             out[f"{key}/games"] = float(entry.games)

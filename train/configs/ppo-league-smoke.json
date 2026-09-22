@@ -1,0 +1,23 @@
+{
+  "seed": 7,
+  "init_checkpoint": ".work/runpod/artifacts/pilot/final.pt",
+  "critic_init": ".work/critic-fit/perfect/best.pt",
+  "opponent": "league:train/configs/league-b8.json",
+  "league_snapshot_every": 1,
+  "temperature": 0.02,
+  "num_envs": 32,
+  "num_threads": 2,
+  "torch_threads": 4,
+  "rollout_steps": 128,
+  "epochs": 2,
+  "minibatch_size": 512,
+  "policy_lr": 1e-05,
+  "critic_lr": 0.0001,
+  "kl_coef": 0.1,
+  "kl_anneal_updates": 200,
+  "max_updates": 4,
+  "max_seconds": 600,
+  "checkpoint_seconds": 60,
+  "snapshot_updates": 2,
+  "tensorboard": false
+}
