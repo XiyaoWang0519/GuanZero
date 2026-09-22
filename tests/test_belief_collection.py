@@ -13,6 +13,7 @@ import eval.collect_belief as collection
 from eval.policies import model_digest
 from train.ckpt import load_checkpoint, save_checkpoint
 from train.model import GuandanModel, ModelConfig
+from train.styles import style_dim
 from train.tribute_data import engine_source_digest
 
 
@@ -54,7 +55,13 @@ def test_architecture_probe_has_truthful_identity_counts_and_causal_prefixes(che
     assert len(rounds) == report["collected_rounds"] == 5
     for path in rounds:
         with np.load(path, allow_pickle=False) as record:
-            assert set(record.files) == {"schema_version", "group", "obs", "hidden", "seat", "prefix", "tokens"}
+            # Schema 2: identity, driver and style fields accompany the round.
+            assert set(record.files) == {"schema_version", "group", "obs", "hidden",
+                "seat", "prefix", "tokens", "driver", "styles", "seat_driver",
+                "match_id", "round_index", "env_id", "style_region", "styled"}
+            assert int(record["schema_version"]) == 2
+            assert record["styles"].shape == (4, style_dim())
+            assert record["driver"].shape == record["seat"].shape
             groups.add(str(record["group"]))
             assert str(record["group"]).startswith("architecture_probe:103:")
             decisions += len(record["obs"])
@@ -160,3 +167,33 @@ def test_cli_accepts_architecture_purpose(checkpoint, tmp_path, capsys):
     collection.main(["--checkpoint", str(checkpoint), "--output", str(tmp_path / "cli"),
         "--rounds", "2", "--num-envs", "2", "--seed", "105", "--purpose", "architecture_probe"])
     assert json.loads(capsys.readouterr().out)["purpose"] == "architecture_probe"
+
+
+def test_cli_accepts_the_styled_options(checkpoint, tmp_path, capsys):
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        collection.main(["--checkpoint", str(checkpoint), "--output", str(tmp_path / "cli"),
+            "--rounds", "2", "--num-envs", "2", "--seed", "106", "--styled",
+            "--style-region", "heldout", "--style-seed", "55", "--policy-team", "0"])
+    report = json.loads(capsys.readouterr().out)
+    assert report["styled"] is True and report["style_region"] == "heldout"
+    assert report["style_seed"] == 55 and report["policy_team"] == "0"
+
+
+def test_schema_one_rounds_still_load(tmp_path):
+    """Archived schema-1 datasets keep loading after the schema 2 change."""
+    from train.buffer import Decision
+    from train.logs import TOKEN_DIM, save_round
+
+    tokens = np.zeros((2, TOKEN_DIM), dtype=np.uint8)
+    tokens[np.arange(2), np.arange(2)] = 1
+    decisions = [Decision(np.zeros(1849, np.uint8), np.zeros(154, np.uint8),
+                          np.zeros((3, 54), np.uint8), seat=i, phase=3, prefix=i)
+                 for i in range(2)]
+    path = tmp_path / "legacy.npz"
+    save_round(path, decisions, list(tokens), group="legacy")
+    with np.load(path, allow_pickle=False) as record:
+        assert int(record["schema_version"]) == 1
+        assert "styles" not in record.files

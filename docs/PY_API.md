@@ -174,6 +174,30 @@ environment and contain:
 | `cards_left` | Actor's public remaining card count after the action |
 | `forced` | True for an automatically skipped pass |
 
+## Round-log schema 2
+
+`train/logs.save_round` writes schema 1 when called without `meta`, so archived
+datasets and the trainer's own `belief/` directory are unchanged. Belief
+collections pass `meta` and get schema 2, which adds styled-opponent labels:
+
+| Field | Shape / type | Meaning |
+|---|---|---|
+| `schema_version` | scalar int | `2` |
+| `group`, `obs`, `hidden`, `seat`, `prefix`, `tokens` | as schema 1 | Unchanged |
+| `match_id` | scalar int64 | Source match, per environment |
+| `round_index` | scalar int64 | Zero-based round within that match |
+| `env_id` | scalar int64 | Source environment |
+| `driver` | int64 `[decisions]` | `0` policy-driven, `1` bot-driven, per decision |
+| `seat_driver` | int64 `[4]` | Driver of each of the four seats for this match |
+| `styles` | float32 `[4, STYLE_DIM]` | Style vector of each seat; NaN when unknown |
+| `style_region` | str | `train`, `heldout`, `mixed` or `unknown` |
+| `styled` | bool | Whether the collection requested styled opponents |
+
+`driver` is derived from `seat_driver[seat]`, so a policy row can never be
+marked bot-driven and a bot row can never be marked policy-driven. Readers that
+only need the belief tensors (`train/belief_probe.load_rounds`,
+`train/belief_experiment.load_dataset`) accept both schema versions.
+
 Tribute payments are settled together after all payers choose, so the first
 payer's `cards_left` can still be 27 at its selection event. The play-phase
 stream is the complete ordered play/pass history used by the v2 belief probe.

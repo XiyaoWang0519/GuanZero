@@ -83,7 +83,9 @@ def load_rounds(directory: Path, max_rounds: int = 10000) -> tuple[list[dict], l
     rounds = []
     for path in sorted(directory.glob("round-*.npz"))[:max_rounds]:
         with np.load(path, allow_pickle=False) as data:
-            if int(data["schema_version"]) != 1:
+            # Schema 2 only adds styled-opponent fields; the probe reads the
+            # same tensors from either version.
+            if int(data["schema_version"]) not in (1, 2):
                 raise ValueError(f"unsupported log schema: {path}")
             item = {key: data[key].copy() for key in ("obs", "hidden", "seat", "prefix", "tokens")}
             item["group"] = str(data["group"])

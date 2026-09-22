@@ -328,7 +328,7 @@ def test_independent_belief_collector_never_trains_and_preserves_groups(tmp_path
     assert result["collected_rounds"] == 2
     assert checkpoint.read_bytes() == original
     assert sorted(path.name for path in output.iterdir()) == [
-        "provenance.json", "round-00000000.npz", "round-00000001.npz"]
+        "matches.json", "provenance.json", "round-00000000.npz", "round-00000001.npz"]
     excluded, selected = load_rounds(output)
     assert len(excluded) == len(selected) == 1
     assert excluded[0]["group"] != selected[0]["group"]

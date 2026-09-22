@@ -61,10 +61,15 @@ def load_dataset(directory: Path, deadline: float | None = None) -> tuple[list[d
         digest.update(path.name.encode())
         digest.update(path.read_bytes())
         with np.load(path, allow_pickle=False) as data:
-            if int(data["schema_version"]) != 1:
+            version = int(data["schema_version"])
+            if version not in (1, 2):
                 raise ValueError("unsupported belief schema")
             r = {k: data[k].copy() for k in ("obs", "hidden", "seat", "prefix", "tokens")}
             r["group"] = str(data["group"])
+            # Schema 2 adds styled-opponent labels; schema 1 rounds stay loadable.
+            r["schema_version"] = version
+            r["style_region"] = str(data["style_region"]) if version >= 2 else "unknown"
+            r["driver"] = data["driver"].copy() if version >= 2 else np.zeros(len(r["seat"]), np.int64)
         n = len(r["obs"])
         if (not n or r["obs"].shape != (n, 1849)
                 or r["hidden"].shape != (n, 3, 54)
@@ -104,12 +109,33 @@ def load_dataset(directory: Path, deadline: float | None = None) -> tuple[list[d
     return rounds, provenance, digest.hexdigest()
 
 
-def split_rounds(rounds: list[dict], split_seed: int) -> dict[str, list[dict]]:
+def split_rounds(rounds: list[dict], split_seed: int,
+                 heldout_styles: bool = False) -> dict[str, list[dict]]:
+    """Whole-match split by seeded SHA-256, optionally restricted by style region.
+
+    With `heldout_styles` the test set is drawn only from matches whose styles
+    came from the held-out style region, and training never sees them; the
+    seeded hash still orders the split so it stays reproducible.
+    """
+    regions = {}
+    for r in rounds:
+        regions.setdefault(r["group"], set()).add(r.get("style_region", "unknown"))
     groups = sorted({r["group"] for r in rounds},
                     key=lambda g: hashlib.sha256(f"{split_seed}:{g}".encode()).digest())
     if len(groups) < 10:
         raise ValueError("experiment needs at least ten distinct source matches")
     size = max(1, int(len(groups) * .15))
+    if heldout_styles:
+        reserved = [g for g in groups if regions[g] == {"heldout"}]
+        rest = [g for g in groups if regions[g] != {"heldout"}]
+        if len(reserved) < size:
+            raise ValueError("not enough held-out-style matches for the test split")
+        test, validation = set(reserved[:size]), set(rest[:size])
+        return {"train": [r for r in rounds
+                          if r["group"] not in test | validation
+                          and regions[r["group"]] != {"heldout"}],
+                "validation": [r for r in rounds if r["group"] in validation],
+                "test": [r for r in rounds if r["group"] in test]}
     test, validation = set(groups[:size]), set(groups[size:2 * size])
     return {"train": [r for r in rounds if r["group"] not in test | validation],
             "validation": [r for r in rounds if r["group"] in validation],
@@ -173,7 +199,7 @@ def paired_improvement(reference: dict, candidate: dict, seed: int, samples: int
 def run(directory: Path, output: Path, *, seeds=(31, 32, 33), split_seed=20260928,
         steps=6000, min_steps=3000, validation_interval=1000, patience=2,
         batch_size=64, width=128, layers=2, learning_rate=.0003,
-        device="cpu", threads=4, max_seconds=2400) -> dict:
+        device="cpu", threads=4, max_seconds=2400, heldout_style_test=False) -> dict:
     if (not seeds or len(set(seeds)) != len(seeds) or min(steps, min_steps, validation_interval,
             patience, batch_size, threads) <= 0 or min_steps > steps
             or not np.isfinite(learning_rate) or learning_rate <= 0
@@ -187,7 +213,8 @@ def run(directory: Path, output: Path, *, seeds=(31, 32, 33), split_seed=2026092
     config = dict(seeds=list(seeds), split_seed=split_seed, steps=steps, min_steps=min_steps,
                   validation_interval=validation_interval, patience=patience, batch_size=batch_size,
                   width=width, layers=layers, learning_rate=learning_rate, device=device,
-                  threads=threads, max_seconds=max_seconds)
+                  threads=threads, max_seconds=max_seconds,
+                  heldout_style_test=bool(heldout_style_test))
     report = {"schema_version": 1, "status": "running", "config": config, "runs": [],
               "gate": "pending", "rl_enabled": False,
               "source_sha256": {name: hashlib.sha256((Path(__file__).resolve().parents[1] / name).read_bytes()).hexdigest()
@@ -199,7 +226,7 @@ def run(directory: Path, output: Path, *, seeds=(31, 32, 33), split_seed=2026092
         rounds, provenance, fingerprint = load_dataset(directory, deadline)
         if set(seeds) & {provenance["seed"], provenance["training_seed"]}:
             raise ValueError("fit seeds must differ from collection and base training seeds")
-        splits = split_rounds(rounds, split_seed)
+        splits = split_rounds(rounds, split_seed, heldout_styles=bool(heldout_style_test))
         data = {name: examples(records) for name, records in splits.items()}
         report.update(dataset_sha256=fingerprint, collection=provenance,
                       splits={name: {"matches": sorted({r['group'] for r in records}),
@@ -303,6 +330,8 @@ def main() -> None:
     p.add_argument("--learning-rate", type=float, default=.0003)
     p.add_argument("--max-seconds", type=float, default=2400)
     p.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
+    p.add_argument("--heldout-style-test", action="store_true",
+                   help="restrict test matches to the held-out style region")
     args = vars(p.parse_args())
     args["directory"] = args.pop("logs")
     result = run(**args)

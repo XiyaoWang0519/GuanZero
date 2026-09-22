@@ -7,6 +7,10 @@ import numpy as np
 from train.buffer import Decision
 
 TOKEN_DIM = 4 + 154 + 28
+SCHEMA_VERSION = 2
+# Per-decision driver codes: which player chose the action at that row.
+DRIVER_POLICY = 0
+DRIVER_BOT = 1
 
 
 def public_token(event: object) -> np.ndarray:
@@ -20,18 +24,42 @@ def public_token(event: object) -> np.ndarray:
 
 
 def save_round(path: Path, decisions: list[Decision], tokens: list[np.ndarray],
-               group: str) -> None:
+               group: str, meta: dict | None = None) -> None:
+    """Write one round. `meta` selects schema 2 with style and identity fields.
+
+    Without `meta` the schema-1 payload is written unchanged, so self-play
+    collections and archived datasets keep loading exactly as before. With
+    `meta` the round additionally records `match_id`, `round_index`, `env_id`,
+    the per-decision `driver`, the four seats' `styles` and `seat_driver`, the
+    `style_region` label and the `styled` flag.
+    """
     if not decisions:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": np.asarray(1), "group": np.asarray(group),
+        "obs": np.stack([d.obs for d in decisions]),
+        "hidden": np.stack([d.hidden for d in decisions]),
+        "seat": np.asarray([d.seat for d in decisions], dtype=np.int64),
+        "prefix": np.asarray([d.prefix for d in decisions], dtype=np.int64),
+        "tokens": np.asarray(tokens, dtype=np.uint8).reshape(-1, TOKEN_DIM),
+    }
+    if meta is not None:
+        styles = np.asarray(meta["styles"], dtype=np.float32)
+        seat_driver = np.asarray(meta["seat_driver"], dtype=np.int64)
+        if styles.ndim != 2 or styles.shape[0] != 4 or seat_driver.shape != (4,):
+            raise ValueError("schema 2 needs one style vector and driver per seat")
+        payload.update(
+            schema_version=np.asarray(SCHEMA_VERSION),
+            match_id=np.asarray(int(meta["match_id"]), dtype=np.int64),
+            round_index=np.asarray(int(meta["round_index"]), dtype=np.int64),
+            env_id=np.asarray(int(meta["env_id"]), dtype=np.int64),
+            driver=np.asarray([seat_driver[d.seat] for d in decisions], dtype=np.int64),
+            styles=styles, seat_driver=seat_driver,
+            style_region=np.asarray(str(meta["style_region"])),
+            styled=np.asarray(bool(meta["styled"])),
+        )
     temporary = path.with_suffix(".tmp")
     with temporary.open("wb") as stream:
-        np.savez_compressed(
-            stream, schema_version=np.asarray(1), group=np.asarray(group),
-            obs=np.stack([d.obs for d in decisions]),
-            hidden=np.stack([d.hidden for d in decisions]),
-            seat=np.asarray([d.seat for d in decisions], dtype=np.int64),
-            prefix=np.asarray([d.prefix for d in decisions], dtype=np.int64),
-            tokens=np.asarray(tokens, dtype=np.uint8).reshape(-1, TOKEN_DIM),
-        )
+        np.savez_compressed(stream, **payload)
     os.replace(temporary, path)

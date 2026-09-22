@@ -326,6 +326,57 @@ match-clustered test intervals. Probe weights cannot be used as playing-policy
 checkpoints. The original small runner remains available to reproduce its
 historical experiment. See `reports/M2-belief.md` for the predeclared protocol.
 
+### Styled opponents and the style-space coverage report
+
+Self-play copies have no habits, so a probe fitted on them cannot show
+cross-round opponent modelling. `--styled` gives the other team habits: the
+checkpoint drives seats `t` and `t+2`, and the continuous style-parameterised
+bot drives the other two. The team `t` is drawn per match and recorded.
+
+```sh
+PYTHONPATH=python:. .venv/bin/python -m eval.collect_belief \
+  --checkpoint .work/m1-full-model/latest.pt \
+  --output .work/belief-styled/data --purpose architecture_probe \
+  --rounds 100000 --num-envs 64 --threads 4 --seed 20260930 --max-seconds 3600 \
+  --styled --style-region mixed --style-seed 101 --heldout-fraction 0.5
+PYTHONPATH=python:. .venv/bin/python -m eval.style_coverage \
+  --collection .work/belief-styled/data
+```
+
+| Flag | Meaning |
+|---|---|
+| `--styled` / `--no-styled` | Drive the opponent team with the styled bot (default off) |
+| `--style-region` | `train`, `heldout` or `mixed` region of the style space |
+| `--style-seed` | Seed of the per-match style draw; defaults to `--seed` |
+| `--heldout-fraction` | Share of held-out styles under `--style-region mixed` |
+| `--policy-team` | `random` (per match, recorded), `0` or `1` |
+
+`train/styles.py` owns the style space: slot 0 is `bomb_threshold`, slots
+1..T are per-play-type preference log-weights, then `follow_aggression`,
+`lead_high_bias`, `partner_weight` and `temperature`. The held-out region is a
+configurable corner of the box (by default `bomb_threshold >= 0.75` and
+`follow_aggression >= 0.75`); training styles are rejection-sampled outside it,
+so the two regions are disjoint by construction. Styles are drawn once per
+match per seat from a generator keyed by `(style_seed, env_id, match_id)`, so a
+match's styles are fixed and reproducible. The style space, region, split rule
+and per-seat driver assignment are recorded in `provenance.json`, and
+`matches.json` lists every sampled match with its styles, drivers and behaviour
+histogram.
+
+`eval.style_coverage` writes `coverage.json` and `coverage.md`: a histogram of
+each style slot over the sampled matches, behaviour histograms (bomb timing,
+play-type frequency, lead rank) per style-slot bin, and an explicit check that
+no training style falls inside the held-out region.
+
+Pass `--heldout-style-test` to `train.belief_experiment` to restrict the test
+matches to the held-out style region; without it the existing seeded whole-match
+split is unchanged.
+
+If `gd.STYLE_DIM` is missing the styled bot is not built. Collection then warns
+loudly, plays the opponent seats greedily, records their style vectors as NaN
+and sets `"styled_bot_unavailable": true` in provenance. Such a collection is a
+pipeline check only and must not be used as evidence of opponent modelling.
+
 The completed three-seed run passes the supervised v2 gate. The corrected
 architecture beats flat loss by 9.1–11.1%, but history contributes only
 0.21–0.43% over its no-history control. `train/history_cache.py` provides
