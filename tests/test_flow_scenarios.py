@@ -148,17 +148,48 @@ def test_t_flow_08_double_tribute_routes_by_card_power():
     assert back0 is not None
 
 
-def test_t_flow_10_double_tribute_tie_goes_to_the_upstream_seat():
-    e, m = _state([_c("S3 D3 S4"), _c("SB S6 D6"), _c("S7 D7 S8"), _c("SB S9 D9")],
-                  prev_order=[0, 2, 1, 3])
+_FLOW_10_HANDS = [_c("S3 D3 S4"), _c("SB S6 D6"), _c("S7 D7 S8"), _c("SB S9 D9")]
+
+
+def _flow_10(rules=None):
+    """Seats 1 and 3 both pay SB after a double win by 0 and 2. The Banker
+    returns S3 and the Follower returns S7, so where those land shows who paid
+    whom. Returns the state once play starts."""
+    e, m = _state(_FLOW_10_HANDS, prev_order=[0, 2, 1, 3], rules=rules)
     assert m.phase == gd.Phase.Tribute
     _play(e, m, "SB")             # seat 1
     _play(e, m, "SB")             # seat 3
-    # Equal power: the Banker's upstream seat, seat 3, pays the Banker and leads.
     assert m.hand(0).count(g.cid("SB")) == 1
     assert m.hand(2).count(g.cid("SB")) == 1
-    while m.phase == gd.Phase.BackTribute:
-        e.apply(m, e.legal_actions(m)[0])
+    # Receivers return in payer order, so who moves first depends on pairing.
+    for _ in range(2):
+        assert m.phase == gd.Phase.BackTribute
+        _play(e, m, "S3" if m.to_move == 0 else "S7")
+    assert m.phase == gd.Phase.Play
+    return m
+
+
+def test_house_default_tribute_tie_is_downstream():
+    assert gd.RuleConfig.house().tribute_tie == gd.TributeTie.Downstream
+    assert gd.RuleConfig().tribute_tie == gd.TributeTie.Downstream
+    assert gd.RuleConfig.ogd().tribute_tie == gd.TributeTie.LastFinisher
+
+
+def test_t_flow_10_double_tribute_tie_goes_clockwise():
+    m = _flow_10()
+    # Equal power, official rule: each loser pays its upstream neighbour, so
+    # the Banker's downstream seat 1 pays the Banker and leads, 3 pays 2.
+    assert g.cid("S3") in m.hand(1), "the Banker returns to seat 1, its payer"
+    assert g.cid("S7") in m.hand(3), "the Follower returns to seat 3, its payer"
+    assert m.to_move == 1, "the Banker's downstream seat leads on a tie"
+
+
+def test_t_flow_10_under_tribute_tie_upstream():
+    rules = gd.RuleConfig.house()
+    rules.tribute_tie = gd.TributeTie.Upstream
+    m = _flow_10(rules)
+    assert g.cid("S3") in m.hand(3), "the Banker returns to seat 3, its payer"
+    assert g.cid("S7") in m.hand(1)
     assert m.to_move == 3, "the upstream seat leads on a tie"
 
 
@@ -190,8 +221,24 @@ def test_t_flow_11_a_round_at_a_lost_by_the_owner():
     assert owner == 0
 
 
-def test_t_flow_12_third_failure_resets_the_owner():
+def test_house_default_has_no_a_fail_reset():
+    assert gd.RuleConfig.house().a_fail_limit == 0
+    assert gd.RuleConfig.ogd().a_fail_limit == 4
+
+
+def test_t_flow_12_third_failure_does_not_reset_under_house_rules():
     levels, fails, owner, winner = gd.end_of_round([12, 5], [2, 0], 0, 12, [1, 3, 0, 2])
+    assert winner is None
+    assert levels == [12, 8], "the owner stays at A, the winners promote"
+    assert fails == [3, 0]
+    assert owner == 1
+
+
+def test_t_flow_12_third_failure_resets_the_owner_with_limit_3():
+    rules = gd.RuleConfig.house()
+    rules.a_fail_limit = 3
+    levels, fails, owner, winner = gd.end_of_round([12, 5], [2, 0], 0, 12, [1, 3, 0, 2],
+                                                   rules)
     assert winner is None
     assert levels == [0, 8], "the owner drops to the deuce, the winners promote"
     assert fails == [0, 0]
