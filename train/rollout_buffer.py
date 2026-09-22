@@ -97,7 +97,34 @@ def compute_gae(values: np.ndarray, rewards: np.ndarray, dones: np.ndarray,
 class RolloutBuffer:
     """Preallocated whole-round storage for learner seats only."""
 
-    def __init__(self, config: RolloutBufferConfig) -> None:
+    @classmethod
+    def shared(cls, config: RolloutBufferConfig) -> tuple["RolloutBuffer", dict[str, torch.Tensor]]:
+        """A buffer whose arrays live in shared memory, plus those arrays as
+        tensors. Another process passed the tensors (torch.multiprocessing
+        shares them without copying) rebuilds a view with
+        `RolloutBuffer(config, arrays={k: t.numpy() ...})`; the Python-side
+        counters (`n_steps`, `n_cand`, `n_traj`) are per view and must be
+        handed over explicitly. See `train/ppo_actors.py`."""
+        buffer = cls(config)
+        tensors = {}
+        for name, array in buffer.storage().items():
+            tensor = torch.from_numpy(array).clone().share_memory_()
+            tensors[name] = tensor
+            setattr(buffer, name, tensor.numpy())
+        return buffer, tensors
+
+    def __init__(self, config: RolloutBufferConfig,
+                 arrays: dict[str, np.ndarray] | None = None) -> None:
+        """`arrays` adopts existing storage (a shared-memory view) in place of
+        freshly allocated arrays; names, shapes and dtypes must match."""
+        self._init_storage(config)
+        for name, array in (arrays or {}).items():
+            mine = getattr(self, name)
+            if not isinstance(mine, np.ndarray) or mine.shape != array.shape or mine.dtype != array.dtype:
+                raise ValueError(f"adopted array {name} does not match the buffer config")
+            setattr(self, name, array)
+
+    def _init_storage(self, config: RolloutBufferConfig) -> None:
         config.validate()
         self.config = config
         s, c, k = config.max_steps, config.max_candidates, config.max_trajectories
@@ -117,8 +144,10 @@ class RolloutBuffer:
         self.advantage = np.zeros(s, np.float32)
         self.returns = np.zeros(s, np.float32)
         self.samples = np.zeros(s, np.int64)   # finalized step indices, first n_samples
-        # Candidate pool, addressed by cand_start/cand_count.
+        # Candidate pool, addressed by cand_start/cand_count, and per candidate
+        # the frozen reference's log-probability over the stored (pruned) set.
         self.cand = np.zeros((c, config.act_dim), np.uint8)
+        self.ref_logp = np.zeros(c, np.float32)
         # Per-trajectory metadata.
         self.traj_env = np.zeros(k, np.int64)
         self.traj_team = np.zeros(k, np.int64)
@@ -126,6 +155,8 @@ class RolloutBuffer:
         self.traj_last = np.zeros(k, np.int64)
         self.traj_complete = np.zeros(k, bool)
         self.traj_remap = np.zeros(k, np.int64)
+        # Finish position (0 first .. 3 last) of every seat, set at round end.
+        self.traj_finish = np.zeros((k, 4), np.int64)
         # Per (env, team) table of the open trajectory and its round key.
         shape = (config.num_envs, 2)
         self.open_traj = np.full(shape, -1, np.int64)
@@ -145,10 +176,17 @@ class RolloutBuffer:
                   match_id: np.ndarray, round_index: np.ndarray, seat: np.ndarray,
                   phase: np.ndarray, obs: np.ndarray, hidden_counts: np.ndarray,
                   cand: np.ndarray, offsets: np.ndarray, chosen: np.ndarray,
-                  logp: np.ndarray, value: np.ndarray | None = None) -> int:
+                  logp: np.ndarray, value: np.ndarray | None = None,
+                  ref_logp: np.ndarray | None = None,
+                  cand_index: np.ndarray | None = None) -> int:
         """Store rows where `learner` is true. Arrays are batch-shaped like
         `VecEnv.pending()`; `cand`/`offsets` are the batch's ragged candidates
         and `chosen` is the index within each row's candidate slice.
+        `ref_logp`, aligned with the ragged candidates, is the frozen
+        reference's log-probability of each candidate (zero when omitted).
+        `cand_index`, when given, maps each ragged candidate to its row of
+        `cand`, so a caller can store a subset of a larger candidate array
+        without materialising it first; otherwise candidate `j` is `cand[j]`.
         Returns the number of stored steps."""
         rows = np.flatnonzero(np.asarray(learner, bool))
         if rows.size == 0:
@@ -204,7 +242,10 @@ class RolloutBuffer:
         steps = slice(self.n_steps, self.n_steps + n)
         starts = self.n_cand + np.cumsum(counts) - counts
         src = _ragged_index(offsets[rows], counts, total)
-        self.cand[self.n_cand:self.n_cand + total] = np.asarray(cand)[src]
+        pool = slice(self.n_cand, self.n_cand + total)
+        self.cand[pool] = np.asarray(cand)[src if cand_index is None
+                                           else np.asarray(cand_index)[src]]
+        self.ref_logp[pool] = 0.0 if ref_logp is None else np.asarray(ref_logp, np.float32)[src]
         self.obs[steps] = np.asarray(obs)[rows]
         self.hidden[steps] = np.asarray(hidden_counts).reshape(len(offsets) - 1, HIDDEN_DIM)[rows]
         self.cand_start[steps] = starts
@@ -226,10 +267,12 @@ class RolloutBuffer:
         return n
 
     def finish_round(self, env_id: int, match_id: int, round_index: int,
-                     seat_return) -> None:
+                     seat_return, order=None) -> None:
         """Close both teams' trajectories of a finished round. `seat_return`
         is the per-seat round return from `drain_finished_rounds`; seats 0/2
-        are team 0 and seats 1/3 team 1, so `seat_return[team]` is the team's."""
+        are team 0 and seats 1/3 team 1, so `seat_return[team]` is the team's.
+        `order`, the round's finish order (`RoundResult.order`), fills
+        `traj_finish` for the auxiliary finish loss."""
         for team in (0, 1):
             if (self.dropped[env_id, team] and self.drop_match[env_id, team] == match_id
                     and self.drop_round[env_id, team] == round_index):
@@ -242,6 +285,8 @@ class RolloutBuffer:
                     or self.open_round[env_id, team] != round_index):
                 raise ValueError("finished round does not match the open trajectory")
             last = int(self.traj_last[t])
+            if order is not None:
+                self.traj_finish[t, list(order)] = np.arange(4)
             self.reward[last] = float(seat_return[team])
             self.done[last] = True
             self.traj_complete[t] = True
@@ -251,7 +296,8 @@ class RolloutBuffer:
     def finish_rounds(self, results) -> None:
         """Convenience over `VecEnv.drain_finished_rounds()` results."""
         for r in results:
-            self.finish_round(int(r.env_id), int(r.match_id), int(r.round_index), r.seat_return)
+            self.finish_round(int(r.env_id), int(r.match_id), int(r.round_index), r.seat_return,
+                              r.order)
 
     # ----------------------------------------------------------------- learning
     def critic_input(self, steps: np.ndarray) -> np.ndarray:
@@ -314,9 +360,10 @@ class RolloutBuffer:
         offsets = np.zeros(steps.size + 1, np.int64)
         np.cumsum(counts, out=offsets[1:])
         src = _ragged_index(self.cand_start[steps], counts, total)
+        device = torch.device(device)
 
         def t(array: np.ndarray, dtype: torch.dtype) -> torch.Tensor:
-            return torch.from_numpy(np.ascontiguousarray(array)).to(device=device, dtype=dtype)
+            return to_device(array, device, dtype)
 
         obs = t(self.obs[steps], torch.float32)
         return {
@@ -324,6 +371,8 @@ class RolloutBuffer:
             "obs": obs,
             "critic_obs": torch.cat([obs, t(self.hidden[steps], torch.float32)], dim=1),
             "cand": t(self.cand[src], torch.float32),
+            "ref_logp": t(self.ref_logp[src], torch.float32),
+            "finish": t(self.traj_finish[self.traj[steps], self.seat[steps]], torch.long),
             "offsets": t(offsets, torch.long),
             "chosen": t(self.chosen[steps], torch.long),
             "logp": t(self.logp[steps], torch.float32),
@@ -354,6 +403,7 @@ class RolloutBuffer:
             total = int(counts.sum())
             src = _ragged_index(self.cand_start[keep], counts, total)
             self.cand[:total] = self.cand[src]
+            self.ref_logp[:total] = self.ref_logp[src]
             for array in (self.obs, self.hidden, self.chosen, self.logp, self.value,
                           self.phase, self.seat, self.traj, self.cand_count):
                 array[:k] = array[keep]
@@ -385,6 +435,19 @@ class RolloutBuffer:
         """Every preallocated array, for capacity and reuse checks."""
         return {name: value for name, value in vars(self).items()
                 if isinstance(value, np.ndarray)}
+
+
+def to_device(array: np.ndarray, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+    """`array` as a `dtype` tensor on `device`, widened after the transfer.
+
+    A CUDA host-to-device copy that also changes dtype converts on the host
+    and moves the wide type, four times the bytes for the uint8 features, so
+    the copy keeps the stored dtype and goes through pinned memory without
+    blocking the host; the conversion runs on the device."""
+    value = torch.from_numpy(np.ascontiguousarray(array))
+    if device.type == "cuda":
+        return value.pin_memory().to(device, non_blocking=True).to(dtype)
+    return value.to(device=device, dtype=dtype)
 
 
 def _ragged_index(starts: np.ndarray, counts: np.ndarray, total: int) -> np.ndarray:

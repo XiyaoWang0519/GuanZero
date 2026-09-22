@@ -72,11 +72,14 @@ class GuandanModel(nn.Module):
 
     def score_candidates(self, obs: Tensor, cand: Tensor, offsets: Tensor,
                          phase: Tensor, chunk_size: int = 32768,
-                         phase_code: int | None = None) -> Tensor:
-        """Encode states once and score a ragged batch in bounded-size chunks."""
+                         phase_code: int | None = None, state: Tensor | None = None) -> Tensor:
+        """Encode states once and score a ragged batch in bounded-size chunks.
+        `state`, when given, is `self.state_tower(obs)` computed by the caller
+        (the learner shares it with the auxiliary heads)."""
         if chunk_size <= 0:
             raise ValueError("chunk_size must be positive")
-        state = self.state_tower(obs)
+        if state is None:
+            state = self.state_tower(obs)
         rows = torch.repeat_interleave(torch.arange(len(obs), device=obs.device),
                                        offsets[1:] - offsets[:-1],
                                        output_size=len(cand))
