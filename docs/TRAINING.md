@@ -445,6 +445,100 @@ verified incremental inference for one environment; it is not yet connected
 to the playing policy or DMC replay. Keep the existing DMC checkpoint as the
 playing reference until an equal-compute RL comparison establishes a gain.
 
+### v3 match-memory probe
+
+`train/memory_experiment.py` answers one question: can a per-seat, per-round
+memory summary carried across the rounds of one match improve hidden-hand
+prediction in later rounds, against opponents whose style was never seen in
+training, relative to the identical model with that memory masked?
+
+Both models are `train.belief_memory.MemoryBelief`, built on the **no_history**
+query tower that task 3 selected, never on the history tower. When a round
+ends, its whole public token stream is encoded by the tower's own causal
+public-stream layers and mean-pooled at the tokens of each absolute seat, which
+gives one summary vector per seat per finished round. At a decision in round
+`r` the private query attends, in the cross-attention block the tower already
+has, over the summaries of the rounds strictly before `r` of the same match,
+each key tagged with an absolute-seat and a round-distance embedding. Memory is
+strictly causal and strictly public: round `r` never sees round `r + 1` or
+another match, and nothing private crosses a round boundary. DESIGN 7.3 would
+also pool each seat's revealed remaining cards at the round end; the schema-2
+collection records nothing at a round end, so those inputs are omitted and the
+summaries are public-stream only.
+
+`memory_masked` is the same network with the memory keys absent from the
+cross-attention, so its query attends to the BOS token alone and it is
+functionally the no_history tower. It is a deep copy, so it is parameter
+identical (0.0% difference), and both towers exceed the scaled no_history
+tower by exactly the tag embeddings, `(4 + memory_rounds) * width` parameters:
+4,665,318 against 4,662,246 at width 256 and four layers, 0.066%. Both checks
+are enforced in `matched_memory_models`.
+
+```sh
+PYTHONPATH=python:. .venv/bin/python -m train.memory_experiment \
+  --logs .work/belief-styled/collect-100k --output .work/belief-memory/v3 \
+  --seeds 41 --width 256 --layers 4 --batch-size 64 \
+  --steps 50000 --min-steps 2000 --validation-interval 1000 --patience 3 \
+  --decisions-per-round 20 --validation-decisions 20000 --memory-rounds 8 \
+  --late-from 5 --heldout-style-test --device cuda --threads 8 \
+  --max-seconds 86400
+```
+
+The flags of the scaled probe all carry over (`--logs`, `--output`, `--seeds`,
+`--steps`, `--min-steps`, `--validation-interval`, `--patience`,
+`--batch-size`, `--width`, `--layers`, `--threads`, `--learning-rate`,
+`--device`, `--max-seconds`, `--decisions-per-round`, `--validation-decisions`,
+`--heldout-style-test`, `--data-seed`, `--split-seed`,
+`--cell-bootstrap-samples`) with the same meanings, including the guarantee
+that `--decisions-per-round` keeps whole rounds and never touches a public
+token stream. Summaries of earlier rounds always read the full stream of those
+rounds. Four flags are new:
+
+| Flag | Meaning |
+|---|---|
+| `--memory-rounds` | How many earlier rounds of the match the query may attend to, most recent first (default 8). Also the size of the round-distance embedding |
+| `--late-from` | First match-relative round index counted as "late" in the adaptation metric (default 5, so rounds 0 to 4 are early) |
+| `--readout-rounds`, `--readout-alpha` | Rounds sampled for the style readout and its ridge penalty |
+| `--parameter-tolerance` | Relative bound on the difference to the no_history tower (default 0.001). Only a tiny test shape needs to loosen it |
+
+Result fields in `report.json`, beyond the task 3 breakdowns, which are all
+present unchanged (`test.cells` with `round_bin:*`, `style_region:*`,
+`target_driver:{bot,policy}`, `target_seat:*`, `target_relation:{teammate,opponent}`
+and the stage crosses):
+
+| Field | Meaning |
+|---|---|
+| `runs[].models.{memory,memory_masked}.test.log_loss` | Held-out-style test log loss per model |
+| `runs[].memory_vs_masked` | Paired masked-minus-memory improvement over whole test matches, with a bootstrap 95% interval, and the same paired interval inside every cell |
+| `runs[].adaptation` | The DESIGN 9.1 item 6 metric in belief terms: per test match, the paired improvement in rounds with index >= `--late-from` minus the improvement in the earlier rounds of that same match, with `bootstrap_95_ci` over matches, plus `improvement_by_round_bin`, `improvement_by_round_index` and `improvement_slope_per_round` |
+| `runs[].self_adaptation` | Each model's own early-minus-late loss difference, which is how the masked control is checked for a late-round trend of its own |
+| `runs[].models.*.style_readout` | Ridge regression from the finished-round summary vectors of bot-driven seats to that seat's style vector, fitted on training matches, reported as `heldout_r2` per style slot. The masked control's encoder receives no gradient from its head, so its readout measures only what the initialisation captures |
+| `gate`, `gate_rule`, `adaptation_supported`, `control_shows_no_trend` | The gate below, and the two conditions it is made of |
+
+Gate. v3 is supported when the adaptation improvement is positive with a
+positive bootstrap lower bound in **every** seed on held-out styles, and the
+masked control shows no such late-round trend of its own. Anything else records
+`v3_not_yet_justified`.
+
+Cost, measured on this host at width 256, four layers, batch 64, four CPU
+threads, on 200 real matches of the 100,000-round collection (1,065 rounds,
+mean 5.3 rounds per match and 123 public tokens per round), `--memory-rounds 8`:
+
+| Model | Seconds per training step | 20,000 steps | 50,000 steps |
+|---|---|---|---|
+| `memory` | 0.573 | 3.2 h | 8.0 h |
+| `memory_masked` | 0.0186 | 0.10 h | 0.26 h |
+| both, one seed | 0.592 | 3.3 h | 8.2 h |
+
+The memory model is about thirty times the masked control because each batch
+re-encodes every distinct earlier round it references: up to `--memory-rounds`
+rounds for each of 64 decisions, each a full ~123-token stream through the
+four-layer encoder. The control skips that work entirely, since masked keys
+would contribute nothing and its encoder takes no gradient. One CPU seed is an
+overnight run, so the three-seed probe belongs on a GPU. Sampling each batch
+from fewer matches would let more decisions share the same encoded rounds, and
+is the obvious optimisation if the GPU run turns out to be encoder-bound.
+
 ## Stage A2: counterfactual tribute experiment
 
 Use an immutable Stage A checkpoint. The collector runs the frozen play policy

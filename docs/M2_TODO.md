@@ -48,7 +48,7 @@ result must hold on held-out style regions.
 | 1 | Style-parameterised heuristic bot in `cpp/src/bots.cpp`: one bot driven by a continuous style vector (bomb-early threshold, per-type preference weights, follow aggressiveness, lead high/low bias, partner-cooperation weight, sampling temperature). Style sampled once per match from a configurable distribution; fields live in a `BotConfig`, none hardcoded. | implemented and tested | `StyleParams`, 18 slots, in `cpp/include/gd/bots.h`; neutral style matches `greedy_bot` on 12,000 decision points; four sweeps monotone (bomb timing 0.367 to 0.731 of the hand, follow rank 0.578 to 0.737, lead rank 0.253 to 0.539, pair leads 0.027 to 0.614); 140,004 UBSan styled fuzz rounds clean; VecEnv `styled_choice` costs 6% of rollout throughput |
 | 2 | Style vector and match/round index recorded per decision in `eval/collect_belief.py` logs; opponent seats driven by task 1 bots; collection of at least 100,000 rounds, whole-match splits. Training styles drawn from a sub-region, a held-out style region reserved for test. | implemented and integrated with the real styled bot | Schema 2 round-trip, once-per-match resampling, driver separation, region disjointness and coverage-report tests; `eval/style_coverage.py` writes the coverage report. Integration smoke on main: 512 rounds with the M1 checkpoint and real styled opponents, no NaN styles, every match labelled train or heldout, 128 rounds/s on one thread, so 100,000 rounds is about 13 minutes. Full collection complete: 100,000 rounds and 10,145,726 decisions |
 | 3 | Scaled belief probe in `train/belief_experiment.py`: four layers, width 256, validation-selected within a 50,000-step cap; flat vs no-history vs history; loss broken down by round index within the match. Report to `reports/M2-belief-scaled.md`. | complete within step budget | All nine fits selected step 50,000, none established a plateau; held-out evaluation, local checkpoint verification and GPU deletion complete; see `reports/M2-belief-scaled.md` |
-| 4 | v3 match-memory probe: per-seat per-round summary vectors from the task 3 stream, private query attends to them; adaptation metric (DESIGN.md 9.1 item 6) on held-out styles; memory-masked control. | pending | Adaptation gain positive with positive lower bound on held-out styles, absent in the masked control |
+| 4 | v3 match-memory probe: per-seat per-round summary vectors from the task 3 stream, private query attends to them; adaptation metric (DESIGN.md 9.1 item 6) on held-out styles; memory-masked control. | implemented, GPU run pending | `train/belief_memory.py` and `train/memory_experiment.py`; memory and masked control parameter identical and within 0.066% of the scaled no_history tower (4,665,318 against 4,662,246); `tests/test_memory_experiment.py`, 7 tests, covering cross-round causality both ways, public-only summaries, parameter matching, the adaptation arithmetic and a two-seed end-to-end run on held-out styles; 45 tests pass over the three belief files. Measured on this host at width 256, four layers, batch 64, four threads, 200 real matches: 0.573 s/step for `memory` and 0.0186 s/step for `memory_masked`, so one seed costs 8.2 h at 50,000 steps on CPU. No result yet |
 | 5 | Decision gate: task 3 picks the Stage B state tower (v1 vs no-history v2 vs history v2); task 4 decides whether v3 enters the Stage B league plan. Update DESIGN.md. | Stage B tower decided; v3 pending | no_history selected from task 3; cross-round memory remains a separate controlled experiment; DESIGN.md updated |
 | 6 | Stage B, in the order critic, PPO, league. League includes task 1 bots with per-match styles, checkpoints at several temperatures and, later, a style-conditioned learner policy (style vector as network input, small style-shaping reward) as the learned source of diversity. | pending | Rows above; exploiter test compared with and without match memory if v3 is adopted |
 | 7 | Minimal `play/` logging UI, pulled forward from M3 only as far as recording human games. Human data is calibration and test only, never training. | deferred, optional | Recruiting players is the hard part; revisit once tasks 1–3 give a baseline. Behaviour histograms from any human games calibrate the task 1 sampling distribution |
@@ -73,6 +73,22 @@ All nine fits hit the 50,000-step cap, so convergence remains unestablished.
 All selected weights and reports are saved under `.work/runpod-belief/`;
 see `reports/M2-belief-scaled.md`. The pod is deleted; observed balance
 change was about $1.28.
+
+Task 4 runner status, September 21: `train/memory_experiment.py` is
+implemented and tested, and no fit has been run on the full collection. The
+memory summary is public-stream only: the schema-2 logs record nothing at a
+round end, so the revealed remaining cards that DESIGN 7.3 would also pool do
+not exist in the data and are omitted. The control is the same network with the
+memory keys absent from the cross-attention, which makes it functionally the
+no_history tower at an identical parameter count. Adaptation is reported as the
+paired masked-minus-memory improvement in rounds 5 and later minus the earlier
+rounds of the same matches, with a bootstrap interval over whole matches, per
+round-index bin, per exact round index and as a slope; a style readout fits a
+ridge from the finished-round summaries of bot-driven seats to that seat's
+style vector and reports held-out R^2 per slot for both models. The gate needs
+a positive adaptation improvement with a positive lower bound in every seed and
+no late-round trend in the control. The CPU cost puts the three-seed run on a
+GPU; the command line is in `docs/TRAINING.md`.
 
 No public human Guandan game dataset was found (search, Sept. 21). Scraping
 online platforms is excluded by DESIGN.md 1.3 and by the platforms' terms.

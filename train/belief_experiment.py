@@ -148,6 +148,11 @@ def load_dataset(directory: Path, deadline: float | None = None, *,
             r["round_bin"] = round_bin(r["round_index"])
             r["seat_driver"] = (data["seat_driver"].copy() if version >= 2
                                 else np.full(4, DRIVER_UNKNOWN, np.int64))
+            # Kept for the v3 style readout; never an input to any belief model.
+            r["styles"] = (data["styles"].copy() if version >= 2
+                           else np.full((4, 1), np.nan, np.float32))
+            r["env_id"] = int(data["env_id"]) if version >= 2 else -1
+            r["match_id"] = int(data["match_id"]) if version >= 2 else -1
         n = len(r["obs"])
         if (not n or r["obs"].shape != (n, 1849)
                 or r["hidden"].shape != (n, 3, 54)
@@ -236,7 +241,8 @@ def accumulate(cells: dict, name: str, group: str, value: float) -> None:
 
 @torch.inference_mode()
 def evaluate(model, items: list, device: str, batch_size: int,
-             deadline: float | None = None) -> dict:
+             deadline: float | None = None, *, collate_fn=None, forward_fn=None,
+             extra_cells=None) -> dict:
     """Held-out loss overall, by stage and seat, and in the task 3 cells.
 
     `cells` carries one entry per breakdown cell with its own per-match table,
@@ -245,6 +251,11 @@ def evaluate(model, items: list, device: str, batch_size: int,
     and stage cells average a decision's three hidden hands; target-driver,
     target-seat/relation and stage-by-seat/relation cells score each predicted seat on its
     own, so their `decisions` count seat targets.
+
+    `collate_fn` and `forward_fn` let a model with extra inputs (the v3 match
+    memory) reuse this breakdown unchanged; `extra_cells(record, index)` names
+    further decision-level cells, which is how the v3 runner adds its exact
+    round-index and early/late adaptation cells.
     """
     model.eval()
     sums, counts = np.zeros((3, 3)), np.zeros((3, 3), dtype=np.int64)
@@ -253,8 +264,9 @@ def evaluate(model, items: list, device: str, batch_size: int,
     for start in range(0, len(items), batch_size):
         check_time(deadline)
         part = items[start:start + batch_size]
-        batch = collate(part, device)
-        logits = model(batch["obs"], batch["tokens"], batch["lengths"], batch["seat"])
+        batch = (collate if collate_fn is None else collate_fn)(part, device)
+        logits = (model(batch["obs"], batch["tokens"], batch["lengths"], batch["seat"])
+                  if forward_fn is None else forward_fn(model, batch))
         losses = F.cross_entropy(logits.reshape(-1, 3), batch["hidden"].reshape(-1),
                                  reduction="none").reshape(-1, 3, 54).mean(-1).cpu().numpy()
         if not np.isfinite(losses).all():
@@ -264,7 +276,7 @@ def evaluate(model, items: list, device: str, batch_size: int,
             sums[stage] += losses[stages == stage].sum(0)
             counts[stage] += (stages == stage).sum()
         seats = batch["seat"].cpu().numpy()
-        for row, ((record, _), loss) in enumerate(zip(part, losses)):
+        for row, ((record, index), loss) in enumerate(zip(part, losses)):
             group, mean = record["group"], float(loss.mean())
             entry = matches.setdefault(group, [0., 0])
             entry[0] += mean
@@ -273,6 +285,8 @@ def evaluate(model, items: list, device: str, batch_size: int,
             accumulate(cells, "style_region:" + record.get("style_region", "unknown"), group, mean)
             stage = ("early", "middle", "late")[stages[row]]
             accumulate(cells, "stage:" + stage, group, mean)
+            for name in (() if extra_cells is None else extra_cells(record, index)):
+                accumulate(cells, name, group, mean)
             drivers = record.get("seat_driver")
             for j in range(3):
                 # Relative target j is lho, partner then rho of the acting seat.

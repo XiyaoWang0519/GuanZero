@@ -49,6 +49,16 @@ class HistoryBelief(nn.Module):
             lengths = torch.zeros_like(lengths)
             # Avoid spending quadratic compute on masked tokens in the control.
             tokens = tokens[:, :0]
+        return self.encode_stream(tokens, lengths)
+
+    def encode_stream(self, tokens: torch.Tensor, lengths: torch.Tensor
+                      ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Causally encode a padded batch of public token streams with BOS.
+
+        Split out of `encode_public` so that the v3 match-memory model can run
+        the same public-stream layers over the finished rounds of a match
+        without going through the no-history override.
+        """
         stream = torch.cat((self.bos.expand(len(tokens), -1, -1), self.public(tokens)), dim=1)
         positions = torch.arange(stream.shape[1], device=stream.device,
                                  dtype=stream.dtype)[:, None]
