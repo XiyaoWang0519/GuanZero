@@ -86,6 +86,54 @@ class ModelPolicy:
             return int(scores.argmax().item())
 
 
+class PrunedPolicy(ModelPolicy):
+    """Stage B play: frozen-reference top-k pruning, then the policy logits.
+
+    Greedy mode takes the best logit in the pruned set (at initialization that
+    is the M1 argmax). Sampling mode draws from softmax(logits) with a torch
+    Generator seeded from the arena rng, so a fixed rng replays exactly.
+    """
+
+    def __init__(self, stage_b: object, name: str = "stage-b", device: str = "cpu",
+                 heuristic_tribute: bool = True, margin: float = 0.0,
+                 sample: bool = False) -> None:
+        if sample and margin:
+            raise ValueError("sampling and a near-best margin are exclusive")
+        super().__init__(stage_b.net, name=name, device=device,
+                         heuristic_tribute=heuristic_tribute, margin=margin)
+        self.stage_b = stage_b.to(device)
+        self.stage_b.net.eval()
+        self.sample = sample
+
+    def select(self, engine: gd.Engine, state: gd.MatchState,
+               actions: Sequence[gd.Action], rng: random.Random) -> int:
+        import torch
+
+        if self.heuristic_tribute and state.phase != gd.Phase.Play:
+            return engine.greedy(state)
+        seat = state.to_move
+        obs = torch.as_tensor(np.asarray(state.observation(seat), dtype=np.float32)[None, :],
+                              device=self.device)
+        cand = torch.as_tensor(np.stack([engine.encode_action(a, state, seat) for a in actions]),
+                               device=self.device)
+        offsets = torch.tensor([0, len(actions)], device=self.device)
+        phase = torch.tensor([int(state.phase)], device=self.device)
+        with torch.inference_mode():
+            if self.sample:
+                generator = torch.Generator(device=self.device)
+                generator.manual_seed(rng.getrandbits(63))
+                return int(self.stage_b.act(obs, cand, offsets, phase,
+                                            generator=generator).choice.item())
+            keep, pruned_offsets = self.stage_b.prune(obs, cand, offsets, phase)
+            logits = self.stage_b.logits(obs, cand[keep], pruned_offsets, phase)
+            if not torch.isfinite(logits).all():
+                raise ValueError("policy must produce finite logits")
+            if self.margin > 0:
+                eligible = keep[logits >= logits.max() - self.margin].tolist()
+                return rng.choice(eligible)
+            return int(keep[logits.argmax()].item())
+
+
 def model_digest(state_dict: dict) -> str:
     """Stable identity of all model tensors, independent of checkpoint path."""
     import torch
@@ -99,7 +147,18 @@ def model_digest(state_dict: dict) -> str:
 
 
 def load_policy(spec: str, device: str = "cpu", margin: float = 0.0) -> Policy:
-    """Load 'random', 'greedy', or a checkpoint produced by train.ckpt."""
+    """Load a policy from a spec string.
+
+    - ``random`` / ``greedy``: the scripted baselines.
+    - ``<path>``: a checkpoint written by ``train.ckpt``. A Stage A/A2 (DMC)
+      checkpoint plays greedy Q as before. A Stage B checkpoint (``stage ==
+      "ppo"``, see ``train.policy``) plays the argmax policy logit over the
+      frozen-reference top-k set, which at initialization is the M1 argmax.
+    - ``sample:<path>`` / ``sample=<T>:<path>``: sample from softmax(logits)
+      over the pruned set. A Stage B checkpoint uses its own temperature unless
+      ``T`` overrides it; a DMC checkpoint needs ``T`` and prunes with itself,
+      so it plays softmax(Q / T) over its own top-k plus pass.
+    """
     if not math.isfinite(margin) or margin < 0:
         raise ValueError("sampling margin must be nonnegative and finite")
     if spec == "random":
@@ -109,12 +168,23 @@ def load_policy(spec: str, device: str = "cpu", margin: float = 0.0) -> Policy:
     from train.ckpt import load_checkpoint
     from train.model import GuandanModel, ModelConfig
 
+    sample, temperature = False, None
+    if spec.startswith("sample:") or spec.startswith("sample="):
+        head, _, spec = spec.partition(":")
+        sample = True
+        if head != "sample":
+            temperature = float(head.removeprefix("sample="))
+            if not math.isfinite(temperature) or temperature <= 0:
+                raise ValueError("sampling temperature must be positive and finite")
     path = Path(spec)
     checkpoint = load_checkpoint(path, device=device)
     stage = checkpoint.get("stage", "dmc")
     tribute_policy = checkpoint.get("tribute_policy", "heuristic")
-    if (stage, tribute_policy) not in (("dmc", "heuristic"), ("a2", "learned")):
+    if (stage, tribute_policy) not in (("dmc", "heuristic"), ("a2", "learned"),
+                                       ("ppo", "heuristic"), ("ppo", "learned")):
         raise ValueError("unsupported checkpoint stage/tribute policy marker")
+    if stage == "ppo" or sample:
+        return _load_pruned(path, checkpoint, device, margin, sample, temperature)
     base_id = checkpoint.get("base_checkpoint_id")
     if stage == "a2" and (not isinstance(base_id, str) or len(base_id) != 64
                           or any(char not in "0123456789abcdef" for char in base_id)):
@@ -142,6 +212,48 @@ def load_policy(spec: str, device: str = "cpu", margin: float = 0.0) -> Policy:
     policy.base_checkpoint_id = base_id
     policy.base_training_seed = checkpoint.get("base_training_seed")
     policy.collection_seed = checkpoint.get("tribute_fit", {}).get("dataset_provenance", {}).get("seed")
+    return policy
+
+
+def _load_pruned(path: Path, checkpoint: dict, device: str, margin: float,
+                 sample: bool, temperature: float | None) -> Policy:
+    from dataclasses import replace
+
+    from train.model import GuandanModel, ModelConfig
+    from train.policy import PolicyConfig, StageBPolicy, policy_from_payload
+
+    stage = checkpoint.get("stage", "dmc")
+    tribute_policy = checkpoint.get("tribute_policy", "heuristic")
+    if stage == "ppo":
+        stage_b = policy_from_payload(checkpoint, device=device)
+        if temperature is not None:
+            stage_b.config = replace(stage_b.config, temperature=temperature)
+    else:
+        if temperature is None:
+            raise ValueError("sampling a DMC checkpoint needs sample=<T>:<path>")
+        model = GuandanModel(ModelConfig(**checkpoint["model_config"]))
+        model.load_state_dict(checkpoint["model"])
+        stage_b = StageBPolicy(model, model, PolicyConfig(temperature=temperature))
+    digest = model_digest(checkpoint["model"])
+    name = f"{path.name}@{digest[:16]}"
+    if stage == "ppo":
+        name += "/ppo"
+    if tribute_policy == "learned":
+        name += "/tribute=learned"
+    if sample:
+        name += f"/sample={stage_b.config.temperature:g}"
+    if margin:
+        name += f"/margin={margin:g}"
+    policy = PrunedPolicy(stage_b, name=name, device=device, margin=margin, sample=sample,
+                          heuristic_tribute=tribute_policy == "heuristic")
+    policy.checkpoint_id = digest
+    policy.training_seed = checkpoint.get("config", {}).get("seed")
+    policy.action_mode = checkpoint.get("config", {}).get("action_mode", "canonical")
+    policy.stage = stage
+    policy.base_checkpoint_id = (checkpoint.get("reference_checkpoint_id") if stage == "ppo"
+                                 else checkpoint.get("base_checkpoint_id"))
+    policy.base_training_seed = checkpoint.get("base_training_seed")
+    policy.collection_seed = None
     return policy
 
 
