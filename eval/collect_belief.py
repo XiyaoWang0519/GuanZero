@@ -46,6 +46,10 @@ class StyleAssignment:
         self.seat_driver = [DRIVER_POLICY if not styled or seat % 2 == team
                             else DRIVER_BOT for seat in range(4)]
         self.styles = np.zeros((4, space.dim), dtype=np.float32)
+        # Resolve "mixed" once per match so both bot seats share one region and
+        # every match is a clean training or held-out sample.
+        if region == "mixed":
+            region = "heldout" if rng.random() < heldout_fraction else "train"
         for seat in range(4):
             if self.seat_driver[seat] == DRIVER_POLICY:
                 self.styles[seat] = style_lib.neutral(space.dim)
