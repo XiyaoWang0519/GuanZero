@@ -1,0 +1,190 @@
+{
+  "status": "complete",
+  "schema_version": 1,
+  "dataset": "stage_b_critic",
+  "checkpoint_source": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod/artifacts/pilot/final.pt",
+  "checkpoint_file_sha256": "74b4365acc3e423e827c3f40d971081227fda04f7f5a198d1aa0c27239c2dcb1",
+  "checkpoint_id": "8a8e2b08dec2e73998092a67cbc25c26df75b4c0d2f02fd0a791d5d16cd4f745",
+  "checkpoint_updates": 34496,
+  "seed": 20260923,
+  "workers": 4,
+  "worker_seeds": [
+    20260923,
+    20260924,
+    20260925,
+    20260926
+  ],
+  "num_envs": 1024,
+  "threads": 3,
+  "torch_threads": 3,
+  "requested_rounds": 200000,
+  "collected_rounds": 200000,
+  "collected_decisions": 10738209,
+  "elapsed_seconds": 110.22787879098905,
+  "split_fractions": {
+    "train": 0.8,
+    "val": 0.1,
+    "test": 0.1
+  },
+  "split_rule": "sha256(f'{seed}:{env_id}:{match_id}')[:8] / 2**64 against cumulative fractions",
+  "stage_rule": {
+    "played_slice": [
+      216,
+      648
+    ],
+    "edges": [
+      36,
+      72
+    ],
+    "names": [
+      "early",
+      "middle",
+      "late"
+    ]
+  },
+  "return_rule": "RoundResult.seat_return[seat]: +gain for the winning team, -gain for the other, 0 for both in a zeroed level-A round (DESIGN 8.2 item 1)",
+  "play_mode": "fp32_argmax self-play, all four seats",
+  "q_rule": "play head score_candidates; NaN on tribute and back-tribute rows",
+  "collector_sha256": "bb54e738118d6867007d228bd4c1830c2e68fc63d2b77378f5d6ca1f71cacc3c",
+  "engine_source_sha256": "edb96174f537f8693be7bebf6418dbecbe859ee8a0773eca9d46f056f0d57070",
+  "engine_sha256": "5f2b2c023222927208af60618700428926294cf593adc4ae25196fc4f3afe07d",
+  "fields": {
+    "obs_bits": "[N, ceil(obs_dim/8)] uint8, np.packbits of the 0/1 actor observation",
+    "hidden": "[N, 3, 54] uint8 hidden_counts, seats +1, +2, +3 (privileged)",
+    "phase": "[N] int8 gd.Phase",
+    "seat": "[N] int8",
+    "stage": "[N] int8 0/1/2",
+    "q_chosen": "[N] float32",
+    "q_max": "[N] float32",
+    "num_candidates": "[N] int32",
+    "team_return": "[N] int8",
+    "round_offsets": "[R+1] int64 decision offsets of whole rounds",
+    "env_id/match_id/round_index": "[R] round identity; match = (seed, env_id, match_id)",
+    "round_level/winning_team/gain/match_winner/order/seat_return": "[R] engine RoundResult"
+  },
+  "output": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/critic-m1",
+  "rounds_per_second": 1814.4230134305158,
+  "coverage": {
+    "total": {
+      "rounds": 200000,
+      "decisions": 10738209,
+      "play_decisions": 10311189,
+      "matches": 20380,
+      "stage_decisions": {
+        "early": 2642031,
+        "middle": 3154820,
+        "late": 4941358
+      },
+      "decision_return_counts": {
+        "-3": 2054674,
+        "-2": 1418801,
+        "-1": 1394554,
+        "0": 216273,
+        "1": 1267602,
+        "2": 1613238,
+        "3": 2773067
+      },
+      "round_return_team0_counts": {
+        "-3": 46927,
+        "-2": 27273,
+        "-1": 24521,
+        "0": 3743,
+        "1": 24269,
+        "2": 27314,
+        "3": 45953
+      }
+    },
+    "splits": {
+      "train": {
+        "shards": 82,
+        "rounds": 159826,
+        "decisions": 8580327,
+        "play_decisions": 8239313,
+        "matches": 16259,
+        "stage_decisions": {
+          "early": 2111435,
+          "middle": 2519333,
+          "late": 3949559
+        },
+        "decision_return_counts": {
+          "-3": 1636944,
+          "-2": 1138816,
+          "-1": 1113635,
+          "0": 174619,
+          "1": 1011752,
+          "2": 1294894,
+          "3": 2209667
+        },
+        "round_return_team0_counts": {
+          "-3": 37413,
+          "-2": 21898,
+          "-1": 19599,
+          "0": 3020,
+          "1": 19354,
+          "2": 21915,
+          "3": 36627
+        }
+      },
+      "val": {
+        "shards": 12,
+        "rounds": 19725,
+        "decisions": 1059359,
+        "play_decisions": 1017215,
+        "matches": 2030,
+        "stage_decisions": {
+          "early": 260160,
+          "middle": 312555,
+          "late": 486644
+        },
+        "decision_return_counts": {
+          "-3": 205433,
+          "-2": 137066,
+          "-1": 137327,
+          "0": 21394,
+          "1": 125116,
+          "2": 155837,
+          "3": 277186
+        },
+        "round_return_team0_counts": {
+          "-3": 4728,
+          "-2": 2640,
+          "-1": 2415,
+          "0": 372,
+          "1": 2395,
+          "2": 2639,
+          "3": 4536
+        }
+      },
+      "test": {
+        "shards": 12,
+        "rounds": 20449,
+        "decisions": 1098523,
+        "play_decisions": 1054661,
+        "matches": 2091,
+        "stage_decisions": {
+          "early": 270436,
+          "middle": 322932,
+          "late": 505155
+        },
+        "decision_return_counts": {
+          "-3": 212297,
+          "-2": 142919,
+          "-1": 143592,
+          "0": 20260,
+          "1": 130734,
+          "2": 162507,
+          "3": 286214
+        },
+        "round_return_team0_counts": {
+          "-3": 4786,
+          "-2": 2735,
+          "-1": 2507,
+          "0": 351,
+          "1": 2520,
+          "2": 2760,
+          "3": 4790
+        }
+      }
+    }
+  }
+}
