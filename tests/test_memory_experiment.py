@@ -13,7 +13,7 @@ from train.belief_probe import count_parameters
 from train.buffer import Decision
 from train.logs import TOKEN_DIM, save_round
 from train.memory_experiment import (adaptation_metric, least_squares_slope, run,
-                                     self_adaptation, style_readout)
+                                     memory_evidence, self_adaptation, style_readout)
 from train.tribute_data import engine_source_digest
 
 OBS_DIM = 32
@@ -131,10 +131,9 @@ def test_memory_is_causal_in_the_match():
                                before["memory_masked"], rtol=0, atol=0)
 
     # A different match never enters this match's memory.
-    other = next(r for r in records if r["group"] == "match-1")
-    other["tokens"] = np.roll(other["tokens"], 1, axis=0).copy()
-    attach_memory(records, 4)
     current = predict(models["memory"], middle, 4)
+    other = next(r for r in records if r["group"] == "match-1")
+    other["tokens"] = (1 - other["tokens"]).astype(np.uint8)
     attach_memory(records, 4)
     torch.testing.assert_close(predict(models["memory"], middle, 4), current, rtol=0, atol=0)
 
@@ -167,6 +166,8 @@ def test_summaries_ignore_private_data():
     # Hidden hands and private observations of a finished round are labels only.
     earlier["obs"] = (1 - earlier["obs"]).astype(np.uint8)
     earlier["hidden"] = (2 - earlier["hidden"]).astype(np.uint8)
+    earlier["styles"] *= 100
+    earlier["seat_driver"] = 1 - earlier["seat_driver"]
     attach_memory(records, 4)
     other = memory_collate(items_of(records, "match-0", 1), "cpu", 4)
     with torch.inference_mode():
@@ -174,6 +175,67 @@ def test_summaries_ignore_private_data():
     torch.testing.assert_close(again, summary, rtol=0, atol=0)
     torch.testing.assert_close(predict(model, items_of(records, "match-0", 1), 4),
                                baseline, rtol=0, atol=0)
+
+
+def test_masked_stream_trains_through_bos_without_memory_tag_gradients():
+    torch.set_num_threads(1)
+    torch.manual_seed(7)
+    model = matched_memory_models(OBS_DIM, 16, 1, memory_rounds=4,
+                                  tolerance=.5)["memory_masked"]
+    records = make_records()
+    attach_memory(records, 4)
+    logits = memory_forward(model, memory_collate(items_of(records, "match-0", 1), "cpu", 4))
+    logits.square().mean().backward()
+    assert model.stream.layers[0].linear1.weight.grad.abs().sum() > 0
+    assert model.memory_seat.weight.grad is None
+    assert model.memory_distance.weight.grad is None
+
+
+def test_evidence_separates_relative_adaptation_from_absolute_late_benefit():
+    result = {"adaptation": {"available": True, "mean_adaptation_improvement": .2,
+                             "bootstrap_95_ci": [.1, .3], "mean_late_improvement": -.1,
+                             "late_bootstrap_95_ci": [-.2, -.05]},
+              "self_adaptation": {"memory_masked": {
+                  "available": True, "mean_early_minus_late": .3,
+                  "bootstrap_95_ci": [.2, .4]}}}
+    evidence = memory_evidence(result)
+    assert evidence["paired_adaptation_supported"] is True
+    assert evidence["paired_late_benefit_supported"] is False
+    assert evidence["masked_positive_raw_late_trend"] is True
+    result["adaptation"] = {"available": False}
+    result["self_adaptation"]["memory_masked"] = {"available": False}
+    assert all(value is None for name, value in memory_evidence(result).items()
+               if name != "interpretation")
+
+
+@pytest.mark.parametrize("interrupt_call", [2, 4])
+def test_best_memory_checkpoint_survives_interrupted_evaluation(tmp_path, monkeypatch,
+                                                               interrupt_call):
+    import train.memory_experiment as experiment
+
+    make_dataset(tmp_path / "data", matches=10, rounds_per_match=2)
+    output = tmp_path / "out"
+    snapshots = []
+
+    def interrupted_evaluate(model, *args, **kwargs):
+        if len(snapshots) + 1 == interrupt_call:
+            payload = torch.load(output / "memory-s41.pt", weights_only=False)
+            selected_index = 1 if interrupt_call == 4 else 0
+            assert payload["selected_step"] == selected_index + 1
+            assert all(torch.equal(payload["model"][key], tensor)
+                       for key, tensor in snapshots[selected_index].items())
+            assert not list(output.glob("*.tmp"))
+            raise TimeoutError("interrupted evaluation")
+        snapshots.append({key: tensor.detach().cpu().clone()
+                          for key, tensor in model.state_dict().items()})
+        return {"log_loss": [2., 1., 1.5][len(snapshots) - 1]}
+
+    monkeypatch.setattr(experiment, "evaluate", interrupted_evaluate)
+    with pytest.raises(TimeoutError, match="interrupted evaluation"):
+        run(tmp_path / "data", output, seeds=(41,), steps=3, min_steps=3,
+            validation_interval=1, batch_size=2, width=16, layers=1, threads=1,
+            max_seconds=30, parameter_tolerance=.5)
+    assert json.loads((output / "report.json").read_text())["status"] == "incomplete"
 
 
 def test_adaptation_metric_arithmetic_on_a_synthetic_report():

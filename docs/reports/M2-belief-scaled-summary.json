@@ -6596,5 +6596,44 @@
       }
     }
   },
-  "optimizer_seeds_share_test_matches": true
+  "optimizer_seeds_share_test_matches": true,
+  "source_policy_audit": {
+    "recorded_collection_identity": "bb51e490404efac74e6dc640aa3772a70633a9aaf04c83fb3eb6c006991ea2a2",
+    "checkpoints": [
+      {
+        "path": ".work/m1-full-model/latest.pt",
+        "model_identity": "bb51e490404efac74e6dc640aa3772a70633a9aaf04c83fb3eb6c006991ea2a2",
+        "progress": {
+          "updates": 6,
+          "decisions": 2304,
+          "rounds": 14,
+          "matches": 0,
+          "samples": 1223,
+          "logged_rounds": 5,
+          "elapsed_seconds": 0.4073352500272449,
+          "resumes": 0,
+          "snapshot_update": 6
+        }
+      },
+      {
+        "path": ".work/runpod/artifacts/pilot/final.pt",
+        "model_identity": "8a8e2b08dec2e73998092a67cbc25c26df75b4c0d2f02fd0a791d5d16cd4f745",
+        "progress": {
+          "updates": 34496,
+          "decisions": 71266304,
+          "rounds": 1264800,
+          "matches": 109563,
+          "samples": 55052332,
+          "logged_rounds": 1220,
+          "elapsed_seconds": 1228.7682977560908,
+          "resumes": 2,
+          "snapshot_update": 34000,
+          "trained_samples": 70647808
+        }
+      }
+    ],
+    "source_matches_local_smoke": true,
+    "source_matches_trained_M1": false,
+    "interpretation": "Measurements remain valid for the smoke-policy data distribution; Stage B choice provisional pending recollection using trained M1 final."
+  }
 }

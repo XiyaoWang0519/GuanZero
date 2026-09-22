@@ -32,9 +32,9 @@ Results, in `report.json`:
 * `style_readout`: a ridge regression fitted on training matches from the
   finished-round summary vectors of bot-driven seats to that seat's style
   vector, reported as held-out R^2 per style slot for both models. The masked
-  control's summaries are computed but never used by its head, so its encoder
-  receives no gradient and its readout measures only what the initialisation
-  captures.
+  control's summaries are computed but never used by its head. Its shared
+  stream layers still train through BOS, so this is a learned no-history
+  baseline, not a frozen random encoder baseline.
 
 Gate. v3 is supported when the adaptation improvement is positive with a
 positive bootstrap lower bound in every seed on held-out styles, and the
@@ -157,9 +157,11 @@ def adaptation_metric(reference: dict, candidate: dict, seed: int, samples: int 
 def self_adaptation(evaluation: dict, seed: int, samples: int = 10000) -> dict:
     """One model's own early-minus-late loss difference, over whole matches.
 
-    A positive value means that model is already better in later rounds for
-    reasons that have nothing to do with memory, which is exactly what the
-    control has to be free of for the gate to mean anything.
+    A positive value means that model is already better in later rounds. The
+    rounds themselves can differ in difficulty, so this raw trend is a
+    diagnostic; the paired adaptation metric subtracts the control's trend.
+    The originally declared gate still records its stricter no-positive-trend
+    requirement separately.
     """
     early, late = cell_matches(evaluation, "adapt:early"), cell_matches(evaluation, "adapt:late")
     groups = sorted(set(early) & set(late))
@@ -170,6 +172,35 @@ def self_adaptation(evaluation: dict, seed: int, samples: int = 10000) -> dict:
             "mean_early_minus_late": float(values.mean()),
             "bootstrap_95_ci": bootstrap(values, seed, samples),
             "bootstrap_samples": samples}
+
+
+def memory_evidence(result: dict) -> dict:
+    """Expose paired evidence separately from the predeclared legacy gate.
+
+    Increasing relative benefit alone need not mean a useful memory: it can
+    also mean that an initially harmful memory is less harmful in late rounds.
+    Report the late benefit and its interval independently. None denotes an
+    unavailable contrast, not evidence of absence.
+    """
+    adaptation = result["adaptation"]
+    control = result["self_adaptation"]["memory_masked"]
+    available = bool(adaptation.get("available"))
+    return {
+        "paired_adaptation_supported": (
+            adaptation["mean_adaptation_improvement"] > 0
+            and adaptation["bootstrap_95_ci"][0] > 0) if available else None,
+        "paired_late_benefit_supported": (
+            adaptation["mean_late_improvement"] > 0
+            and adaptation["late_bootstrap_95_ci"][0] > 0) if available else None,
+        "masked_positive_raw_late_trend": (
+            control["mean_early_minus_late"] > 0
+            and control["bootstrap_95_ci"][0] > 0) if control.get("available") else None,
+        "interpretation": (
+            "Paired adaptation subtracts the masked control's raw early-to-late trend. "
+            "A raw control trend can reflect round difficulty; failure to detect one "
+            "does not establish equivalence. The original gate is retained unchanged. "
+            "A memory benefit alone does not isolate opponent habits from other public "
+            "match information; an opponent-history shuffle or an arena test is still needed.")}
 
 
 @torch.inference_mode()
@@ -277,8 +308,8 @@ def run(directory: Path, output: Path, *, seeds=(41, 42, 43), split_seed=2026092
     root = Path(__file__).resolve().parents[1]
     report = {"schema_version": 1, "status": "running", "config": config, "runs": [],
               "gate": "pending", "rl_enabled": False,
-              "gate_rule": ("v3 is supported when the adaptation improvement (memory minus "
-                            "masked, rounds >= late_from minus the earlier rounds of the same "
+              "gate_rule": ("v3 is supported when the adaptation improvement (masked-minus-memory "
+                            "loss, rounds >= late_from minus the earlier rounds of the same "
                             "matches) is positive with a positive bootstrap lower bound in "
                             "every seed on held-out styles, and the masked control shows no "
                             "such late-round trend of its own."),
@@ -403,6 +434,7 @@ def run(directory: Path, output: Path, *, seeds=(41, 42, 43), split_seed=2026092
             result["self_adaptation"] = {
                 name: self_adaptation(metrics["test"], split_seed, cell_bootstrap_samples)
                 for name, metrics in result["models"].items()}
+            result["evidence"] = memory_evidence(result)
             # The per-cell match tables are only needed for the pairing above.
             for metrics in result["models"].values():
                 for cell in metrics["test"]["cells"].values():

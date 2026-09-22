@@ -29,7 +29,9 @@ Control. `memory_masked` is the identical network with the memory keys absent
 from the cross-attention, so its private query attends to the BOS token alone
 and the model is functionally the no_history tower. Parameter count is exactly
 identical (the tag embeddings and the public-stream layers still exist, they
-just receive no gradient), which is what makes the paired comparison a
+retain their parameter count). The shared public-stream layers still receive
+gradients through BOS; only the absent memory path and its tags receive none.
+This makes the paired comparison a
 memory-only contrast rather than a capacity contrast.
 """
 from __future__ import annotations

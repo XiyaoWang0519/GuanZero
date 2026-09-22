@@ -2,9 +2,28 @@
 
 Status: **complete**. Nine supervised fits, held-out evaluation, verified local artifact download and provider-confirmed pod deletion are finished. No RL updates or policy promotion.
 
+## Source-policy correction
+
+A subsequent checkpoint-identity audit found that this collection used
+`.work/m1-full-model/latest.pt`, the local smoke-test model after only **6
+updates and 2,304 training-time decisions**, not the trained M1 GPU final.
+Its tensor identity `bb51e490404efac74e6dc640aa3772a70633a9aaf04c83fb3eb6c006991ea2a2`
+exactly matches the collection provenance. The actual M1 final is
+`.work/runpod/artifacts/pilot/final.pt`, with **34,496 updates and 71,266,304
+decisions**, identity
+`8a8e2b08dec2e73998092a67cbc25c26df75b4c0d2f02fd0a791d5d16cd4f745`.
+
+All reported supervised measurements remain valid for the collected data,
+but they compare architectures on a near-untrained policy versus styled-bot
+distribution. They do not establish the result for the trained M1 policy.
+**The Stage B tower choice is provisional pending collection with the verified
+M1 final and a repeated comparison.** Scale experiments should correct this
+source mismatch first. Audit receipt: `.work/runpod-belief/source-policy-audit.json`.
+Original result files and checkpoints are preserved unchanged.
+
 ## Decision
 
-History does not establish a consistent positive advantage over no_history on held-out styles. Following the requested decision rule, use no_history for the next Stage B experiment and evaluate cross-round memory separately.
+History does not establish a consistent positive advantage over no_history on held-out styles. For this collected distribution, the requested decision rule favors no_history and a separate cross-round memory experiment. The source-policy correction above makes this a provisional Stage B choice.
 
 Runner gate after combining seeds: `v2_not_yet_justified`. The three one-seed report gates are not used as the combined gate.
 

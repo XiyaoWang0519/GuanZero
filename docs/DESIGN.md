@@ -1,6 +1,6 @@
 # Guandan AI: system design
 
-Status: v0.4, Sept. 21, 2026. v0.2 fixed the house rules (RULES.md section 13). v0.3 added phase heads and brought learned tribute forward to M2. v0.4 adds the Transformer history encoder (v2), the match memory experiment (v3) and the belief probe that gates them. Owner: Irvin. Companion documents: `RULES.md` (rules and acceptance tests), `gd_reference.py` (Python rules oracle).
+Status: v0.4, empirical progress updated Sept. 22, 2026. v0.2 fixed the house rules (RULES.md section 13). v0.3 added phase heads and brought learned tribute forward to M2. v0.4 adds the Transformer history encoder (v2), the match memory experiment (v3) and the belief probe that gates them. Owner: Irvin. Companion documents: `RULES.md` (rules and acceptance tests), `gd_reference.py` (Python rules oracle).
 
 Implementation update, Sept. 21: the pre-training M1 pipeline is implemented
 and verified on CPU and an RTX 5090. See `M1_TODO.md`, `TRAINING.md`,
@@ -15,13 +15,26 @@ improve on heuristic exchanges, so the heuristic remains the baseline. See
 `M2_TODO.md` and `reports/M2-A2.md`. The public known-holdings encoder was also
 corrected before collection; PPO, the critic and league remain pending.
 
+Source audit correction, resolved Sept. 22: the first 100,000-round styled
+collection used a six-update local smoke checkpoint, not the trained M1 final.
+That experiment remains historical evidence for its own distribution in
+[the original scaled report](reports/M2-belief-scaled.md). A new 100,000-round
+collection from the verified M1 final (34,496 updates) and the three-seed
+comparison are now complete; the datasets and results are kept separate.
+
 Transformer follow-up: the earlier 4,096-round prototype passed its supervised
-history gate (`reports/M2-belief.md`). The subsequent 100,000-round styled
-probe supersedes that result for the Stage B choice: use the no_history query
-tower. History's incremental gain is small and inconsistent across seeds;
-cross-round memory remains a separate experiment. Shared-cache inference is
-implemented, but no history playing policy has been promoted. See
-`reports/M2-belief-scaled.md` for the completed GPU experiment.
+history gate (`reports/M2-belief.md`). The corrected 100,000-round comparison
+now supports the no_history query tower for Stage B under this tested protocol:
+its mean hidden-hand loss is 1.6086% lower than flat, while adding history wins
+one seed and loses two. This is supervised evidence, not a playing-strength
+result. The separate cross-round memory experiment is also complete: overall
+memory benefit wins two seeds and loses one, and all three adaptation intervals
+include zero. Its original gate remains `v3_not_yet_justified`, so this
+prototype is not promoted into Stage B. Shared-cache inference is implemented,
+but no history playing policy has been promoted. See
+[the corrected comparison](reports/M2-belief-corrected.md) and
+[the memory report](reports/M2-memory.md). All 15 selected checkpoints are
+verified and the GPU is released; see [the completed run record](reports/M2-next-run.md).
 
 ## 1. Summary
 
@@ -278,7 +291,7 @@ The flat features of section 6 go through a 4 x 512 MLP. Action tower 2 x 256, f
 
 **Mechanism.** When a round ends, pool the v2 stream outputs at each seat's tokens, together with that seat's remaining cards if the round end revealed them, into one summary vector per seat. The private query of later rounds also attends to these vectors. A match holds a few dozen of them, so the cost is negligible.
 
-**Precondition.** Habits can only be learned if training opponents have habits. Copies of the learner do not. The league therefore needs stylized opponents whose style stays fixed for a whole match: bomb-happy and bomb-shy variants, older checkpoints at different sampling temperatures, heuristic bots with different parameters. Without them the memory receives no gradient.
+**Precondition.** Testing adaptation to individual opponents needs stable differences between their styles. Identical learner copies may share tendencies, but do not provide controlled between-opponent style variation. The league therefore needs stylized opponents whose style stays fixed for a whole match: bomb-happy and bomb-shy variants, older checkpoints at different sampling temperatures, heuristic bots with different parameters. Memory can still receive gradients and learn other match information without this variation, so a prediction gain alone does not identify opponent-habit learning.
 
 **Styled heuristic bots.** The source of those habits is `styled_bot` in `cpp/src/bots.cpp`: one heuristic player driven by a continuous 18-float style vector, `StyleParams`, rather than a fixed list of bots. Slot 0 is a bomb-early threshold that sets the opponent-pressure level at which the bomb class unlocks; slots 1 to 13 are one additive log-weight per play type of the `Type` enum, applied when leading; then a follow-aggressiveness weight, a lead high/low bias, a partner-cooperation weight that decides how close the partner may be to going out before it is overtaken, and a sampling temperature. The bot reduces every candidate to one scalar score and takes the argmax, or a softmax draw at a non-zero temperature; the score unit is one logit, so a type preference of 1 multiplies that play's probability by `e` at temperature 1. `StyleParams::neutral()` reproduces `greedy_bot` exactly, which is what pins the parameterisation to the existing baseline. Styles change nothing in the rules engine, move generation or `RoundState`/`MatchState`: they only reorder candidates the engine already produced. `VecEnv::set_styles` carries a style per environment and seat and reports `styled_choice` beside `greedy_choice`, so a match can hold its styles fixed for its whole length, which is the precondition above. Sampling styles per match, from a distribution that a probe can hold out regions of, is what makes the section 7.4 probe able to measure cross-round opponent modelling at all.
 
@@ -291,18 +304,44 @@ Once v1 self-play produces logs, run a supervised experiment with no RL in it: t
 1. If v2 predicts hidden hands clearly better, build v2 into the RL pipeline and confirm with an equal-compute duplicate-deal comparison against v1.
 2. If the two are close, v2 is demoted and the compute goes to the critic, the league and endgame search, which are the larger levers by the record of prior work: PerfectDou passed DouZero through its critic and GS2 passed SDMC through search.
 
-Measured status, Sept. 21: the scaled styled-opponent probe is complete on
-100,000 rounds and three training seeds. Mean held-out-style test loss is
-0.400759 (flat), 0.395368 (no_history) and 0.395270 (history). The query
-structure improves flat by 1.345%; additional history averages only 0.0249%
-and wins two seeds but loses one, with the seed-33 paired interval below zero.
-The pooled interval is positive conditional on these fitted models, but the
-three-seed history gate fails. **Stage B uses no_history.** History-specific
-benefit does not consistently grow with round index; v3 must be tested
-separately with a memory-masked control. All nine fits selected the 50,000-step
-cap, so this is a bounded result, not a convergence claim. Reports, per-cell
-paired intervals and selected checkpoints are saved; see
-`reports/M2-belief-scaled.md`.
+Measured status, Sept. 22: the corrected styled-opponent probe is complete on
+100,000 rounds from the trained M1 final and three training seeds. Mean
+held-out-style test loss is 0.3421048375 (flat), 0.3366016650 (no_history) and
+0.3366812724 (history). The no_history structure improves flat by 1.6086%;
+additional history wins one seed and loses two. The pooled paired difference,
+defined as no_history loss minus history loss, is -0.000081 with a 95%
+whole-match bootstrap interval [-0.000100, -0.000061], conditional on the
+three fitted seeds. The original three-seed history gate remains
+`v2_not_yet_justified`. **Stage B uses no_history for this tested protocol.**
+This does not establish RL or playing-strength gains, or exclude benefits
+from a different scale or training protocol.
+
+Seven of nine fits reached the 50,000-step cap; the two seed-33 query models
+stopped for validation plateau at 42,000 and selected step 36,000. Overall
+convergence is not established. Excluding the 35 possibly quota-truncated test
+matches in a post-hoc sensitivity analysis leaves the conclusion unchanged;
+the primary split and gate are unchanged. The earlier smoke-policy result is
+retained separately as historical evidence. See
+[the corrected report and paired intervals](reports/M2-belief-corrected.md).
+The independent v3 memory-versus-masked experiment is complete on the corrected
+collection with seeds 41/42/43. Mean test loss is 0.336921326 (memory) versus
+0.337168381 (masked). Overall paired benefit wins two seeds and loses one;
+the late-benefit interval is positive for seed 41, crosses zero for seed 42
+and is negative for seed 43. All three paired adaptation intervals cross
+zero. The pooled overall and late benefits are positive conditional on these
+fits, but do not remove the optimizer-seed disagreement. Pooled adaptation is
++0.000022, with 95% interval [-0.000130, +0.000173]. Excluding 35 possibly
+quota-truncated test matches leaves the conclusion unchanged. Three of six
+fits reached the 50,000-step cap, so convergence is not established.
+
+The unchanged v3 gate is `v3_not_yet_justified`. Stage B continues with
+no_history; this memory prototype is not promoted. This does not rule out
+larger-scale memory models or the value of opponent habits, and no RL or
+playing-strength claim follows from this supervised experiment. See
+[the memory report](reports/M2-memory.md). Both experiments are complete,
+all 15 selected checkpoints and the immutable archive are verified, and pod
+deletion is confirmed. Runtime and cost evidence are in
+[the completed run record](reports/M2-next-run.md).
 
 The same probe, with opponents of fixed style and the log loss measured round by round within a match, is the first test for v3.
 
