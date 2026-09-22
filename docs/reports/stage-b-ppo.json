@@ -1,0 +1,165 @@
+{
+  "seed": 20260922,
+  "pairs": {
+    "ppo-a_vs_m1": {
+      "deals": 5000,
+      "mean": 0.7779,
+      "ci": [
+        0.7441975,
+        0.8110025000000001
+      ],
+      "double_win": 0.3388,
+      "opp_double_win": 0.1173,
+      "match": {
+        "matches": 500,
+        "wins": 456,
+        "wilson_95_ci": [
+          0.8839235279346099,
+          0.9337940155250711
+        ]
+      },
+      "seconds": 107.0
+    },
+    "ppo-b_vs_m1": {
+      "deals": 5000,
+      "mean": 0.7645,
+      "ci": [
+        0.7307925000000001,
+        0.7999
+      ],
+      "double_win": 0.327,
+      "opp_double_win": 0.1203,
+      "match": {
+        "matches": 500,
+        "wins": 445,
+        "wilson_95_ci": [
+          0.8595444295965924,
+          0.9145085848433969
+        ]
+      },
+      "seconds": 92.2
+    },
+    "dmc_vs_m1": {
+      "deals": 5000,
+      "mean": 0.5199,
+      "ci": [
+        0.4848975,
+        0.5534174999999999
+      ],
+      "double_win": 0.291,
+      "opp_double_win": 0.131,
+      "match": {
+        "matches": 500,
+        "wins": 360,
+        "wilson_95_ci": [
+          0.6790813332381924,
+          0.7575639569587245
+        ]
+      },
+      "seconds": 53.7
+    },
+    "ppo-a_vs_dmc": {
+      "deals": 5000,
+      "mean": 0.2561,
+      "ci": [
+        0.2186,
+        0.29180249999999996
+      ],
+      "double_win": 0.2303,
+      "opp_double_win": 0.181,
+      "match": {
+        "matches": 500,
+        "wins": 318,
+        "wilson_95_ci": [
+          0.5929376153133843,
+          0.6769885640810736
+        ]
+      },
+      "seconds": 101.0
+    },
+    "ppo-b_vs_dmc": {
+      "deals": 5000,
+      "mean": 0.2511,
+      "ci": [
+        0.215595,
+        0.28740499999999997
+      ],
+      "double_win": 0.219,
+      "opp_double_win": 0.1806,
+      "match": null,
+      "seconds": 70.7
+    },
+    "ppo-a_vs_bomb-happy": {
+      "deals": 2000,
+      "mean": 1.2845,
+      "ci": [
+        1.22848125,
+        1.33975
+      ],
+      "double_win": 0.43325,
+      "opp_double_win": 0.08425,
+      "match": null,
+      "seconds": 18.8
+    },
+    "ppo-a_vs_greedy": {
+      "deals": 2000,
+      "mean": 1.81825,
+      "ci": [
+        1.7695,
+        1.8675
+      ],
+      "double_win": 0.539,
+      "opp_double_win": 0.037,
+      "match": null,
+      "seconds": 20.2
+    },
+    "ppo-b_vs_bomb-happy": {
+      "deals": 2000,
+      "mean": 1.25275,
+      "ci": [
+        1.19649375,
+        1.3102687499999999
+      ],
+      "double_win": 0.397,
+      "opp_double_win": 0.08175,
+      "match": null,
+      "seconds": 18.9
+    },
+    "ppo-b_vs_greedy": {
+      "deals": 2000,
+      "mean": 1.7495,
+      "ci": [
+        1.701,
+        1.7985125
+      ],
+      "double_win": 0.459,
+      "opp_double_win": 0.037,
+      "match": null,
+      "seconds": 34.9
+    },
+    "dmc_vs_bomb-happy": {
+      "deals": 2000,
+      "mean": 1.193,
+      "ci": [
+        1.13824375,
+        1.24975625
+      ],
+      "double_win": 0.441,
+      "opp_double_win": 0.099,
+      "match": null,
+      "seconds": 13.5
+    },
+    "dmc_vs_greedy": {
+      "deals": 2000,
+      "mean": 1.7415,
+      "ci": [
+        1.69125,
+        1.7912625
+      ],
+      "double_win": 0.55175,
+      "opp_double_win": 0.05025,
+      "match": null,
+      "seconds": 14.2
+    }
+  }
+}
