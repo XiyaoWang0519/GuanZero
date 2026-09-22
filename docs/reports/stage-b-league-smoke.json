@@ -1,0 +1,84 @@
+{
+  "matches": 2048,
+  "seconds": 28.108774917025585,
+  "learner": "final.pt@8a8e2b08dec2e739",
+  "entries": [
+    {
+      "entry": "greedy",
+      "games": 292,
+      "learner_wins": 288,
+      "learner_win_rate": 0.9863013698630136,
+      "wilson95": [
+        0.9653127690900737,
+        0.9946604057440266
+      ],
+      "weight": 0.14285714285714285
+    },
+    {
+      "entry": "styled:bomb-happy",
+      "games": 312,
+      "learner_wins": 287,
+      "learner_win_rate": 0.9198717948717948,
+      "wilson95": [
+        0.8843906782347353,
+        0.9451390607230208
+      ],
+      "weight": 0.14285714285714285
+    },
+    {
+      "entry": "styled:bomb-shy",
+      "games": 310,
+      "learner_wins": 309,
+      "learner_win_rate": 0.9967741935483871,
+      "wilson95": [
+        0.981956435278157,
+        0.9994303534713268
+      ],
+      "weight": 0.14285714285714285
+    },
+    {
+      "entry": "styled:high-lead",
+      "games": 256,
+      "learner_wins": 256,
+      "learner_win_rate": 1.0,
+      "wilson95": [
+        0.9852156082782743,
+        1.0
+      ],
+      "weight": 0.14285714285714285
+    },
+    {
+      "entry": "styled:low-lead",
+      "games": 313,
+      "learner_wins": 313,
+      "learner_win_rate": 1.0,
+      "wilson95": [
+        0.9878753295021867,
+        1.0000000000000002
+      ],
+      "weight": 0.14285714285714285
+    },
+    {
+      "entry": "sampled-style",
+      "games": 282,
+      "learner_wins": 282,
+      "learner_win_rate": 1.0,
+      "wilson95": [
+        0.9865603886907994,
+        1.0
+      ],
+      "weight": 0.14285714285714285
+    },
+    {
+      "entry": "learner/T=1",
+      "games": 283,
+      "learner_wins": 283,
+      "learner_win_rate": 1.0,
+      "wilson95": [
+        0.9866072424641336,
+        1.0
+      ],
+      "weight": 0.14285714285714285
+    }
+  ]
+}
