@@ -1,7 +1,8 @@
 # Stage B B8: league training versus a single frozen opponent
 
-Status: complete, September 23, 2026. **Gate G3 as written: not passed** (one
-clause fails, see Reading 1). The league checkpoint is nonetheless the
+Status: complete, September 23, 2026. **Original G3: not passed** (one clause
+fails, see Reading 1). **G3 as revised on September 23 by the owner: passed**
+(see the section below). The league checkpoint is nonetheless the
 strongest model so far by head-to-head play.
 
 ## Setup
@@ -87,6 +88,22 @@ Weighted least-squares fit of every round-robin margin to r_a − r_b
    checkpoint beats the single-opponent checkpoint head to head with a 95%
    interval above zero, and is not worse against a held-out suite (greedy,
    all fixed styled bots, held-out sampled styles).
+
+## Revised G3
+
+The owner revised G3 on September 23 (tracker, Gates). Paired per-deal
+difference league minus frozen, same 4,000 deals per bot, seed 20260924:
+
+| Held-out opponent | league | frozen | Difference [95% CI] |
+|---|---:|---:|---|
+| greedy | +2.171 | +2.003 | +0.168 [+0.128, +0.207] |
+| bomb-happy | +1.654 | +1.595 | +0.059 [+0.012, +0.105] |
+| bomb-shy | +2.292 | +2.132 | +0.160 [+0.124, +0.197] |
+| high-lead | +2.868 | +2.810 | +0.058 [+0.036, +0.079] |
+| low-lead | +2.631 | +2.459 | +0.172 [+0.146, +0.201] |
+
+With the head-to-head win, the revised G3 passes: the league checkpoint is
+better than the single-opponent checkpoint on every held-out opponent.
 
 ## Cross-play (partner compatibility)
 

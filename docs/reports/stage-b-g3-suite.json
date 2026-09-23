@@ -1,0 +1,57 @@
+{
+  "seed": 20260924,
+  "deals": 4000,
+  "suite": {
+    "greedy": {
+      "league": 2.1709,
+      "frozen": 2.0031,
+      "diff": 0.1678,
+      "ci": [
+        0.1282,
+        0.2068
+      ],
+      "not_worse": true
+    },
+    "styled:bomb-happy": {
+      "league": 1.6536,
+      "frozen": 1.5946,
+      "diff": 0.059,
+      "ci": [
+        0.0115,
+        0.1049
+      ],
+      "not_worse": true
+    },
+    "styled:bomb-shy": {
+      "league": 2.292,
+      "frozen": 2.1319,
+      "diff": 0.1601,
+      "ci": [
+        0.1244,
+        0.1968
+      ],
+      "not_worse": true
+    },
+    "styled:high-lead": {
+      "league": 2.8676,
+      "frozen": 2.8101,
+      "diff": 0.0575,
+      "ci": [
+        0.0356,
+        0.0785
+      ],
+      "not_worse": true
+    },
+    "styled:low-lead": {
+      "league": 2.6305,
+      "frozen": 2.4585,
+      "diff": 0.172,
+      "ci": [
+        0.1462,
+        0.2011
+      ],
+      "not_worse": true
+    }
+  },
+  "pass_suite": true
+}
