@@ -58,7 +58,9 @@ earlier once its match win rate over the last `exploiter_window_updates`
 updates reaches `exploiter_win_rate` (after `exploiter_min_updates`), it
 writes its policy to `exploiter-<n>-u<update>.pt` there, then resets its
 policy to the newest league snapshot with a fresh policy optimizer (the
-critic and its optimizer carry on) and starts the next cycle. Its training
+critic and its optimizer carry on) and starts the next cycle. With
+`exploiter_pin_target` its opponent stays on one snapshot for the whole cycle
+and moves to the one it reset to. Its training
 match win rate is the league learner's live exploitability.
 
 Checkpoints use the `dmc.py` layout (`latest.pt`, hard-linked snapshots in
@@ -144,6 +146,8 @@ class PPOConfig:
     exploiter_min_updates: int = 100
     exploiter_window_updates: int = 50
     exploiter_win_rate: float = 0.0     # early publish threshold; 0 disables
+    # Pin the followed snapshot for a whole cycle (in-process rollout only).
+    exploiter_pin_target: bool = False
     tribute_policy: str = "heuristic"
     action_mode: str = "canonical"
     num_envs: int = 1024
@@ -238,6 +242,8 @@ class PPOConfig:
             raise ValueError("league_import_dir needs a league:<pool.json> opponent")
         if self.exploiter_win_rate > 1:
             raise ValueError("exploiter_win_rate must be at most 1")
+        if self.exploiter_pin_target and (self.actor_processes or not self.exploiter_publish_dir):
+            raise ValueError("exploiter_pin_target needs exploiter mode and in-process rollout")
         if not self.init_checkpoint:
             raise ValueError("init_checkpoint is required")
         if self.warm_start and self.critic_init and self.critic_init != self.warm_start:
@@ -915,7 +921,8 @@ class PPOTrainer(RolloutCollector):
             spec = "frozen:" + str(resolve_artifact(spec[len("frozen:"):]))
         # "frozen" is the M1 reference itself, already on the device and never trained.
         return config_opponent(spec, self.policy.reference, str(self.device),
-                               self.config.candidate_chunk, fallback=self.follow_fallback())
+                               self.config.candidate_chunk, fallback=self.follow_fallback(),
+                               pinned=self.config.exploiter_pin_target)
 
     def follow_fallback(self) -> str | None:
         """A follow: opponent's model before the first snapshot: warm_start."""
@@ -1245,8 +1252,9 @@ class PPOTrainer(RolloutCollector):
         """Policy weights from the opponent's current checkpoint (the newest
         league snapshot, or warm_start before the first), a fresh policy
         optimizer, a new cycle. The critic carries on. Saved at once."""
-        # In actor mode the actors hold the opponents; scan the directory here.
-        source = (self.opponent.current() if isinstance(self.opponent, FollowOpponent)
+        # A pinned opponent moves to the newest snapshot now, and this cycle
+        # exploits it. In actor mode the actors hold the opponents; scan here.
+        source = (self.opponent.retarget() if isinstance(self.opponent, FollowOpponent)
                   else FollowOpponent(self.config.opponent[len(FOLLOW):],
                                       self.follow_fallback(), rescan_seconds=0).current())
         payload = load_checkpoint(source, self.device)

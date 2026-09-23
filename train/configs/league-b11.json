@@ -1,9 +1,9 @@
 {
-  "_note": "Paths are relative to the repo root as laid out by the pod kit: artifacts/final.pt is the M1 final (.work/runpod/artifacts/pilot/final.pt), artifacts/dmc-b6.pt is the B6 DMC arm (.work/runpod-b6/results/runs/dmc/run/latest.pt). To use this pool locally, symlink those two files under artifacts/. B11: the B8 pool unchanged, plus imports (the main arm's live exploiters), at most 4, argmax.",
+  "_note": "Paths are relative to the repo root as laid out by the pod kit: artifacts/final.pt is the M1 final (.work/runpod/artifacts/pilot/final.pt), artifacts/dmc-b6.pt is the B6 DMC arm (.work/runpod-b6/results/runs/dmc/run/latest.pt). To use this pool locally, symlink those two files under artifacts/. B11: the B8 pool unchanged, plus imports (the main arm's live exploiters), at most 4, argmax. max_active_models 16 (B8 used 4): with 2,048 environments an active model almost never frees up, so at 4 new snapshots and imports were rarely drawn.",
   "config": {
     "seed": 8,
-    "max_active_models": 4,
-    "model_cache_size": 8,
+    "max_active_models": 16,
+    "model_cache_size": 16,
     "ema_alpha": 0.05,
     "initial_beat_rate": 0.5,
     "weight_floor": 0.05,

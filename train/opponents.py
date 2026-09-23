@@ -226,11 +226,15 @@ class FollowOpponent:
     `pattern`, `fallback` plays (the learner's own starting checkpoint).
     Models play as `CheckpointOpponent` plays them; one is kept loaded per
     path in use.
+
+    With `pinned`, the model is fixed until `retarget()` (an exploiter pins
+    one snapshot per cycle, so it exploits a fixed target); the first target
+    is the newest file at the first match start.
     """
 
     def __init__(self, directory, fallback, device: str = "cpu",
                  pattern: str = "update-*.pt", rescan_seconds: float = 30.0,
-                 clock=None) -> None:
+                 clock=None, pinned: bool = False) -> None:
         import time
         from pathlib import Path
 
@@ -246,11 +250,28 @@ class FollowOpponent:
         self.name = f"follow:{self.directory}"
         self.newest = self.fallback
         self.scanned_at = None
+        self.pinned = pinned
+        self.target: str | None = None
         self.assigned: list[str | None] = []
         self.models: dict = {}
 
     def current(self) -> str:
-        """The newest matching file, or the fallback; rate-limited rescans."""
+        """The model new matches get: the pinned target, or else the newest
+        matching file (or the fallback), with rate-limited rescans."""
+        if self.pinned and self.target is not None:
+            return self.target
+        path = self._scan()
+        if self.pinned:
+            self.target = path
+        return path
+
+    def retarget(self) -> str:
+        """Rescan now; a pinned opponent moves to the newest file."""
+        self.scanned_at = None
+        self.target = None
+        return self.current()
+
+    def _scan(self) -> str:
         now = self.clock()
         if self.scanned_at is None or now - self.scanned_at >= self.rescan_seconds:
             self.scanned_at = now
@@ -309,7 +330,8 @@ class FollowOpponent:
 
 
 def config_opponent(spec: str, reference, device: str = "cpu",
-                    chunk_size: int = 32768, fallback: str | None = None) -> OpponentSource:
+                    chunk_size: int = 32768, fallback: str | None = None,
+                    pinned: bool = False) -> OpponentSource:
     """The opponent named by a non-league `PPOConfig.opponent`: "greedy",
     "frozen" (the frozen reference network itself), "frozen:<path>" with an
     already resolved path, or "follow:<directory>" (`FollowOpponent`, which
@@ -322,7 +344,7 @@ def config_opponent(spec: str, reference, device: str = "cpu",
     if spec.startswith("follow:"):
         if not fallback:
             raise ValueError("a follow: opponent needs a fallback checkpoint")
-        return FollowOpponent(spec[len("follow:"):], fallback, device)
+        return FollowOpponent(spec[len("follow:"):], fallback, device, pinned=pinned)
     if not spec.startswith("frozen:"):
         raise ValueError(f"not a frozen, follow or greedy opponent: {spec}")
     from train.ckpt import load_checkpoint
