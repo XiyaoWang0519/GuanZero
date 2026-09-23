@@ -39,6 +39,13 @@ entry runs its own batched forward inside the league. With actor processes
 each actor has its own league and the learner keeps one weight table; see
 `train/ppo_actors.py` for the semantics.
 
+Warm start (B8). `warm_start = <ppo checkpoint>` initialises the policy net,
+the critic and (by default) both Adam states from an earlier Stage B run,
+with fresh counters and environments; the frozen reference is still
+`init_checkpoint`, and the source must share it (reference digest). The source
+path and its policy weights digest are recorded in the runtime metadata and
+every checkpoint, and survive resumes.
+
 Checkpoints use the `dmc.py` layout (`latest.pt`, hard-linked snapshots in
 `checkpoints/`, `metrics.jsonl`, `config.json`, `runtime-*.json`) and write a
 Stage B payload (`stage="ppo"`) that `eval.policies.load_policy` plays. As in
@@ -92,6 +99,19 @@ class PPOConfig:
     critic_init: str = CRITIC_FIT
     critic_width: int = 512
     critic_layers: int = 4
+    # Warm start (B8): a Stage B ("ppo") checkpoint whose policy net and critic
+    # weights initialise this run, with fresh counters and environments. The
+    # frozen pruning/KL reference stays init_checkpoint, and the source must
+    # have been trained against that same reference (reference_checkpoint_id),
+    # with the same model and critic configs, action_mode and tribute policy.
+    # critic_init must then be "" (or the warm_start path itself).
+    warm_start: str = ""
+    # Also load the source's policy and critic Adam states (lr is reset to
+    # policy_lr / critic_lr).
+    warm_start_optimizers: bool = True
+    # The source's temperature and top_k must equal this config's unless this
+    # is set; a temperature change is then logged as a warning.
+    warm_start_policy_override: bool = False
     # "frozen" (the init checkpoint, argmax Q), "frozen:<path>", "greedy", or
     # "league:<pool.json>", the B7 opponent league (train/league.py) with
     # learner snapshots every `snapshot_every` updates of the pool config.
@@ -182,6 +202,9 @@ class PPOConfig:
             raise ValueError("opponent must be frozen, frozen:<path>, greedy or league:<pool.json>")
         if not self.init_checkpoint:
             raise ValueError("init_checkpoint is required")
+        if self.warm_start and self.critic_init and self.critic_init != self.warm_start:
+            raise ValueError("warm_start supplies the critic: set critic_init to \"\" "
+                             "(or to the warm_start path)")
         if self.actor_processes and (self.num_envs % self.actor_processes
                                      or self.num_envs // self.actor_processes < 2):
             raise ValueError("num_envs must split into actor_processes shards of at least 2")
@@ -629,6 +652,9 @@ class PPOTrainer(RolloutCollector):
             self.critic.load_state_dict(payload["critic"])
             self.init_source = payload.get("init_source")
             self.critic_source = payload.get("critic_source")
+            # A resumed run keeps the warm start it was started from.
+            self.warm_start_source = payload.get("warm_start_source")
+            self.warm_start_digest = payload.get("warm_start_digest")
         else:
             init_path = resolve_artifact(config.init_checkpoint)
             init = load_checkpoint(init_path, self.device)
@@ -644,7 +670,13 @@ class PPOTrainer(RolloutCollector):
             self.policy = StageBPolicy.from_model(model, policy_config,
                                                   model_digest(init["model"])).to(self.device)
             self.init_source = str(init_path)
-            if config.critic_init:
+            self.warm_start_source = self.warm_start_digest = None
+            if config.warm_start:
+                warm = self._warm_start(init)
+                self.critic_source = self.warm_start_source
+                self.critic = Critic(CriticConfig(**warm["critic_model_config"]))
+                self.critic.load_state_dict(warm["critic"])
+            elif config.critic_init:
                 self.critic_source = str(resolve_artifact(config.critic_init))
                 self.critic, _ = load_critic(self.critic_source, str(self.device))
             else:
@@ -667,6 +699,13 @@ class PPOTrainer(RolloutCollector):
             self.generator.set_state(payload["sampler"].cpu())
             self.progress["resumes"] += 1
         else:
+            if config.warm_start and config.warm_start_optimizers:
+                self.policy_optimizer.load_state_dict(warm["optimizer"])
+                self.critic_optimizer.load_state_dict(warm["critic_optimizer"])
+                for optimizer, lr in ((self.policy_optimizer, config.policy_lr),
+                                      (self.critic_optimizer, config.critic_lr)):
+                    for group in optimizer.param_groups:
+                        group["lr"] = lr
             self.generator.manual_seed(int(self.rng.integers(0, 2**63)))
         self.phase_code = PLAY if config.tribute_policy == "heuristic" else None
         metadata = {
@@ -677,6 +716,8 @@ class PPOTrainer(RolloutCollector):
             "critic_parameters": sum(p.numel() for p in self.critic.parameters()),
             "reference_checkpoint_id": self.policy.reference_checkpoint_id,
             "init_source": self.init_source, "critic_source": self.critic_source,
+            "warm_start_source": self.warm_start_source,
+            "warm_start_digest": self.warm_start_digest,
             "resume_source": str(resume) if resume else None,
         }
         (self.run_dir / f"runtime-{self.progress['resumes']:03d}.json").write_text(
@@ -765,6 +806,43 @@ class PPOTrainer(RolloutCollector):
             from torch.utils.tensorboard import SummaryWriter
             self.writer = SummaryWriter(str(self.run_dir / "tensorboard"))
         (self.run_dir / "config.json").write_text(json.dumps(asdict(config), indent=2) + "\n")
+
+    def _warm_start(self, init: dict[str, Any]) -> dict[str, Any]:
+        """Validate `config.warm_start` against the init checkpoint and load its
+        policy weights into `self.policy.net` (the reference stays the init
+        model). Returns the source payload for the critic and optimizers."""
+        from eval.policies import model_digest
+
+        cfg = self.config
+        path = resolve_artifact(cfg.warm_start)
+        warm = load_checkpoint(path, self.device)
+        if warm.get("stage") != "ppo":
+            raise ValueError("warm_start must be a Stage B (ppo) checkpoint")
+        source = policy_from_payload(warm, "cpu")   # also checks its reference digest
+        if source.reference_checkpoint_id != self.policy.reference_checkpoint_id:
+            raise ValueError("warm_start was trained against a different frozen reference "
+                             "than init_checkpoint")
+        if ModelConfig(**warm["model_config"]) != self.policy.net.config:
+            raise ValueError("warm_start model config differs from init_checkpoint")
+        critic = CriticConfig(**warm["critic_model_config"])
+        if (critic.width, critic.layers) != (cfg.critic_width, cfg.critic_layers):
+            raise ValueError("warm_start critic config differs from critic_width/critic_layers")
+        if warm.get("config", {}).get("action_mode", "canonical") != cfg.action_mode:
+            raise ValueError("warm_start action_mode differs from the config")
+        if warm.get("tribute_policy", "heuristic") != cfg.tribute_policy:
+            raise ValueError("warm_start tribute_policy differs from the config")
+        mine = self.policy.config
+        if (source.config.temperature, source.config.top_k) != (mine.temperature, mine.top_k):
+            if not cfg.warm_start_policy_override:
+                raise ValueError("warm_start temperature/top_k differ from the config; set "
+                                 "warm_start_policy_override to allow it")
+            if source.config.temperature != mine.temperature:
+                warnings.warn(f"warm_start was trained at temperature {source.config.temperature}"
+                              f", this run samples at {mine.temperature}", stacklevel=2)
+        self.policy.net.load_state_dict(warm["model"])
+        self.warm_start_source = str(path)
+        self.warm_start_digest = model_digest(warm["model"])
+        return warm
 
     def _fused_league_specs(self, entries: list[dict[str, Any]]) -> frozenset[str]:
         """League specs that ARE the frozen pruning reference playing argmax
@@ -975,6 +1053,8 @@ class PPOTrainer(RolloutCollector):
             "critic_optimizer": self.critic_optimizer.state_dict(),
             "sampler": self.generator.get_state(),
             "init_source": self.init_source, "critic_source": self.critic_source,
+            "warm_start_source": self.warm_start_source,
+            "warm_start_digest": self.warm_start_digest,
             "league": {"stage": "B", "opponents": (
                 [e.name for e in self.league.entries] if self.league is not None
                 else [self.config.opponent if self.opponent is None
@@ -1107,6 +1187,8 @@ class PPOTrainer(RolloutCollector):
 
 def load_config(path: str | Path, **overrides: Any) -> PPOConfig:
     data = json.loads(Path(path).read_text())
+    # Keys starting with "_" are comments (e.g. "_note").
+    data = {k: v for k, v in data.items() if not k.startswith("_")}
     data.update({k: v for k, v in overrides.items() if v is not None})
     return PPOConfig(**data)
 

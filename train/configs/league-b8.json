@@ -1,4 +1,5 @@
 {
+  "_note": "Paths are relative to the repo root as laid out by the pod kit: artifacts/final.pt is the M1 final (.work/runpod/artifacts/pilot/final.pt), artifacts/dmc-b6.pt is the B6 DMC arm (.work/runpod-b6/results/runs/dmc/run/latest.pt). To use this pool locally, symlink those two files under artifacts/.",
   "config": {
     "seed": 8,
     "max_active_models": 4,
@@ -10,12 +11,12 @@
     "uniform_mix": 0.1,
     "snapshot_every": 100,
     "max_snapshots": 4,
-    "snapshot_temperatures": [null, 0.02, 0.1],
+    "snapshot_temperatures": [null, 0.02],
     "snapshot_weight": 1.0
   },
   "entries": [
-    {"spec": ".work/runpod/artifacts/pilot/final.pt", "name": "m1"},
-    {"spec": ".work/runpod-b6/results/runs/dmc/run/latest.pt", "name": "b6-dmc"},
+    {"spec": "artifacts/final.pt", "name": "m1"},
+    {"spec": "artifacts/dmc-b6.pt", "name": "b6-dmc"},
     {"spec": "greedy"},
     {"spec": "styled:bomb-happy"},
     {"spec": "styled:bomb-shy"},

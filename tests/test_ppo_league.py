@@ -72,8 +72,7 @@ def test_league_opponent_config_validation(init_checkpoint, tmp_path):
         data = json.loads((ROOT / "train/configs" / name).read_text())
         assert {e["spec"] for e in data["entries"]} >= {
             "greedy", "sampled-style", "styled:bomb-happy", "styled:bomb-shy",
-            "styled:high-lead", "styled:low-lead", ".work/runpod/artifacts/pilot/final.pt",
-            ".work/runpod-b6/results/runs/dmc/run/latest.pt"}
+            "styled:high-lead", "styled:low-lead", "artifacts/final.pt", "artifacts/dmc-b6.pt"}
         LeagueConfig.from_dict(data["config"])
     PPOConfig(**json.loads((ROOT / "train/configs/ppo-league-smoke.json").read_text())).validate()
     config = json.loads((ROOT / "train/configs/ppo-league.json").read_text())
