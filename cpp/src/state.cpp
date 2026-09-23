@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 
 #include "gd/movegen.h"
 #include "gd/rules.h"
@@ -117,7 +118,10 @@ EndOfRound end_of_round(const std::array<int8_t, 2>& levels,
     } else if (g.team == owner || rules.a_fail_on_loss) {
       // The owner failed its attempt. Whether a plain loss counts is a profile
       // decision (RULES.md 13.1).
-      r.fails[owner] = static_cast<int8_t>(r.fails[owner] + 1);
+      // With no reset (house, a_fail_limit = 0) the count is unbounded, so it
+      // saturates at the storage limit instead of wrapping.
+      if (r.fails[owner] < std::numeric_limits<int8_t>::max())
+        r.fails[owner] = static_cast<int8_t>(r.fails[owner] + 1);
     }
   }
   if (r.match_winner < 0) {
@@ -147,14 +151,17 @@ TributeRouting double_tribute(int banker, int seat_a, int power_a,
     to_banker = down; to_follower = up;
   } else if (p_up > p_down) {
     to_banker = up; to_follower = down;
+  } else if (rules.tribute_tie == TributeTie::Downstream) {
+    to_banker = down; to_follower = up;          // tie, clockwise (official)
   } else {
-    to_banker = up; to_follower = down;          // tie, resolved below
+    to_banker = up; to_follower = down;          // tie, Upstream or LastFinisher
   }
-  // The payer of the higher card leads under both profiles.
+  // The payer of the higher card leads under both profiles. On a tie the seat
+  // that pays the Banker leads; apply_tribute overrides it for LastFinisher.
   int leader;
   if (p_down > p_up) leader = down;
   else if (p_up > p_down) leader = up;
-  else leader = up;                              // Upstream, the house tie rule
+  else leader = rules.tribute_tie == TributeTie::Downstream ? down : up;
   return {to_banker, to_follower, leader};
 }
 

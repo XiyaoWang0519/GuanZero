@@ -14,10 +14,13 @@ enum class TributePairing : uint8_t {
   Power = 0,        // house: the higher card goes to the Banker
   SeatGeometry = 1, // ogd: the Banker's downstream seat always pays the Banker
 };
-// Who leads when the two tribute cards have equal power (O1).
+// Who pays the Banker and who leads when the two tribute cards have equal
+// power (O1). Under SeatGeometry pairing only the leader is affected.
 enum class TributeTie : uint8_t {
-  Upstream = 0,     // house: the Banker's upstream seat, (B + 3) % 4
-  LastFinisher = 1, // ogd: the seat recorded last in the finishing order
+  Upstream = 0,     // pre-2026-09-22 house rule: (B + 3) % 4 pays B and leads
+  LastFinisher = 1, // ogd: the seat recorded last in the finishing order leads
+  Downstream = 2,   // house, official rule: clockwise tribute, (B + 1) % 4
+                    // pays B and leads, (B + 3) % 4 pays the Follower
 };
 // How the last two seats of a double win are recorded (O5, logging only).
 enum class DoubleWinTail : uint8_t {
@@ -31,7 +34,7 @@ enum class FirstLeader : uint8_t { Random = 0, Fixed = 1 };
 struct RuleConfig {
   // O1
   TributePairing tribute_pairing = TributePairing::Power;
-  TributeTie tribute_tie = TributeTie::Upstream;
+  TributeTie tribute_tie = TributeTie::Downstream;
   // O2: level cards may not be returned as back-tribute, in any suit.
   bool back_tribute_level_cards = false;
   // house falls back to any lowest-power card when nothing qualifies; the
@@ -44,7 +47,9 @@ struct RuleConfig {
   // A failed attempt is counted when the owner wins the round with Banker and
   // Dweller. house also counts a plain loss of an owned A round; ogd does not.
   bool a_fail_on_loss = true;
-  int a_fail_limit = 3;          // 0 disables the reset
+  // house follows the official rules: no reset, a team at A plays A until it
+  // passes. 3 is the Nanjing / 翻山 variant (reset to the deuce).
+  int a_fail_limit = 0;          // 0 disables the reset
   int a_fail_reset_level = 0;    // rank index, 0 == the deuce
   // ogd ends the match by victory count after this many resets; 0 disables.
   int shuffle_limit = 0;
