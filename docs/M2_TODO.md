@@ -144,6 +144,25 @@ establish playing strength. Task 4 sees prior-round public summaries plus
 BOS, without the current-round token sequence; its contrast must not be
 conflated with Task 3's current-round history test.
 
+### Rule change Sept. 22: O1 tie and O4 reset aligned with the official rules
+
+Owner approved, after `reports/rules-web-check.md` items 1 and 2. The `house`
+profile now uses `tribute_tie = downstream` (a double tribute with equal
+cards goes clockwise: the Banker's downstream seat pays the Banker and leads)
+and `a_fail_limit = 0` (no three-failure reset at level A). The old values
+remain available as `tribute_tie = upstream` and `a_fail_limit = 3`. The
+`ogd` profile is unchanged.
+
+Checkpoints trained before this change, M1 (`pilot/final.pt`) and B6, used
+the old rules. The tie case only arises on a double win with equal tribute
+cards: in a 20,000-round greedy self-play run it came up in 637 rounds
+(3.2% of rounds, 9.2% of double tributes; greedy play double-wins far more
+often than trained play). Dropping the reset shortens greedy-vs-greedy
+matches from 10.55 to 10.26 rounds on average (2,000 matches each, longest
+45 versus 23). Round-level play is unaffected apart from the tie seat;
+match-level returns at A change. No retraining is required to keep using
+those checkpoints, but evaluations under `house` now use the new rules.
+
 ### Data caveat found Sept. 22
 
 The 100,000-round styled collection behind task 3 (`collect-100k`) drove the

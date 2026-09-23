@@ -140,6 +140,8 @@ def test_level_gain_matches_oracle():
 def test_end_of_round_matches_oracle():
     rng = random.Random(6)
     seats = [0, 1, 2, 3]
+    reset_rules = gd.RuleConfig.house()
+    reset_rules.a_fail_limit = 3
     for _ in range(20000):
         levels = [rng.randrange(13), rng.randrange(13)]
         fails = [rng.randrange(4), rng.randrange(4)]
@@ -149,4 +151,8 @@ def test_end_of_round_matches_oracle():
         rng.shuffle(order)
         got = gd.end_of_round(levels, fails, owner, round_level, order)
         want = g.end_of_round(levels, fails, owner, round_level, order)
+        assert got == want, (levels, fails, owner, round_level, order, got, want)
+        # The optional three-failure reset (RULES.md 8 item 7, O4 variant).
+        got = gd.end_of_round(levels, fails, owner, round_level, order, reset_rules)
+        want = g.end_of_round(levels, fails, owner, round_level, order, a_fail_limit=3)
         assert got == want, (levels, fails, owner, round_level, order, got, want)

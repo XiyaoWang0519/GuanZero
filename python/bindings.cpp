@@ -156,10 +156,16 @@ PYBIND11_MODULE(_gd_core, m) {
       .value("BackTribute", Phase::BackTribute).value("Play", Phase::Play)
       .value("RoundEnd", Phase::RoundEnd).value("MatchEnd", Phase::MatchEnd);
 
+  py::enum_<TributeTie>(m, "TributeTie")
+      .value("Upstream", TributeTie::Upstream)
+      .value("LastFinisher", TributeTie::LastFinisher)
+      .value("Downstream", TributeTie::Downstream);
+
   py::class_<RuleConfig>(m, "RuleConfig")
       .def(py::init<>())
       .def_static("house", &RuleConfig::house)
       .def_static("ogd", &RuleConfig::ogd)
+      .def_readwrite("tribute_tie", &RuleConfig::tribute_tie)
       .def_readwrite("back_tribute_level_cards", &RuleConfig::back_tribute_level_cards)
       .def_readwrite("back_tribute_fallback", &RuleConfig::back_tribute_fallback)
       .def_readwrite("full_house_joker_pair", &RuleConfig::full_house_joker_pair)

@@ -148,10 +148,17 @@ def test_tribute():
 
 
 def test_double_tribute_pairing():
-    assert g.double_tribute(0, {1: 13, 3: 13}) == (3, 1, 3)            # T-TRB-05 tie: upstream
+    # T-TRB-05 tie, house rule `downstream`: clockwise, (B + 1) % 4 pays B and leads
+    assert g.double_tribute(0, {1: 13, 3: 13}) == (1, 3, 1)
+    assert g.double_tribute(0, {1: 13, 3: 13}, tie="downstream") == (1, 3, 1)
+    assert g.double_tribute(0, {1: 13, 3: 13}, tie="upstream") == (3, 1, 3)
     assert g.double_tribute(0, {1: 14, 3: 13}) == (1, 3, 1)            # T-TRB-06
+    assert g.double_tribute(0, {1: 14, 3: 13}, tie="upstream") == (1, 3, 1)
     assert g.double_tribute(0, {1: 11, 3: 12}) == (3, 1, 3)
-    assert g.double_tribute(1, {2: 12, 0: 12}) == (0, 2, 0)            # banker 1, upstream is 0
+    assert g.double_tribute(0, {1: 11, 3: 12}, tie="upstream") == (3, 1, 3)
+    assert g.double_tribute(1, {2: 12, 0: 12}) == (2, 0, 2)            # banker 1, downstream is 2
+    assert g.double_tribute(1, {2: 12, 0: 12}, tie="upstream") == (0, 2, 0)
+    assert g.double_tribute(3, {0: 12, 2: 12}) == (0, 2, 0)            # banker 3, wraps to 0
 
 
 def test_match_bookkeeping():
@@ -162,12 +169,17 @@ def test_match_bookkeeping():
     assert g.end_of_round([A, 5], [0, 0], 0, A, [0, 1, 2, 3])[3] == 0
     # T-MATCH-03: owner at A, Banker plus Dweller: failure, stays A, keeps ownership
     assert g.end_of_round([A, 5], [0, 0], 0, A, [0, 1, 3, 2]) == ([A, 5], [1, 0], 0, None)
-    # T-MATCH-04: third failure by losing the round: back to 2, opponents promote
-    assert g.end_of_round([A, 5], [2, 0], 0, A, [1, 3, 0, 2]) == ([0, 8], [0, 0], 1, None)
+    # T-MATCH-04: third failure by losing the round. House: no reset, the count
+    # keeps going and the opponents promote. With a_fail_limit=3: back to 2.
+    assert g.end_of_round([A, 5], [2, 0], 0, A, [1, 3, 0, 2]) == ([A, 8], [3, 0], 1, None)
+    assert g.end_of_round([A, 5], [2, 0], 0, A, [1, 3, 0, 2],
+                          a_fail_limit=3) == ([0, 8], [0, 0], 1, None)
     # T-MATCH-05: team at A wins a round it does not own and that is not at A
     assert g.end_of_round([A, K], [1, 0], 1, K, [0, 2, 1, 3]) == ([A, K], [1, 0], 0, None)
     # T-MATCH-06: third failure while winning the round with Banker plus Dweller
-    assert g.end_of_round([A, 5], [2, 0], 0, A, [0, 1, 3, 2]) == ([0, 5], [0, 0], 0, None)
+    assert g.end_of_round([A, 5], [2, 0], 0, A, [0, 1, 3, 2]) == ([A, 5], [3, 0], 0, None)
+    assert g.end_of_round([A, 5], [2, 0], 0, A, [0, 1, 3, 2],
+                          a_fail_limit=3) == ([0, 5], [0, 0], 0, None)
     # round 1 has no owner
     assert g.end_of_round([0, 0], [0, 0], None, 0, [2, 0, 1, 3]) == ([3, 0], [0, 0], 0, None)
 

@@ -84,9 +84,12 @@ Who receives which card depends on `tribute_pairing`:
 * `SeatGeometry` (ogd): the loser at `(B + 1) % 4` always pays `B` and the
   loser at `(B + 3) % 4` always pays `F`, whatever the cards are.
 
-The payer of the higher card leads under both profiles. On a tie the leader is
-the Banker's upstream seat `(B + 3) % 4` under `Upstream`, or the seat recorded
-last in the previous finishing order under `LastFinisher`.
+The payer of the higher card leads under both profiles. On a tie under
+`Power` pairing, `tribute_tie` decides: `Downstream` (house, the official rule)
+has the Banker's downstream seat `(B + 1) % 4` pay `B` and lead, `Upstream`
+has the upstream seat `(B + 3) % 4` pay `B` and lead. Under `LastFinisher`
+(ogd) the pairing follows `tribute_pairing` and the seat recorded last in the
+previous finishing order leads.
 
 Decision order inside the phase, so that the batch interface stays uniform:
 both tribute decisions first, in payer order, then both back-tribute decisions

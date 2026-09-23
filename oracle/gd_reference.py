@@ -204,24 +204,33 @@ def back_tribute_choices(hand: list[int], level: int) -> set[int]:
     return {c for c in hand if power(rank_of(c), level) == low}
 
 
-def double_tribute(banker: int, tribute_power: dict[int, int]) -> tuple[int, int, int]:
-    """Double tribute pairing. tribute_power maps each losing seat to the power
-    of the card it gives. Returns (payer to Banker, payer to Follower, leader).
-    Higher card goes to the Banker. On a tie the Banker's upstream seat, the
-    one that plays right before the Banker, pays the Banker. The payer to the
+def double_tribute(banker: int, tribute_power: dict[int, int],
+                   tie: str = "downstream") -> tuple[int, int, int]:
+    """Double tribute pairing (RULES.md 9.2). tribute_power maps each losing
+    seat to the power of the card it gives. Returns (payer to Banker, payer to
+    Follower, leader). Higher card goes to the Banker. On a tie, tribute goes
+    clockwise: each loser pays the seat that plays right before it, so the
+    Banker's downstream seat (B + 1) % 4 pays the Banker. tie="upstream" is the
+    optional older rule where (B + 3) % 4 pays the Banker. The payer to the
     Banker always leads."""
+    if tie not in ("downstream", "upstream"):
+        raise ValueError(tie)
     down, up = (banker + 1) % 4, (banker + 3) % 4
     if tribute_power[down] > tribute_power[up]:
         return down, up, down
-    return up, down, up                  # higher upstream card, or a tie
+    if tribute_power[up] > tribute_power[down] or tie == "upstream":
+        return up, down, up
+    return down, up, down                # tie, clockwise
 
 
 def end_of_round(levels: list[int], fails: list[int], owner: int | None,
                  round_level: int, order: list[int],
-                 a_fail_limit: int = 3) -> tuple[list[int], list[int], int, int | None]:
+                 a_fail_limit: int = 0) -> tuple[list[int], list[int], int, int | None]:
     """Match bookkeeping after a round. owner is the team whose level the round
     was played at (None in round 1). A team can pass A only in a round it owns.
-    Every owned A round that does not pass counts as a failure. Returns
+    Every owned A round that does not pass counts as a failure. The house rule
+    has no reset (a_fail_limit=0); with a_fail_limit=3, the optional variant,
+    the owner drops to the deuce when its count reaches the limit. Returns
     (levels, fails, next owner, match winner or None)."""
     team, gain = level_gain(order)
     levels, fails = list(levels), list(fails)

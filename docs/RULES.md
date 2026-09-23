@@ -168,7 +168,7 @@ The round ends as soon as either condition holds:
 4. The team that won the previous round owns the current round, because the round is played at its level. Round 1 has no owner.
 5. A team passes A and wins the match only in a round it owns: the round level is A, the team has the Banker and the Banker's partner is not the Dweller (decided, O4).
 6. If the other team is also at level A and wins such a round, it does not win the match, whatever its finishing positions. It stays at A and owns the next round, which is then its own attempt.
-7. Every owned round at level A that does not pass counts as one failure for the owner, whether the owner lost the round or won it with Banker and Dweller. The count is cumulative. At 3 the owner's level resets to 2 and its count resets to 0 (decided, O4). `a_fail_limit = 0` disables the reset.
+7. Every owned round at level A that does not pass counts as one failure for the owner, whether the owner lost the round or won it with Banker and Dweller. The count is cumulative. Under the house rules the count has no effect: there is no reset, and a team at A keeps playing A until it passes or the other team wins the match (decided, O4, aligned with the official rules). This is `a_fail_limit = 0`, which disables the reset. The three-failure reset is kept as an option, the Nanjing or 翻山 variant: with `a_fail_limit = 3` the owner's level resets to 2 (`a_fail_reset_level`, rank index 0) and its count resets to 0 when the count reaches 3.
 8. Order of operations at round end: decide the match win, then count the failure, then promote the round winner, then apply the reset. The oracle's `end_of_round` is normative.
 
 Both papers agree on items 1 to 3 and DanZero states the Follower or Third condition of item 5. Ownership and the failure count are house decisions. The OpenGuanDan text is internally inconsistent here, so its behavior is recorded in the `ogd` profile during M0.
@@ -189,7 +189,7 @@ Applies from round 2 on. Let `B, F, T, D` be the previous round's Banker, Follow
 2. Otherwise each loser selects a tribute card. The card with higher power goes to `B` and the other goes to `F`.
 3. Each receiver returns a back-tribute card to the player whose card they received.
 4. The payer of the higher tribute leads.
-5. If both tribute cards have equal power, the Banker's upstream seat pays the Banker and leads. Upstream means the seat that plays right before the Banker, `(B + 3) % 4`. The other loser pays `F` (decided, O1).
+5. If both tribute cards have equal power, tribute goes clockwise: each loser pays its upstream neighbour, the seat that plays right before it ("贡左还右"). So the Banker's downstream seat `(B + 1) % 4`, the seat that plays right after the Banker, pays the Banker and leads, and the Banker's upstream seat `(B + 3) % 4` pays `F`. This is `tribute_tie = downstream`, the official competition rule (decided, O1). The previous house rule, where the Banker's upstream seat pays the Banker and leads, remains available as `tribute_tie = upstream`.
 
 ### 9.3 Which cards may move
 
@@ -347,13 +347,13 @@ All verified by `test_gd_reference.py`. `W` means a wild card in prose. Keys are
 | T-TRB-02 | level 7, payer holds `H7 SA DA SK` | may give `SA` or `DA` |
 | T-TRB-03 | level 7, payer holds `HR SB SA` | must give `HR` |
 | T-TRB-04 | level 5, receiver holds `S5 S3 DT SJ` | may return `S3` or `DT`. The level card `S5` is excluded. |
-| T-TRB-05 | double tribute, Banker 0, both cards of power 13 | seat 3 pays the Banker and leads, seat 1 pays the Follower |
+| T-TRB-05 | double tribute, Banker 0, both cards of power 13 | `downstream` (house): seat 1 pays the Banker and leads, seat 3 pays the Follower. `upstream`: seat 3 pays the Banker and leads, seat 1 pays the Follower. |
 | T-TRB-06 | double tribute, Banker 0, seat 1 gives power 14, seat 3 gives 13 | seat 1 pays the Banker and leads |
 | T-OBS-01 | Seat 3 tributes `S9` to 0; seat 0 returns that `S9` | Known-holdings feature marks `S9` at 0 before the return, and only at 3 afterward. |
 | T-OBS-02 | Same exchange, but seat 0 privately already held another `S9` | After returning one copy, the remaining private copy is not marked as publicly known. |
 | T-OBS-03 | Seat 3 tributes `S9` to 0; seat 0 returns `S3`; seat 3 plays `S4`, then 0 plays `S9` | The different return preserves both known holdings. Playing `S4` preserves known `S3`; playing `S9` removes its guarantee. |
 | T-OBS-04 | Seat 0 privately holds `S9`, receives another `S9`, returns `S3`, then plays one `S9` | One physical copy remains, but no publicly guaranteed copy remains. |
-| T-MATCH-01 to 06 | match bookkeeping cases in `test_match_bookkeeping` | as asserted there, matching T-FLOW-09 and T-FLOW-11 to 13 |
+| T-MATCH-01 to 06 | match bookkeeping cases in `test_match_bookkeeping` | as asserted there, matching T-FLOW-09 and T-FLOW-11 to 13. T-MATCH-04 and 06, the third failure, are asserted under both `a_fail_limit = 0` (no reset) and `a_fail_limit = 3` (reset to 2). |
 
 ### Flow scenarios to script in the engine tests
 
@@ -370,9 +370,9 @@ These need the state machine, so the oracle does not cover them.
 | T-FLOW-07 | previous double win by 0 and 2, seats 1 and 3 hold one `HR` each | anti-tribute, 0 leads |
 | T-FLOW-08 | previous double win by 0 and 2, 1 gives `HR`, 3 gives `SB` | 0 receives `HR` from 1, 2 receives `SB` from 3, each returns to its payer, 1 leads |
 | T-FLOW-09 | owner at A wins its round with Banker and Dweller | no match win, level stays A, failure count 1, keeps ownership |
-| T-FLOW-10 | previous double win by 0 and 2, seats 1 and 3 both give `SB` | tie: seat 3, upstream of the Banker, pays 0 and leads. Seat 1 pays 2. |
+| T-FLOW-10 | previous double win by 0 and 2, seats 1 and 3 both give `SB` | tie under `downstream` (house): seat 1, downstream of the Banker, pays 0 and leads. Seat 3 pays 2. Under `upstream`: seat 3 pays 0 and leads, seat 1 pays 2. |
 | T-FLOW-11 | both teams at A, team 1 owns the round, team 0 finishes first and second | no match win. Team 1 failure count 1. Team 0 owns the next round. |
-| T-FLOW-12 | owner at A with 2 failures loses the round | owner resets to level 2 with count 0, the winners promote |
+| T-FLOW-12 | owner at A with 2 failures loses the round | house (`a_fail_limit = 0`): owner stays at A with count 3, the winners promote. With `a_fail_limit = 3`: owner resets to level 2 with count 0, the winners promote. |
 | T-FLOW-13 | team at A wins a round played at the other team's level K | no match win and no failure. It owns the next round, played at A. |
 
 ## 13. Decisions and remaining parity checks
@@ -381,10 +381,10 @@ Items marked decided are house rules chosen by the owner. They are final for the
 
 | ID | Question | Resolution | Status | Config field |
 |---|---|---|---|---|
-| O1 | Double tribute with equal cards | The Banker's upstream seat pays the Banker and leads. The other loser pays the Follower. | Decided | `tribute_tie = upstream` |
+| O1 | Double tribute with equal cards | Clockwise tribute, each loser pays its upstream neighbour: the Banker's downstream seat `(B + 1) % 4` pays the Banker and leads, the other loser pays the Follower. Before 2026-09-22 the house rule was the reverse (`upstream`), which checkpoints trained earlier (M1, B6) used. See `docs/reports/rules-web-check.md` item 1. | Decided, aligned with the official rules, owner approved 2026-09-22 | `tribute_tie = downstream` |
 | O2 | Level cards as back-tribute | Not allowed. Natural rank 2 to 10 and not a level card. Fallback if nothing qualifies: any lowest power card. | Decided | `back_tribute_level_cards = false` |
 | O3 | Joker pair inside a full house | Allowed. The simulator agrees: probed at M0, it offers the `ThreeWithTwo` with both `SB SB` and `HR HR` as the pair. | Decided, parity closed | `full_house_joker_pair = true` |
-| O4 | Passing A | Only in a round the team owns. Every owned A round that does not pass is a failure, cumulative. Three failures reset the team to level 2. | Decided | `pass_a_requires_owner = true`, `a_fail_limit = 3`, `a_fail_reset_level = 2` |
+| O4 | Passing A | Only in a round the team owns. Every owned A round that does not pass is a failure, cumulative, but no reset follows: a team at A keeps playing A until it passes or the other team wins the match. The three-failure reset to level 2 (Nanjing or 翻山 variant) is kept as an option. Before 2026-09-22 the reset was the house rule, which checkpoints trained earlier (M1, B6) used. See `docs/reports/rules-web-check.md` item 2. | Decided, aligned with official rules, owner approved 2026-09-22; the three-failure reset is kept as an option | `pass_a_requires_owner = true`, `a_fail_limit = 0` (variant: `a_fail_limit = 3`, `a_fail_reset_level = 2`) |
 | O7 | Card count visibility | Declaration at ten cards or fewer. Governs the human interface only. Agents use exact counts derived from public plays. | Decided | `ui_count_visibility = le10` |
 | O10 | Dweller paying tribute to a Banker on the same team | Tribute and back-tribute proceed as usual | Decided | `tribute_between_partners = true` |
 | O5 | Order of the last two players after a double win | By seat from `next(Follower)`. No rule depends on it. | Parity | none |
@@ -405,10 +405,10 @@ rules.
 | ID | House | OpenGuanDan | Field |
 |---|---|---|---|
 | O1 pairing | The higher tribute card goes to the Banker | Fixed by seat: the Banker's downstream seat `(B + 1) % 4` always pays the Banker, the upstream seat always pays the Follower, whatever the cards are | `tribute_pairing` |
-| O1 leader | The payer of the higher card leads; on a tie the Banker's upstream seat | Payer of the higher card leads, which agrees; on a tie the seat recorded last in the finishing order leads, which does not | `tribute_tie` |
+| O1 leader | The payer of the higher card leads; on a tie the Banker's downstream seat `(B + 1) % 4`, which also pays the Banker | Payer of the higher card leads, which agrees. On a tie the downstream seat pays the Banker, which agrees with house pairing, but the seat recorded last in the finishing order leads, which agrees only when that seat is `(B + 1) % 4` | `tribute_tie` |
 | O2 | Natural rank 2 to 10, no level card of any suit; fall back to any lowest-power card | The same restriction, but no fallback path exists at all | `back_tribute_fallback` |
 | O4 count | Every owned A round that does not pass is a failure, including a plain loss | Only an owned A round won with Banker and Dweller counts. A plain loss counts nothing and simply hands ownership over. | `a_fail_on_loss` |
-| O4 limit | Reset to level 2 on the third failure | The check runs after the increment and compares with `> 3`, so the reset lands on the fourth | `a_fail_limit` |
+| O4 limit | No reset (`a_fail_limit = 0`); the optional variant resets to level 2 on the third failure | The check runs after the increment and compares with `> 3`, so the reset lands on the fourth | `a_fail_limit` |
 | O4 draw | No such rule | After 50 resets the match is decided by accumulated victory count | `shuffle_limit` |
 | O5 | By seat from `next(Follower)` | By ascending seat index. Logging only, no rule depends on it. | `double_win_tail` |
 | O6 | Uniform random from the seed | Uniform random, `randint(0, 3)`. Agrees. | `first_leader` |
