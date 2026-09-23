@@ -46,6 +46,21 @@ with fresh counters and environments; the frozen reference is still
 path and its policy weights digest are recorded in the runtime metadata and
 every checkpoint, and survive resumes.
 
+Exploiters (B11, DESIGN 8.4 and 9.4). A league run and an exploiter run
+cooperate through files, on one host. The league run sets
+`league_import_dir`: after every update it imports each new
+`exploiter-*.pt` there into its league (`League.import_new`). The exploiter
+run plays `opponent = "follow:<league run>/league"`, i.e. always the league
+learner's newest snapshot (`FollowOpponent`; until the first one exists, its
+own `warm_start`, which should be the league run's). With
+`exploiter_publish_dir` set, every `exploiter_cycle_updates` updates, or
+earlier once its match win rate over the last `exploiter_window_updates`
+updates reaches `exploiter_win_rate` (after `exploiter_min_updates`), it
+writes its policy to `exploiter-<n>-u<update>.pt` there, then resets its
+policy to the newest league snapshot with a fresh policy optimizer (the
+critic and its optimizer carry on) and starts the next cycle. Its training
+match win rate is the league learner's live exploitability.
+
 Checkpoints use the `dmc.py` layout (`latest.pt`, hard-linked snapshots in
 `checkpoints/`, `metrics.jsonl`, `config.json`, `runtime-*.json`) and write a
 Stage B payload (`stage="ppo"`) that `eval.policies.load_policy` plays. As in
@@ -78,7 +93,8 @@ from train.ckpt import load_checkpoint, restore_rng, rng_state, save_checkpoint
 from train.critic import Critic, CriticConfig, load_critic
 from train.dmc import schedule, tensor
 from train.model import GuandanModel, ModelConfig, select_actions
-from train.opponents import FrozenModelOpponent, OpponentRows, OpponentSource, config_opponent
+from train.opponents import (FollowOpponent, FrozenModelOpponent, OpponentRows, OpponentSource,
+                             config_opponent)
 from train.policy import (PolicyConfig, StageBPolicy, gather_segments, policy_from_payload,
                           segment_entropy, segment_log_softmax, segment_rows)
 from train.rollout_buffer import (HIDDEN_DIM, RolloutBuffer, RolloutBufferConfig, _ragged_index,
@@ -86,6 +102,7 @@ from train.rollout_buffer import (HIDDEN_DIM, RolloutBuffer, RolloutBufferConfig
 
 PLAY = int(gd.Phase.Play)
 LEAGUE = "league:"
+FOLLOW = "follow:"
 M1_FINAL = ".work/runpod/artifacts/pilot/final.pt"
 CRITIC_FIT = ".work/critic-fit/perfect/best.pt"
 
@@ -119,6 +136,14 @@ class PPOConfig:
     opponent: str = "frozen"
     # League only: overrides the pool's snapshot_every when positive.
     league_snapshot_every: int = 0
+    # League only (B11): import exploiter-*.pt files published here.
+    league_import_dir: str = ""
+    # Exploiter mode (B11), with opponent "follow:<dir>": publish here and reset.
+    exploiter_publish_dir: str = ""
+    exploiter_cycle_updates: int = 500
+    exploiter_min_updates: int = 100
+    exploiter_window_updates: int = 50
+    exploiter_win_rate: float = 0.0     # early publish threshold; 0 disables
     tribute_policy: str = "heuristic"
     action_mode: str = "canonical"
     num_envs: int = 1024
@@ -172,7 +197,9 @@ class PPOConfig:
         positive = ("num_envs", "num_threads", "torch_threads", "rollout_steps", "epochs",
                     "minibatch_size", "clip", "kl_anneal_updates", "grad_clip", "temperature",
                     "top_k", "candidate_chunk", "checkpoint_seconds", "snapshot_updates",
-                    "max_updates", "max_seconds", "critic_width", "critic_layers")
+                    "max_updates", "max_seconds", "critic_width", "critic_layers",
+                    "exploiter_cycle_updates", "exploiter_min_updates",
+                    "exploiter_window_updates")
         for name in positive:
             value = getattr(self, name)
             if not math.isfinite(value) or value <= 0:
@@ -180,7 +207,7 @@ class PPOConfig:
         nonnegative = ("policy_lr", "critic_lr", "entropy_coef", "kl_coef", "target_kl",
                        "value_coef", "hidden_weight", "finish_weight", "buffer_steps",
                        "buffer_candidates", "buffer_trajectories", "actor_processes",
-                       "league_snapshot_every")
+                       "league_snapshot_every", "exploiter_win_rate")
         for name in nonnegative:
             value = getattr(self, name)
             if not math.isfinite(value) or value < 0:
@@ -199,8 +226,18 @@ class PPOConfig:
             raise ValueError("action_mode must be canonical or full")
         if not (self.opponent in ("frozen", "greedy")
                 or (self.opponent.startswith("frozen:") and len(self.opponent) > 7)
+                or (self.opponent.startswith(FOLLOW) and len(self.opponent) > len(FOLLOW))
                 or (self.opponent.startswith(LEAGUE) and len(self.opponent) > len(LEAGUE))):
-            raise ValueError("opponent must be frozen, frozen:<path>, greedy or league:<pool.json>")
+            raise ValueError("opponent must be frozen, frozen:<path>, follow:<dir>, greedy "
+                             "or league:<pool.json>")
+        if self.opponent.startswith(FOLLOW) and not self.warm_start:
+            raise ValueError("a follow: opponent plays warm_start until the first snapshot")
+        if self.exploiter_publish_dir and not self.opponent.startswith(FOLLOW):
+            raise ValueError("exploiter_publish_dir needs a follow:<dir> opponent")
+        if self.league_import_dir and not self.opponent.startswith(LEAGUE):
+            raise ValueError("league_import_dir needs a league:<pool.json> opponent")
+        if self.exploiter_win_rate > 1:
+            raise ValueError("exploiter_win_rate must be at most 1")
         if not self.init_checkpoint:
             raise ValueError("init_checkpoint is required")
         if self.warm_start and self.critic_init and self.critic_init != self.warm_start:
@@ -635,6 +672,7 @@ class PPOTrainer(RolloutCollector):
             "updates": 0, "optimizer_steps": 0, "decisions": 0, "learner_decisions": 0,
             "rounds": 0, "matches": 0, "learner_match_wins": 0, "samples": 0,
             "elapsed_seconds": 0.0, "resumes": 0, "snapshot_update": 0,
+            "exploiter_cycle_start": 0, "exploiter_published": 0,
         }
         payload = None
         if resume:
@@ -727,6 +765,8 @@ class PPOTrainer(RolloutCollector):
         # As in dmc.py, environments restart on resume from a seed drawn from the restored RNG.
         self.actors = None
         self.window = {"matches": 0, "wins": 0, "rounds": 0, "learner_return": 0.0}
+        # Exploiter mode: (wins, matches) per update of the current cycle.
+        self.exploiter_window: list[tuple[int, int]] = []
         # The authoritative league (weights, snapshots, tallies): the opponent
         # itself in-process, an unbound copy fed by the actors otherwise.
         self.league = None
@@ -875,7 +915,13 @@ class PPOTrainer(RolloutCollector):
             spec = "frozen:" + str(resolve_artifact(spec[len("frozen:"):]))
         # "frozen" is the M1 reference itself, already on the device and never trained.
         return config_opponent(spec, self.policy.reference, str(self.device),
-                               self.config.candidate_chunk)
+                               self.config.candidate_chunk, fallback=self.follow_fallback())
+
+    def follow_fallback(self) -> str | None:
+        """A follow: opponent's model before the first snapshot: warm_start."""
+        if not self.config.opponent.startswith(FOLLOW):
+            return None
+        return str(resolve_artifact(self.config.warm_start))
 
     # ----------------------------------------------------------------- learner
     @torch.no_grad()
@@ -1126,7 +1172,14 @@ class PPOTrainer(RolloutCollector):
         if self.league is not None:
             if self.league.should_snapshot(self.progress["updates"]):
                 stats["league_snapshot"] = str(self.league_snapshot())
+            if self.config.league_import_dir:
+                imported = self.league.import_new(self.config.league_import_dir)
+                if imported:
+                    stats["league_imported"] = ",".join(e.name for e in imported)
+                    self.league_snapshot_taken = True   # save at once, as for a snapshot
             stats.update(self.league_stats())
+        if self.config.exploiter_publish_dir:
+            stats.update(self.exploiter_cycle())
         return self.metric({**stats, "collect_seconds": collect_seconds,
                             "learn_seconds": time.monotonic() - learn_start})
 
@@ -1148,6 +1201,65 @@ class PPOTrainer(RolloutCollector):
         self.league.add_snapshot(path, name=f"snapshot@{updates}{suffix}")
         self.league_snapshot_taken = True
         return path
+
+    def exploiter_cycle(self) -> dict[str, Any]:
+        """Exploiter mode, after each update: publish and reset when the cycle
+        is due (see the module docstring). Returns metrics."""
+        cfg = self.config
+        self.exploiter_window.append((self.window["wins"], self.window["matches"]))
+        del self.exploiter_window[:-cfg.exploiter_window_updates]
+        wins = sum(w for w, _ in self.exploiter_window)
+        matches = sum(m for _, m in self.exploiter_window)
+        rate = wins / matches if matches else 0.0
+        cycle = self.progress["updates"] - self.progress["exploiter_cycle_start"]
+        stats: dict[str, Any] = {"exploiter/cycle_updates": cycle,
+                                 "exploiter/window_win_rate": rate,
+                                 "exploiter/published": self.progress["exploiter_published"]}
+        early = (cfg.exploiter_win_rate > 0 and cycle >= cfg.exploiter_min_updates
+                 and matches > 0 and rate >= cfg.exploiter_win_rate)
+        if cycle < cfg.exploiter_cycle_updates and not early:
+            return stats
+        stats["exploiter_publish"] = str(self.exploiter_publish())
+        stats["exploiter_reset_to"] = self.exploiter_reset()
+        stats["exploiter/published"] = self.progress["exploiter_published"]
+        return stats
+
+    def exploiter_publish(self) -> Path:
+        """Write the policy as the next exploiter-<n>-u<update>.pt, never
+        overwriting (a crash after the write republishes under a new n)."""
+        directory = Path(self.config.exploiter_publish_dir)
+        directory.mkdir(parents=True, exist_ok=True)
+        n = self.progress["exploiter_published"] + 1
+        while True:
+            path = directory / f"exploiter-{n:04d}-u{self.progress['updates']:09d}.pt"
+            if not any(directory.glob(f"exploiter-{n:04d}-*.pt")):
+                break
+            n += 1
+        save_checkpoint(path, self.policy.checkpoint_payload(
+            optimizer={}, config=asdict(self.config), progress=dict(self.progress), rng={},
+            tribute_policy=self.config.tribute_policy))
+        self.progress["exploiter_published"] = n
+        return path
+
+    def exploiter_reset(self) -> str:
+        """Policy weights from the opponent's current checkpoint (the newest
+        league snapshot, or warm_start before the first), a fresh policy
+        optimizer, a new cycle. The critic carries on. Saved at once."""
+        # In actor mode the actors hold the opponents; scan the directory here.
+        source = (self.opponent.current() if isinstance(self.opponent, FollowOpponent)
+                  else FollowOpponent(self.config.opponent[len(FOLLOW):],
+                                      self.follow_fallback(), rescan_seconds=0).current())
+        payload = load_checkpoint(source, self.device)
+        if payload.get("stage") != "ppo":
+            raise ValueError("an exploiter resets to a Stage B checkpoint")
+        if payload.get("reference_checkpoint_id") != self.policy.reference_checkpoint_id:
+            raise ValueError("the followed run uses a different frozen reference")
+        self.net.load_state_dict(payload["model"])     # in place: actors share these tensors
+        self.policy_optimizer = torch.optim.Adam(self.net.parameters(), lr=self.config.policy_lr)
+        self.progress["exploiter_cycle_start"] = self.progress["updates"]
+        self.exploiter_window.clear()
+        self.league_snapshot_taken = True   # save at once, so a resume does not republish
+        return source
 
     def league_stats(self) -> dict[str, float]:
         """League.stats() of the authoritative league, finite values only

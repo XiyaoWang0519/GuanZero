@@ -10,7 +10,11 @@ one opponent for its whole match, drawn at `on_match_start` from a pool of:
 - ``styled:<name>``, a fixed style of ``train.styles.FIXED_STYLES``;
 - ``sampled-style``, a fresh style per match drawn from the TRAIN region of
   ``train.styles.StyleSpace`` (never the held-out region);
-- learner snapshots registered with `add_snapshot`, which are network entries.
+- learner snapshots registered with `add_snapshot`, which are network entries;
+- imports registered with `add_import` / `import_new`: checkpoints published
+  by another run into a directory, played at argmax (B11: exploiters of this
+  learner, `train/ppo.py` exploiter mode). They have their own cap,
+  `max_imports`, and weight, `import_weight`.
 
 Styled entries write the style rows of the two non-learner seats with
 `env.set_styles` and act with `styled_choice`; learner-seat rows stay at the
@@ -76,6 +80,9 @@ class LeagueConfig:
     # One pool entry per temperature per snapshot; None plays the argmax.
     snapshot_temperatures: tuple[float | None, ...] = (None,)
     snapshot_weight: float = 1.0
+    # Imported checkpoints (add_import); the oldest leaves past the cap.
+    max_imports: int = 4
+    import_weight: float = 1.0
     device: str = "cpu"
 
     def __post_init__(self) -> None:
@@ -102,6 +109,10 @@ class LeagueConfig:
                 raise ValueError("snapshot temperatures must be positive or None")
         if not (math.isfinite(self.snapshot_weight) and self.snapshot_weight > 0):
             raise ValueError("snapshot_weight must be positive")
+        if self.max_imports < 1:
+            raise ValueError("max_imports must be positive")
+        if not (math.isfinite(self.import_weight) and self.import_weight > 0):
+            raise ValueError("import_weight must be positive")
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "LeagueConfig":
@@ -250,6 +261,9 @@ class League:
         if not self.entries:
             raise ValueError("the league needs at least one entry")
         self.snapshots: deque[tuple[str, list[Entry]]] = deque()
+        self.imports: deque[tuple[str, Entry]] = deque()
+        # File name of the newest import; `import_new` only takes later names.
+        self.import_last = ""
         self.cache: OrderedDict[str, NetworkModel] = OrderedDict()
         self.active: dict[str, int] = {}     # network spec -> environments using it
         self.env = None
@@ -316,6 +330,29 @@ class League:
             _, old = self.snapshots.popleft()
             self.entries = [e for e in self.entries if all(e is not o for o in old)]
         return added
+
+    def add_import(self, path: str | Path, name: str | None = None) -> Entry:
+        """Register a checkpoint published by another run, played at argmax.
+
+        Like a snapshot, `path` must never be overwritten. Past `max_imports`
+        the oldest import leaves the pool (running matches finish first).
+        """
+        path = str(path)
+        entry = self._add_entry(path, name or f"import:{Path(path).name}",
+                                self.config.import_weight)
+        self.imports.append((path, entry))
+        while len(self.imports) > self.config.max_imports:
+            _, old = self.imports.popleft()
+            self.entries = [e for e in self.entries if e is not old]
+        self.import_last = max(self.import_last, Path(path).name)
+        return entry
+
+    def import_new(self, directory: str | Path, pattern: str = "exploiter-*.pt") -> list[Entry]:
+        """Import every file in `directory` matching `pattern` whose name sorts
+        after the newest import so far, in name order. Publishers write files
+        atomically under names that sort by publication order."""
+        names = sorted(p.name for p in Path(directory).glob(pattern))
+        return [self.add_import(Path(directory) / n) for n in names if n > self.import_last]
 
     # --- sampling ---------------------------------------------------------
 
@@ -492,7 +529,9 @@ class League:
             "entries": [{"name": e.name, "spec": e.spec, "weight": e.weight,
                          "snapshot": e.snapshot, "beat_ema": e.beat_ema, "games": e.games,
                          "learner_wins": e.learner_wins} for e in self.entries],
-            "snapshots": [[path, [e.name for e in added]] for path, added in self.snapshots]}
+            "snapshots": [[path, [e.name for e in added]] for path, added in self.snapshots],
+            "imports": [[path, entry.name] for path, entry in self.imports],
+            "import_last": self.import_last}
         if include_rng:
             state["rng"] = self.rng.bit_generator.state
         return state
@@ -525,6 +564,9 @@ class League:
         by_name = {e.name: e for e in entries}
         self.snapshots = deque((str(path), [by_name[n] for n in names])
                                for path, names in state["snapshots"])
+        # States written before imports existed have none.
+        self.imports = deque((str(path), by_name[n]) for path, n in state.get("imports", []))
+        self.import_last = state.get("import_last", "")
         if "rng" in state:
             self.rng.bit_generator.state = state["rng"]
 
@@ -536,6 +578,7 @@ class League:
                                  "league/active_models": float(len(self.active)),
                                  "league/cached_models": float(len(self.cache)),
                                  "league/snapshots": float(len(self.snapshots)),
+                                 "league/imports": float(len(self.imports)),
                                  "league/forward_calls": float(self.forward_calls)}
         for entry, weight in zip(self.entries, self.weights()):
             key = f"league/{entry.name}"

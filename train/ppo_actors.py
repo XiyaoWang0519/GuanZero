@@ -141,6 +141,7 @@ class ActorPool:
             spec = {
                 "config": asdict(cfg), "index": index, "num_envs": size,
                 "device": str(trainer.device), "opponent": opponent,
+                "follow_fallback": trainer.follow_fallback(),
                 "env_seed": int(trainer.rng.integers(0, 2**63)),
                 "generator_seed": int(trainer.rng.integers(0, 2**63)),
                 "model_config": asdict(trainer.policy.net.config),
@@ -308,7 +309,7 @@ class Actor:
             self.league = opponent
         else:
             opponent = config_opponent(opponent_spec, policy.reference, str(device),
-                                       cfg.candidate_chunk)
+                                       cfg.candidate_chunk, fallback=spec["follow_fallback"])
         collector.opponent = opponent
         opponent.bind(collector.env, collector.learner_team)
         collector.fused_opponent = (cfg.fast_rollout and isinstance(opponent, FrozenModelOpponent)

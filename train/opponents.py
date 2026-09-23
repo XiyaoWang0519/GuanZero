@@ -215,18 +215,116 @@ class CheckpointOpponent:
         return choices
 
 
+class FollowOpponent:
+    """The newest checkpoint in a directory on every opponent seat (B11: an
+    exploiter's opponent is the league learner's latest snapshot, written as
+    `league/update-<n>.pt` by `PPOTrainer.league_snapshot`).
+
+    An environment keeps the model it was given at match start for the whole
+    match; a newer file is picked up at the next match start. The directory is
+    rescanned at most every `rescan_seconds`. Until it holds a match for
+    `pattern`, `fallback` plays (the learner's own starting checkpoint).
+    Models play as `CheckpointOpponent` plays them; one is kept loaded per
+    path in use.
+    """
+
+    def __init__(self, directory, fallback, device: str = "cpu",
+                 pattern: str = "update-*.pt", rescan_seconds: float = 30.0,
+                 clock=None) -> None:
+        import time
+        from pathlib import Path
+
+        import gd
+
+        self.directory = Path(directory)
+        self.fallback = str(fallback)
+        self.device = device
+        self.pattern = pattern
+        self.rescan_seconds = rescan_seconds
+        self.clock = clock or time.monotonic
+        self.play_phase = int(gd.Phase.Play)
+        self.name = f"follow:{self.directory}"
+        self.newest = self.fallback
+        self.scanned_at = None
+        self.assigned: list[str | None] = []
+        self.models: dict = {}
+
+    def current(self) -> str:
+        """The newest matching file, or the fallback; rate-limited rescans."""
+        now = self.clock()
+        if self.scanned_at is None or now - self.scanned_at >= self.rescan_seconds:
+            self.scanned_at = now
+            files = sorted(self.directory.glob(self.pattern)) if self.directory.is_dir() else []
+            if files:
+                self.newest = str(files[-1])
+        return self.newest
+
+    def _model(self, path: str):
+        from train.league import TorchModel
+
+        if path not in self.models:
+            self.models[path] = TorchModel(path, self.device, seed=0)
+        return self.models[path]
+
+    def bind(self, env, learner_team: np.ndarray) -> None:
+        del env
+        self.assigned = [None] * len(learner_team)
+
+    def on_match_start(self, env_ids: np.ndarray) -> None:
+        path = self.current()
+        for e in np.asarray(env_ids, np.int64).reshape(-1):
+            self.assigned[int(e)] = path
+        live = set(self.assigned) | {path}
+        for old in [p for p in self.models if p not in live]:
+            del self.models[old]
+
+    def on_match_end(self, env_ids: np.ndarray, learner_won: np.ndarray) -> None:
+        del env_ids, learner_won
+
+    def act(self, rows: OpponentRows) -> np.ndarray:
+        from train.league import _gather
+
+        choices = np.array(rows.greedy_choice, dtype=np.int32, copy=True)
+        phase = np.asarray(rows.phase)
+        groups: dict[str, list[int]] = {}
+        for r, e in enumerate(np.asarray(rows.env_id, np.int64)):
+            path = self.assigned[int(e)]
+            if path is None:
+                raise RuntimeError(f"environment {int(e)} has no opponent; call on_match_start")
+            groups.setdefault(path, []).append(r)
+        for path, members in groups.items():
+            model = self._model(path)
+            index = np.asarray(members, np.int64)
+            if model.heuristic_tribute:
+                index = index[phase[index] == self.play_phase]
+            if not index.size:
+                continue
+            obs, cand, offsets = _gather(rows, index)
+            local = np.asarray(model.choose(obs, cand, offsets, phase[index]), np.int32)
+            sizes = offsets[1:] - offsets[:-1]
+            if local.shape != index.shape or (local < 0).any() or (local >= sizes).any():
+                raise ValueError(f"{path}: invalid candidate indices")
+            choices[index] = local
+        return choices
+
+
 def config_opponent(spec: str, reference, device: str = "cpu",
-                    chunk_size: int = 32768) -> OpponentSource:
+                    chunk_size: int = 32768, fallback: str | None = None) -> OpponentSource:
     """The opponent named by a non-league `PPOConfig.opponent`: "greedy",
-    "frozen" (the frozen reference network itself) or "frozen:<path>" with an
-    already resolved path. A Stage A checkpoint plays through
+    "frozen" (the frozen reference network itself), "frozen:<path>" with an
+    already resolved path, or "follow:<directory>" (`FollowOpponent`, which
+    needs `fallback`). A Stage A checkpoint plays through
     `FrozenModelOpponent`, anything else through `CheckpointOpponent`."""
     if spec == "greedy":
         return GreedyOpponent()
     if spec == "frozen":
         return FrozenModelOpponent(reference, device, chunk_size)
+    if spec.startswith("follow:"):
+        if not fallback:
+            raise ValueError("a follow: opponent needs a fallback checkpoint")
+        return FollowOpponent(spec[len("follow:"):], fallback, device)
     if not spec.startswith("frozen:"):
-        raise ValueError(f"not a frozen or greedy opponent: {spec}")
+        raise ValueError(f"not a frozen, follow or greedy opponent: {spec}")
     from train.ckpt import load_checkpoint
 
     path = spec[len("frozen:"):]

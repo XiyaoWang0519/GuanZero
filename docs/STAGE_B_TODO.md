@@ -67,6 +67,15 @@ one task. Design source: `DESIGN.md` 8.4 (Stage B), 9.1 (arena), 9.3 and
    interval entirely above zero. Both are reported; neither replaces the
    other.
 
+5. **G5, live exploiter (B11, proposed).** Main and control train for the
+   same wall clock on the same host, the main's live exploiter alongside
+   (the extra compute is reported, not hidden). Then a fresh B9-protocol
+   exploiter (from the M1 final, equal updates) is trained against each
+   frozen final. Primary: the exploiter's gain against the main is smaller
+   than against the control, a paired difference of gains with a 95%
+   interval entirely below zero. Guard: main versus control head to head,
+   duplicate interval not entirely below zero (no strength regression).
+
 A gate that fails is reported, not tuned around. The external DanZero and
 SDMC thresholds stay unavailable and are not claimed.
 
@@ -90,6 +99,7 @@ merged first. Rows with no dependency can start now in parallel.
 | B8x | **Cross-play (partner compatibility).** `eval/crossplay.py`: per-seat lineups, a team is (X at seat s, partner P at s+2), in the same duplicate deals. Against a fixed reference team (default two copies of the M1 final) report X+P, X+X and P+P mean net levels per round, `vs_self` = (X+P) − (X+X) and `partner_lift` = (X+P) − (P+P) with paired deal bootstrap CIs, and double-win rates. Partners: greedy, the four fixed styled bots, the M1 final, plus `--extra-partners` specs. | none | tests: partner really at s+2 in both legs, X+X equals `eval/duplicate.py`, results independent of `--workers`, CLI smoke | done: `eval/crossplay.py`, `play_round_seats`/`play_duplicate_teams` in `eval/duplicate.py`, 4 tests in `tests/test_crossplay.py`. Smoke, 200 deals, 6 workers, 47 s for 13 lineups, X = `.work/ppo-sanity/latest.pt`: X+X +0.44 vs M1; with M1 as partner +0.36, `vs_self` −0.08 [−0.27, +0.12]; with greedy −0.55, `vs_self` −0.99 [−1.23, −0.73], `partner_lift` +0.84. Smoke only, not a finding; full run is 5,000 deals First full run on the B6 ppo-a checkpoint, 5,000 deals vs two M1 finals (`reports/stage-b-crossplay-ppo-a.json`): self-paired +0.773; with M1 as partner +0.403, with DMC +0.651, with greedy -0.203. Every team with a foreign partner scores at or above the midpoint of the two self-paired teams (+0.01 to +0.19 levels/round), so the drops track partner strength; no sign yet of private conventions that break with other partners. The midpoint is a descriptive heuristic, not a tested gate. |
 | B9 | **Exploiter test.** `train/exploiter.py` or a mode of B5: freeze a target checkpoint, train a fresh PPO agent against it only, fixed budget, report win rate. Run against the M1 final and the B8 checkpoint. | B5, B8 | G4 in `reports/stage-b-exploiter.md` | done, **G4 passed (primary and secondary)**: `frozen:<path>` plays any `load_policy` checkpoint (`CheckpointOpponent`); arms `train/configs/b9-exploit-{m1,league}.json`, the ppo-a recipe from the M1 final, 3,000 updates each; `eval/exploiter.py`, 6 tests in `tests/test_exploiter.py`. RTX 4090, 2.14 h, $1.59. 4,000 deals: m1 exploiter vs M1 +1.079 [+1.039, +1.118] (960/1000 matches), league exploiter vs league -0.097 [-0.136, -0.058] (404/1000); primary difference -1.175 [-1.233, -1.118]. Secondary, difference of gains over the start policy: -0.059 [-0.119, +0.003], a marginal pass: the budget buys about one level/round against either target, so the league is stronger but not clearly less exploitable ([report](reports/stage-b-exploiter.md)) |
 | B10 | **Docs and gate update.** Update `DESIGN.md` 8.4 with what was actually built, `M2_TODO.md` task 6 status, `TRAINING.md` with the Stage B commands, and the milestone table. | B6, B8, B9 | one report per gate linked from `M2_TODO.md` | pending |
+| B11 | **Live exploiter in the league (proposed 2026-09-23 after B9).** A league run and an exploiter run on one host, cooperating through files: the exploiter always plays the league learner's newest snapshot (`follow:<dir>`, `FollowOpponent`), publishes itself every cycle (or early past a win rate) and resets to that snapshot; the league learner imports each published exploiter into its pool (`league_import_dir`, `League.import_new`, own cap `max_imports`). Configs `b11-main.json`, `b11-exploiter.json`, and `b11-control.json` (main without imports), all warm-started from the B8 league final, pool `league-b11.json` = B8's pool plus imports. | B8, B9 | G5 below, in `reports/stage-b-live-exploiter.md` | code done: 7 tests in `tests/test_exploiter_league.py`; CPU smoke with the real checkpoints, main and exploiter concurrently for 5 min: publish, reset (to the warm start, then to snapshots) and import all happen; GPU run pending approval |
 
 ## Parallel start
 
