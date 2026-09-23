@@ -78,7 +78,7 @@ from train.ckpt import load_checkpoint, restore_rng, rng_state, save_checkpoint
 from train.critic import Critic, CriticConfig, load_critic
 from train.dmc import schedule, tensor
 from train.model import GuandanModel, ModelConfig, select_actions
-from train.opponents import FrozenModelOpponent, GreedyOpponent, OpponentRows, OpponentSource
+from train.opponents import FrozenModelOpponent, OpponentRows, OpponentSource, config_opponent
 from train.policy import (PolicyConfig, StageBPolicy, gather_segments, policy_from_payload,
                           segment_entropy, segment_log_softmax, segment_rows)
 from train.rollout_buffer import (HIDDEN_DIM, RolloutBuffer, RolloutBufferConfig, _ragged_index,
@@ -112,7 +112,8 @@ class PPOConfig:
     # The source's temperature and top_k must equal this config's unless this
     # is set; a temperature change is then logged as a warning.
     warm_start_policy_override: bool = False
-    # "frozen" (the init checkpoint, argmax Q), "frozen:<path>", "greedy", or
+    # "frozen" (the init checkpoint, argmax Q), "frozen:<path>" (any checkpoint
+    # load_policy plays, at argmax; B9 exploiters use it), "greedy", or
     # "league:<pool.json>", the B7 opponent league (train/league.py) with
     # learner snapshots every `snapshot_every` updates of the pool config.
     opponent: str = "frozen"
@@ -870,14 +871,11 @@ class PPOTrainer(RolloutCollector):
 
     def _default_opponent(self) -> OpponentSource:
         spec = self.config.opponent
-        if spec == "greedy":
-            return GreedyOpponent()
-        if spec == "frozen":
-            # The frozen M1 reference is already on the device and never trained.
-            return FrozenModelOpponent(self.policy.reference, str(self.device),
-                                       self.config.candidate_chunk)
-        return FrozenModelOpponent.from_checkpoint(resolve_artifact(spec[len("frozen:"):]),
-                                                   str(self.device), self.config.candidate_chunk)
+        if spec.startswith("frozen:"):
+            spec = "frozen:" + str(resolve_artifact(spec[len("frozen:"):]))
+        # "frozen" is the M1 reference itself, already on the device and never trained.
+        return config_opponent(spec, self.policy.reference, str(self.device),
+                               self.config.candidate_chunk)
 
     # ----------------------------------------------------------------- learner
     @torch.no_grad()

@@ -163,3 +163,73 @@ class FrozenModelOpponent:
                 raise FloatingPointError("non-finite opponent scores")
             choices[index] = select_actions(scores, device_offsets).cpu().numpy()
         return choices
+
+
+class CheckpointOpponent:
+    """Any `eval.policies.load_policy` checkpoint on every opponent seat,
+    playing exactly as it is evaluated: argmax Q for a Stage A checkpoint, the
+    argmax logit over its own pruned set for a Stage B one. Tribute and
+    back-tribute rows take the engine heuristic when the checkpoint's tribute
+    policy is heuristic. `frozen:<path>` uses it for Stage B targets, which
+    `FrozenModelOpponent` cannot play (B9, the exploiter against the league
+    checkpoint). Nothing here is trained.
+    """
+
+    def __init__(self, path, device: str = "cpu") -> None:
+        from pathlib import Path
+
+        import gd
+
+        from train.league import TorchModel
+
+        # Argmax play never draws from the model's generator; the seed is moot.
+        self.model = TorchModel(str(path), device, seed=0)
+        self.name = f"frozen:{Path(path).name}"
+        self.play_phase = int(gd.Phase.Play)
+
+    def bind(self, env, learner_team: np.ndarray) -> None:
+        del env, learner_team
+
+    def on_match_start(self, env_ids: np.ndarray) -> None:
+        del env_ids
+
+    def on_match_end(self, env_ids: np.ndarray, learner_won: np.ndarray) -> None:
+        del env_ids, learner_won
+
+    def act(self, rows: OpponentRows) -> np.ndarray:
+        from train.league import _gather
+
+        choices = np.array(rows.greedy_choice, dtype=np.int32, copy=True)
+        phase = np.asarray(rows.phase)
+        index = np.arange(rows.rows)
+        if self.model.heuristic_tribute:
+            index = index[phase == self.play_phase]
+        if not index.size:
+            return choices
+        obs, cand, offsets = _gather(rows, index)
+        local = np.asarray(self.model.choose(obs, cand, offsets, phase[index]), np.int32)
+        sizes = offsets[1:] - offsets[:-1]
+        if local.shape != index.shape or (local < 0).any() or (local >= sizes).any():
+            raise ValueError(f"{self.name}: invalid candidate indices")
+        choices[index] = local
+        return choices
+
+
+def config_opponent(spec: str, reference, device: str = "cpu",
+                    chunk_size: int = 32768) -> OpponentSource:
+    """The opponent named by a non-league `PPOConfig.opponent`: "greedy",
+    "frozen" (the frozen reference network itself) or "frozen:<path>" with an
+    already resolved path. A Stage A checkpoint plays through
+    `FrozenModelOpponent`, anything else through `CheckpointOpponent`."""
+    if spec == "greedy":
+        return GreedyOpponent()
+    if spec == "frozen":
+        return FrozenModelOpponent(reference, device, chunk_size)
+    if not spec.startswith("frozen:"):
+        raise ValueError(f"not a frozen or greedy opponent: {spec}")
+    from train.ckpt import load_checkpoint
+
+    path = spec[len("frozen:"):]
+    if load_checkpoint(path, "cpu").get("stage", "dmc") == "dmc":
+        return FrozenModelOpponent.from_checkpoint(path, device, chunk_size)
+    return CheckpointOpponent(path, device)

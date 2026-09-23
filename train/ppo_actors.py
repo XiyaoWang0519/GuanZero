@@ -261,7 +261,7 @@ class Actor:
     def __init__(self, spec: dict, net_weights: dict, reference_weights: dict,
                  tensors: dict) -> None:
         from train.model import GuandanModel, ModelConfig
-        from train.opponents import FrozenModelOpponent, GreedyOpponent
+        from train.opponents import FrozenModelOpponent, config_opponent
         from train.policy import PolicyConfig, StageBPolicy
         from train.ppo import PPOConfig, RolloutCollector, Uploader
         from train.rollout_buffer import RolloutBuffer, RolloutBufferConfig
@@ -306,13 +306,9 @@ class Actor:
                 opponent.rng.bit_generator.state = setup["rng"]
             collector.league_fused = bool(opponent.external)
             self.league = opponent
-        elif opponent_spec == "greedy":
-            opponent = GreedyOpponent()
-        elif opponent_spec == "frozen":
-            opponent = FrozenModelOpponent(policy.reference, str(device), cfg.candidate_chunk)
         else:
-            opponent = FrozenModelOpponent.from_checkpoint(opponent_spec[len("frozen:"):],
-                                                           str(device), cfg.candidate_chunk)
+            opponent = config_opponent(opponent_spec, policy.reference, str(device),
+                                       cfg.candidate_chunk)
         collector.opponent = opponent
         opponent.bind(collector.env, collector.learner_team)
         collector.fused_opponent = (cfg.fast_rollout and isinstance(opponent, FrozenModelOpponent)
