@@ -59,6 +59,13 @@ one task. Design source: `DESIGN.md` 8.4 (Stage B), 9.1 (arena), 9.3 and
 4. **G4, exploitability.** An exploiter trained for a fixed budget against
    the frozen league checkpoint wins less than one trained against the
    frozen M1 final for the same budget.
+   *Secondary criterion, added before the B9 run (2026-09-23, owner
+   approved):* both exploiters start from the M1 final, so a stronger target
+   passes the primary almost by construction. The exploiter's gain over its
+   start policy against the league target must not exceed its gain against
+   the M1 target: the paired difference of gains must not have a 95%
+   interval entirely above zero. Both are reported; neither replaces the
+   other.
 
 A gate that fails is reported, not tuned around. The external DanZero and
 SDMC thresholds stay unavailable and are not claimed.
