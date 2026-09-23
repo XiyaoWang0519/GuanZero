@@ -1,0 +1,591 @@
+{
+  "schema_version": 1,
+  "task": "STAGE_B_TODO B8x",
+  "protocol": "internal-house",
+  "rules": "gd.RuleConfig.house()",
+  "model": {
+    "spec": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod-b8/results/runs/league/run/latest.pt",
+    "name": "latest.pt@0196bd768c5bc4e2/ppo",
+    "kind": "checkpoint",
+    "stage": "ppo",
+    "model_digest": "0196bd768c5bc4e20a2922d91006aa73d5492746f8577fa5d5272bac27e7931f",
+    "file_sha256": "f21cd2bbd4e09171696c79436e1be9e6c6f2d563c3c9318e0c22f64bcd7f7f29",
+    "training_seed": 7
+  },
+  "reference_team": {
+    "lineup": [
+      "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod/artifacts/pilot/final.pt",
+      "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod/artifacts/pilot/final.pt"
+    ],
+    "spec": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod/artifacts/pilot/final.pt",
+    "name": "final.pt@8a8e2b08dec2e739",
+    "kind": "checkpoint",
+    "stage": "dmc",
+    "model_digest": "8a8e2b08dec2e73998092a67cbc25c26df75b4c0d2f02fd0a791d5d16cd4f745",
+    "file_sha256": "74b4365acc3e423e827c3f40d971081227fda04f7f5a198d1aa0c27239c2dcb1",
+    "training_seed": 7
+  },
+  "seating": "lineup (a, b): a at seat s, b at seat s + 2; s = 0 in leg 1 and 1 in the swapped leg; the reference team takes the other two seats",
+  "seeds": {
+    "deal_seed": 20260923,
+    "play_seed_rule": "deal i uses seed + i in every lineup",
+    "bootstrap_seed": 20260923
+  },
+  "requested": {
+    "deals": 5000,
+    "bootstrap_samples": 2000,
+    "partners": [
+      "greedy",
+      "styled:bomb-happy",
+      "styled:bomb-shy",
+      "styled:high-lead",
+      "styled:low-lead",
+      "m1",
+      ".work/runpod-b8/results/runs/frozen/run/latest.pt",
+      ".work/runpod-b8/payload/artifacts/ppo-a.pt"
+    ]
+  },
+  "host": {
+    "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "cpu": "Apple M4 Pro",
+    "logical_cpus": 14,
+    "python": "3.14.4",
+    "torch": "2.14.0",
+    "torch_threads": 1,
+    "cuda_available": false,
+    "git_commit": "8f846af26f91b60740e3cabecd2f8413b4346d31"
+  },
+  "definitions": {
+    "mean_net_levels_per_round": "(lineup net level gain in leg 1 + in leg 2) / 2, vs the reference team",
+    "X+P": "lineup (model, partner)",
+    "X+X": "lineup (model, model)",
+    "P+P": "lineup (partner, partner)",
+    "vs_self": "(X+P) - (X+X), per deal",
+    "partner_lift": "(X+P) - (P+P), per deal",
+    "intervals": "95% percentile bootstrap over whole deals",
+    "double_win_rate": "fraction of legs where the lineup finishes first and second"
+  },
+  "partners": {
+    "greedy": {
+      "partner": {
+        "spec": "greedy",
+        "name": "greedy",
+        "kind": "greedy"
+      },
+      "X+P": {
+        "lineup": [
+          "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod-b8/results/runs/league/run/latest.pt",
+          "greedy"
+        ],
+        "deals": 5000,
+        "rounds": 10000,
+        "mean_net_levels_per_round": 0.0092,
+        "bootstrap_95_ci": [
+          -0.02690499999999999,
+          0.04380249999999999
+        ],
+        "double_win_rate": 0.1768,
+        "opponent_double_win_rate": 0.1927,
+        "banker_rate": 0.5221,
+        "seconds": 38.87306924996665
+      },
+      "P+P": {
+        "lineup": [
+          "greedy",
+          "greedy"
+        ],
+        "deals": 5000,
+        "rounds": 10000,
+        "mean_net_levels_per_round": -1.5097,
+        "bootstrap_95_ci": [
+          -1.5439075,
+          -1.4754975000000001
+        ],
+        "double_win_rate": 0.0645,
+        "opponent_double_win_rate": 0.4614,
+        "banker_rate": 0.2083,
+        "seconds": 19.564092416025233
+      },
+      "vs_self": {
+        "mean": -1.1191,
+        "bootstrap_95_ci": [
+          -1.1620024999999998,
+          -1.0715975000000002
+        ],
+        "deals": 5000
+      },
+      "partner_lift": {
+        "mean": 1.5189,
+        "bootstrap_95_ci": [
+          1.4717,
+          1.566505
+        ],
+        "deals": 5000
+      }
+    },
+    "styled:bomb-happy": {
+      "partner": {
+        "spec": "styled:bomb-happy",
+        "name": "styled:bomb-happy",
+        "kind": "styled",
+        "style_changes_from_neutral": {
+          "bomb_threshold": 0.0
+        }
+      },
+      "X+P": {
+        "lineup": [
+          "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod-b8/results/runs/league/run/latest.pt",
+          "styled:bomb-happy"
+        ],
+        "deals": 5000,
+        "rounds": 10000,
+        "mean_net_levels_per_round": 0.253,
+        "bootstrap_95_ci": [
+          0.2165975,
+          0.28940249999999995
+        ],
+        "double_win_rate": 0.2329,
+        "opponent_double_win_rate": 0.1675,
+        "banker_rate": 0.5549,
+        "seconds": 38.90363499999512
+      },
+      "P+P": {
+        "lineup": [
+          "styled:bomb-happy",
+          "styled:bomb-happy"
+        ],
+        "deals": 5000,
+        "rounds": 10000,
+        "mean_net_levels_per_round": -0.7603,
+        "bootstrap_95_ci": [
+          -0.7953125,
+          -0.7237
+        ],
+        "double_win_rate": 0.1414,
+        "opponent_double_win_rate": 0.337,
+        "banker_rate": 0.3429,
+        "seconds": 17.76937758299755
+      },
+      "vs_self": {
+        "mean": -0.8753,
+        "bootstrap_95_ci": [
+          -0.9191075,
+          -0.8265950000000001
+        ],
+        "deals": 5000
+      },
+      "partner_lift": {
+        "mean": 1.0133,
+        "bootstrap_95_ci": [
+          0.9671949999999999,
+          1.0626025
+        ],
+        "deals": 5000
+      }
+    },
+    "styled:bomb-shy": {
+      "partner": {
+        "spec": "styled:bomb-shy",
+        "name": "styled:bomb-shy",
+        "kind": "styled",
+        "style_changes_from_neutral": {
+          "bomb_threshold": 1.1
+        }
+      },
+      "X+P": {
+        "lineup": [
+          "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod-b8/results/runs/league/run/latest.pt",
+          "styled:bomb-shy"
+        ],
+        "deals": 5000,
+        "rounds": 10000,
+        "mean_net_levels_per_round": -0.1047,
+        "bootstrap_95_ci": [
+          -0.1414075,
+          -0.06979750000000001
+        ],
+        "double_win_rate": 0.1574,
+        "opponent_double_win_rate": 0.1992,
+        "banker_rate": 0.5011,
+        "seconds": 39.09488612500718
+      },
+      "P+P": {
+        "lineup": [
+          "styled:bomb-shy",
+          "styled:bomb-shy"
+        ],
+        "deals": 5000,
+        "rounds": 10000,
+        "mean_net_levels_per_round": -1.7042,
+        "bootstrap_95_ci": [
+          -1.7361,
+          -1.6733925
+        ],
+        "double_win_rate": 0.0521,
+        "opponent_double_win_rate": 0.5055,
+        "banker_rate": 0.1742,
+        "seconds": 19.868154583964497
+      },
+      "vs_self": {
+        "mean": -1.233,
+        "bootstrap_95_ci": [
+          -1.276905,
+          -1.1864975000000002
+        ],
+        "deals": 5000
+      },
+      "partner_lift": {
+        "mean": 1.5995,
+        "bootstrap_95_ci": [
+          1.5548975,
+          1.645805
+        ],
+        "deals": 5000
+      }
+    },
+    "styled:high-lead": {
+      "partner": {
+        "spec": "styled:high-lead",
+        "name": "styled:high-lead",
+        "kind": "styled",
+        "style_changes_from_neutral": {
+          "lead_high_bias": 1.0
+        }
+      },
+      "X+P": {
+        "lineup": [
+          "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod-b8/results/runs/league/run/latest.pt",
+          "styled:high-lead"
+        ],
+        "deals": 5000,
+        "rounds": 10000,
+        "mean_net_levels_per_round": -0.6794,
+        "bootstrap_95_ci": [
+          -0.7128025,
+          -0.6463
+        ],
+        "double_win_rate": 0.0373,
+        "opponent_double_win_rate": 0.2579,
+        "banker_rate": 0.4756,
+        "seconds": 39.961323541007005
+      },
+      "P+P": {
+        "lineup": [
+          "styled:high-lead",
+          "styled:high-lead"
+        ],
+        "deals": 5000,
+        "rounds": 10000,
+        "mean_net_levels_per_round": -2.7222,
+        "bootstrap_95_ci": [
+          -2.741205,
+          -2.7036975
+        ],
+        "double_win_rate": 0.0021,
+        "opponent_double_win_rate": 0.8918,
+        "banker_rate": 0.0506,
+        "seconds": 19.9056759160012
+      },
+      "vs_self": {
+        "mean": -1.8077,
+        "bootstrap_95_ci": [
+          -1.8498025,
+          -1.762595
+        ],
+        "deals": 5000
+      },
+      "partner_lift": {
+        "mean": 2.0428,
+        "bootstrap_95_ci": [
+          2.0054,
+          2.079805
+        ],
+        "deals": 5000
+      }
+    },
+    "styled:low-lead": {
+      "partner": {
+        "spec": "styled:low-lead",
+        "name": "styled:low-lead",
+        "kind": "styled",
+        "style_changes_from_neutral": {
+          "lead_high_bias": -1.0,
+          "prefer_Single": 1.0
+        }
+      },
+      "X+P": {
+        "lineup": [
+          "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod-b8/results/runs/league/run/latest.pt",
+          "styled:low-lead"
+        ],
+        "deals": 5000,
+        "rounds": 10000,
+        "mean_net_levels_per_round": -0.3665,
+        "bootstrap_95_ci": [
+          -0.4003025,
+          -0.33359500000000003
+        ],
+        "double_win_rate": 0.0775,
+        "opponent_double_win_rate": 0.2055,
+        "banker_rate": 0.4852,
+        "seconds": 42.13651779200882
+      },
+      "P+P": {
+        "lineup": [
+          "styled:low-lead",
+          "styled:low-lead"
+        ],
+        "deals": 5000,
+        "rounds": 10000,
+        "mean_net_levels_per_round": -2.2778,
+        "bootstrap_95_ci": [
+          -2.3045,
+          -2.2525950000000003
+        ],
+        "double_win_rate": 0.0168,
+        "opponent_double_win_rate": 0.6748,
+        "banker_rate": 0.0854,
+        "seconds": 23.95634441601578
+      },
+      "vs_self": {
+        "mean": -1.4948,
+        "bootstrap_95_ci": [
+          -1.5403,
+          -1.447
+        ],
+        "deals": 5000
+      },
+      "partner_lift": {
+        "mean": 1.9113,
+        "bootstrap_95_ci": [
+          1.8711925,
+          1.9513025
+        ],
+        "deals": 5000
+      }
+    },
+    "m1": {
+      "partner": {
+        "spec": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod/artifacts/pilot/final.pt",
+        "name": "final.pt@8a8e2b08dec2e739",
+        "kind": "checkpoint",
+        "stage": "dmc",
+        "model_digest": "8a8e2b08dec2e73998092a67cbc25c26df75b4c0d2f02fd0a791d5d16cd4f745",
+        "file_sha256": "74b4365acc3e423e827c3f40d971081227fda04f7f5a198d1aa0c27239c2dcb1",
+        "training_seed": 7
+      },
+      "X+P": {
+        "lineup": [
+          "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod-b8/results/runs/league/run/latest.pt",
+          "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod/artifacts/pilot/final.pt"
+        ],
+        "deals": 5000,
+        "rounds": 10000,
+        "mean_net_levels_per_round": 0.6011,
+        "bootstrap_95_ci": [
+          0.5653975,
+          0.6347025000000001
+        ],
+        "double_win_rate": 0.3037,
+        "opponent_double_win_rate": 0.1332,
+        "banker_rate": 0.6094,
+        "seconds": 46.43461554200621
+      },
+      "P+P": {
+        "lineup": [
+          "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod/artifacts/pilot/final.pt",
+          "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod/artifacts/pilot/final.pt"
+        ],
+        "deals": 5000,
+        "rounds": 10000,
+        "mean_net_levels_per_round": 0.0,
+        "bootstrap_95_ci": [
+          0.0,
+          0.0
+        ],
+        "double_win_rate": 0.2073,
+        "opponent_double_win_rate": 0.2073,
+        "banker_rate": 0.5,
+        "seconds": 32.343192791042384
+      },
+      "vs_self": {
+        "mean": -0.5272,
+        "bootstrap_95_ci": [
+          -0.5695,
+          -0.47929750000000004
+        ],
+        "deals": 5000
+      },
+      "partner_lift": {
+        "mean": 0.6011,
+        "bootstrap_95_ci": [
+          0.5653975,
+          0.6347025000000001
+        ],
+        "deals": 5000
+      }
+    },
+    ".work/runpod-b8/results/runs/frozen/run/latest.pt": {
+      "partner": {
+        "spec": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod-b8/results/runs/frozen/run/latest.pt",
+        "name": "latest.pt@31045995795306ac/ppo",
+        "kind": "checkpoint",
+        "stage": "ppo",
+        "model_digest": "31045995795306acc0f0d280e796ef0d1e1c94f3bde6147054433fca83da84e0",
+        "file_sha256": "eb62d9e60fbc7e8e8c1332c78f6620497ef6e9de3453eb7b38c0f40ec783bb7a",
+        "training_seed": 7
+      },
+      "X+P": {
+        "lineup": [
+          "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod-b8/results/runs/league/run/latest.pt",
+          "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod-b8/results/runs/frozen/run/latest.pt"
+        ],
+        "deals": 5000,
+        "rounds": 10000,
+        "mean_net_levels_per_round": 1.1997,
+        "bootstrap_95_ci": [
+          1.1649,
+          1.2345024999999998
+        ],
+        "double_win_rate": 0.4273,
+        "opponent_double_win_rate": 0.0841,
+        "banker_rate": 0.7101,
+        "seconds": 61.555423374986276
+      },
+      "P+P": {
+        "lineup": [
+          "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod-b8/results/runs/frozen/run/latest.pt",
+          "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod-b8/results/runs/frozen/run/latest.pt"
+        ],
+        "deals": 5000,
+        "rounds": 10000,
+        "mean_net_levels_per_round": 1.3033,
+        "bootstrap_95_ci": [
+          1.2684925,
+          1.3363
+        ],
+        "double_win_rate": 0.4634,
+        "opponent_double_win_rate": 0.0841,
+        "banker_rate": 0.7279,
+        "seconds": 62.7123457089765
+      },
+      "vs_self": {
+        "mean": 0.0714,
+        "bootstrap_95_ci": [
+          0.0320975,
+          0.11320499999999997
+        ],
+        "deals": 5000
+      },
+      "partner_lift": {
+        "mean": -0.1036,
+        "bootstrap_95_ci": [
+          -0.1479025,
+          -0.0586
+        ],
+        "deals": 5000
+      }
+    },
+    ".work/runpod-b8/payload/artifacts/ppo-a.pt": {
+      "partner": {
+        "spec": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod-b8/payload/artifacts/ppo-a.pt",
+        "name": "ppo-a.pt@3736241d4eeca069/ppo",
+        "kind": "checkpoint",
+        "stage": "ppo",
+        "model_digest": "3736241d4eeca069d2a742d2337313ad5587d1213fd2683fa0399176dfc20411",
+        "file_sha256": "d7c97f70438095193238479ed23d37b45f967ee4be9518ac90d65da858298a95",
+        "training_seed": 7
+      },
+      "X+P": {
+        "lineup": [
+          "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod-b8/results/runs/league/run/latest.pt",
+          "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod-b8/payload/artifacts/ppo-a.pt"
+        ],
+        "deals": 5000,
+        "rounds": 10000,
+        "mean_net_levels_per_round": 0.9602,
+        "bootstrap_95_ci": [
+          0.9274975,
+          0.9929
+        ],
+        "double_win_rate": 0.3717,
+        "opponent_double_win_rate": 0.1022,
+        "banker_rate": 0.6693,
+        "seconds": 59.76617245795205
+      },
+      "P+P": {
+        "lineup": [
+          "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod-b8/payload/artifacts/ppo-a.pt",
+          "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod-b8/payload/artifacts/ppo-a.pt"
+        ],
+        "deals": 5000,
+        "rounds": 10000,
+        "mean_net_levels_per_round": 0.7733,
+        "bootstrap_95_ci": [
+          0.7389975,
+          0.8084025
+        ],
+        "double_win_rate": 0.3383,
+        "opponent_double_win_rate": 0.1222,
+        "banker_rate": 0.6331,
+        "seconds": 58.77605137496721
+      },
+      "vs_self": {
+        "mean": -0.1681,
+        "bootstrap_95_ci": [
+          -0.20920999999999998,
+          -0.12539250000000005
+        ],
+        "deals": 5000
+      },
+      "partner_lift": {
+        "mean": 0.1869,
+        "bootstrap_95_ci": [
+          0.145,
+          0.22810999999999995
+        ],
+        "deals": 5000
+      }
+    }
+  },
+  "self_pair": {
+    "lineup": [
+      "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod-b8/results/runs/league/run/latest.pt",
+      "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod-b8/results/runs/league/run/latest.pt"
+    ],
+    "deals": 5000,
+    "rounds": 10000,
+    "mean_net_levels_per_round": 1.1283,
+    "bootstrap_95_ci": [
+      1.092895,
+      1.1597024999999999
+    ],
+    "double_win_rate": 0.4025,
+    "opponent_double_win_rate": 0.0889,
+    "banker_rate": 0.7017,
+    "seconds": 60.21020691603189
+  },
+  "runtime": {
+    "seconds": 682.7741968340124,
+    "lineups_played": 17,
+    "workers": 8,
+    "torch_threads_per_worker": 1
+  },
+  "command": [
+    "python",
+    "-m",
+    "eval.crossplay",
+    "--model",
+    ".work/runpod-b8/results/runs/league/run/latest.pt",
+    "--deals",
+    "5000",
+    "--workers",
+    "8",
+    "--extra-partners",
+    ".work/runpod-b8/results/runs/frozen/run/latest.pt",
+    ".work/runpod-b8/payload/artifacts/ppo-a.pt",
+    "--out",
+    ".work/crossplay/b8-league.json"
+  ]
+}
