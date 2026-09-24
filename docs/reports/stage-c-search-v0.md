@@ -78,3 +78,25 @@ duplicate/held-out comparison.
   verify two-deck conservation, known tribute cards, anti-tribute red joker
   holders, non-anti private flags, clone replay, finite configuration and budget
   fallback.
+
+## Overnight independent validation
+
+The fixed 500 ms configuration was subsequently evaluated against the same
+frozen B11 blueprint, using internal house rules and independent deals. No
+parameters were changed between these runs.
+
+| Dataset | Duplicate deals | Seed | Net levels/round [bootstrap 95%] |
+|---|---:|---:|---:|
+| Development extension | 1,000 | 2026092427 | +0.0420 [+0.0185, +0.0675] |
+| Independent validation | 4,000 | 2026092463 | +0.0490 [+0.0381, +0.0601] |
+
+The independent run took 582.38 seconds. Search triggered 38,995 times,
+completed all triggers, and overrode the blueprint 774 times. Additional
+search latency was p50 9.66 ms, p95 30.41 ms, maximum 114.68 ms.
+This supports a small advantage in this particular paired matchup against B11.
+It does not establish transfer to DanLM, unfamiliar partners, full matches,
+or learned-belief G9. A separate transfer audit is in progress.
+
+Raw outcomes and latency data are retained in
+`.work/overnight-20260924/search-1000.json` and
+`.work/overnight-20260924/search-4000-heldout.json` in the canonical checkout.
