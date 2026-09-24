@@ -75,6 +75,9 @@ environments before extending the walltime.
 
 ## RunPod test-node lifecycle
 
+For choosing hosts and running arms in parallel, see the suggestions in
+[`COMPUTE_GUIDE.md`](COMPUTE_GUIDE.md).
+
 `infra.runpod` uses the standard library. Supply `RUNPOD_API_KEY` through the
 environment, or explicitly select a local dotenv file with `--env-file`.
 The selected file overrides the inherited key; the helper reads only its

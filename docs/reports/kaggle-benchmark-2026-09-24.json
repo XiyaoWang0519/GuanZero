@@ -1,0 +1,212 @@
+{
+  "kernel_status": "COMPLETE",
+  "kernel_version": 2,
+  "hardware": {
+    "python": "3.12.13 (main, Mar  4 2026, 09:23:07) [GCC 11.4.0]",
+    "torch": "2.10.0+cu128",
+    "cuda": "12.8",
+    "gpu_count": 2,
+    "gpus": [
+      {
+        "name": "Tesla T4",
+        "memory_bytes": 15636037632
+      },
+      {
+        "name": "Tesla T4",
+        "memory_bytes": 15636037632
+      }
+    ],
+    "cpu_count": 4,
+    "host": {
+      "platform": "Linux-6.12.90+-x86_64-with-glibc2.35",
+      "cpu_model": "Intel(R) Xeon(R) CPU @ 2.00GHz",
+      "cpu_count": 4,
+      "affinity_cpus": 4,
+      "cgroup_cpu_max": "400000 100000",
+      "cgroup_quota_cpus": 4.0,
+      "cgroup_cpu_stat": {
+        "usage_usec": "8135968",
+        "user_usec": "6143568",
+        "system_usec": "1992399",
+        "nice_usec": "0",
+        "core_sched.force_idle_usec": "0",
+        "nr_periods": "136",
+        "nr_throttled": "0",
+        "throttled_usec": "0",
+        "nr_bursts": "0",
+        "burst_usec": "0"
+      },
+      "usable_cpus": 4,
+      "loadavg": [
+        0.2958984375,
+        0.17578125,
+        0.09912109375
+      ],
+      "omp_num_threads": null,
+      "gpu": "Tesla T4, 1, 16, 1590 MHz, 70.00 W\nTesla T4, 1, 16, 1590 MHz, 70.00 W"
+    }
+  },
+  "completion": {
+    "success": true,
+    "wall_seconds": 337.941085617,
+    "all_child_processes_stopped": true,
+    "source_commit": "4940246",
+    "payload_sha256": "e550ad5ac6fe6da92dd309c50fa867f85cf46c4113cb25f53a6bf674e774d33e",
+    "max_script_seconds": 720
+  },
+  "benchmark": {
+    "single": {
+      "fast_rollout": true,
+      "fused_opponent": false,
+      "league_fused": true,
+      "actor_processes": 0,
+      "device": "cuda",
+      "gpu": "Tesla T4",
+      "num_envs": 2048,
+      "num_threads": 3,
+      "torch_threads": 1,
+      "rollout_steps": 64,
+      "epochs": 4,
+      "minibatch_size": 8192,
+      "candidate_chunk": 32768,
+      "opponent": "league:cfg/league.json",
+      "updates": 17,
+      "wall_seconds": 120.42945244499998,
+      "decisions_per_second": 18502.317786569925,
+      "updates_per_second": 0.1411614821363062,
+      "learner_decisions_per_second": 9161.629299144159,
+      "samples_per_second": 9231.097355588414,
+      "optimizer_steps": 564,
+      "collect_seconds": 52.792156180999996,
+      "learn_seconds": 67.6243726910003,
+      "collect_decisions_per_second": 42207.482345681165,
+      "cuda_peak_allocated_mib": 1190.3701171875,
+      "league": {
+        "pool_size": 15.0,
+        "active_models": 9.0,
+        "cached_models": 8.0,
+        "snapshots": 0.0,
+        "imports": 0.0,
+        "forward_calls": 9728.0
+      },
+      "league_snapshot_every": 100,
+      "tiny": false
+    },
+    "notes": [
+      "Fixed overnight source4940246, B11 warm start, same initial league.",
+      "Throughput only; warmup excluded. No strength or checkpoint promotion.",
+      "Dual case splits total2048 environments across independent tasks sharing CPUs."
+    ],
+    "dual": [
+      {
+        "fast_rollout": true,
+        "fused_opponent": false,
+        "league_fused": true,
+        "actor_processes": 0,
+        "device": "cuda",
+        "gpu": "Tesla T4",
+        "num_envs": 1024,
+        "num_threads": 1,
+        "torch_threads": 1,
+        "rollout_steps": 64,
+        "epochs": 4,
+        "minibatch_size": 8192,
+        "candidate_chunk": 32768,
+        "opponent": "league:cfg/league.json",
+        "updates": 26,
+        "wall_seconds": 121.38992342799997,
+        "decisions_per_second": 14036.881743406451,
+        "updates_per_second": 0.2141858176178963,
+        "learner_decisions_per_second": 6930.682351892324,
+        "samples_per_second": 6969.8289290200255,
+        "optimizer_steps": 452,
+        "collect_seconds": 64.50613105800016,
+        "learn_seconds": 56.86504565400014,
+        "collect_decisions_per_second": 26415.101511326415,
+        "cuda_peak_allocated_mib": 1186.17138671875,
+        "league": {
+          "pool_size": 15.0,
+          "active_models": 9.0,
+          "cached_models": 8.0,
+          "snapshots": 0.0,
+          "imports": 0.0,
+          "forward_calls": 14336.0
+        },
+        "league_snapshot_every": 100,
+        "tiny": false
+      },
+      {
+        "fast_rollout": true,
+        "fused_opponent": false,
+        "league_fused": true,
+        "actor_processes": 0,
+        "device": "cuda",
+        "gpu": "Tesla T4",
+        "num_envs": 1024,
+        "num_threads": 1,
+        "torch_threads": 1,
+        "rollout_steps": 64,
+        "epochs": 4,
+        "minibatch_size": 8192,
+        "candidate_chunk": 32768,
+        "opponent": "league:cfg/league.json",
+        "updates": 28,
+        "wall_seconds": 123.77830221800002,
+        "decisions_per_second": 14824.9569360562,
+        "updates_per_second": 0.22621089074792786,
+        "learner_decisions_per_second": 7323.416008756488,
+        "samples_per_second": 7363.762336913457,
+        "optimizer_steps": 484,
+        "collect_seconds": 69.98426384499999,
+        "learn_seconds": 53.772863615999654,
+        "collect_decisions_per_second": 26220.294380235904,
+        "cuda_peak_allocated_mib": 1184.10595703125,
+        "league": {
+          "pool_size": 15.0,
+          "active_models": 9.0,
+          "cached_models": 8.0,
+          "snapshots": 0.0,
+          "imports": 0.0,
+          "forward_calls": 15360.0
+        },
+        "league_snapshot_every": 100,
+        "tiny": false
+      }
+    ],
+    "dual_aggregate_decisions_per_second": 28861.83867946265,
+    "dual_speedup_vs_single": 1.5599039543257804,
+    "total_wall_seconds": 337.881052434
+  },
+  "quota": {
+    "used_hours": 0.1,
+    "remaining_hours": 29.9,
+    "total_hours": 30,
+    "refresh_at": "2026-09-26T00:00:00",
+    "initial_used_hours": 0,
+    "precision_note": "CLI rounded hours; account-level counter"
+  },
+  "paid_cost_usd": 0,
+  "sha256": {
+    ".work/kaggle-benchmark-20260924/results/guanzero-t4-benchmark-20260924.log": "b3e54f3a3e3497befeb3af6ede20125f69f0b740f597ffd0f55e3cc7a3f2e820",
+    ".work/kaggle-benchmark-20260924/results/results/benchmark-config.json": "edd115c96c7ab4350584a48f788ecd23e5191fa65c13ef7631a8ab1f48fc1b58",
+    ".work/kaggle-benchmark-20260924/results/results/benchmark-summary.json": "c1ce4ebc10b045985de5474ed0448bccc4e4e41f571a8032bb0b493ca4237581",
+    ".work/kaggle-benchmark-20260924/results/results/compile.log": "28a38934d8ea51bbeb788056dff4bcd493c0c461dcfcab64fdb2562002bf9da2",
+    ".work/kaggle-benchmark-20260924/results/results/completion.json": "ed869c57dafe5038029b93c8b449b389a94978273067130bfefc3318398fc57a",
+    ".work/kaggle-benchmark-20260924/results/results/configure.log": "0f25b37efca2845c469f29f4a9041dcde806af5f32ea80922fc6da0b619c01cb",
+    ".work/kaggle-benchmark-20260924/results/results/cpp-tests.log": "071e501c4f8d6c9c1fc2b328b8c2398601d44d1d0661785c51c1366ec46939bf",
+    ".work/kaggle-benchmark-20260924/results/results/cuda-smoke.log": "4c3c50f88f8b72a3d79fed42d4b7f9b19243a37fb7d9998bd4dc123c30ef614d",
+    ".work/kaggle-benchmark-20260924/results/results/dependencies.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    ".work/kaggle-benchmark-20260924/results/results/dual-0.json": "e58b66ea206908f3c08667d0f94d6c1d47698f43d57417f43ae4c61f5ad7c968",
+    ".work/kaggle-benchmark-20260924/results/results/dual-0.log": "06db5d16442256da0d9e9a2356276ef8de57e76764d28efa897495cdfcbb585d",
+    ".work/kaggle-benchmark-20260924/results/results/dual-1.json": "43e65947da7c44b0880bf6da6ad2771b4e957c458d849ec990b4a35942c35239",
+    ".work/kaggle-benchmark-20260924/results/results/dual-1.log": "1294a2931cf376f4600f0b3c865b7d7d7044c5315236fc78fd0ed625c414d613",
+    ".work/kaggle-benchmark-20260924/results/results/events.jsonl": "c201129bb03e1f1ec83cd8817bf4515391020d9ea684068c52000b6dcb600893",
+    ".work/kaggle-benchmark-20260924/results/results/gpu-samples.jsonl": "a4ee00ba2d6367a0c0cd8b8789921d9044f6f359c0304a15452e517b836b1328",
+    ".work/kaggle-benchmark-20260924/results/results/hardware.json": "e79f50a77d20d5f49e333136a779e16442add8f67a7c7d16db06c61f34616fea",
+    ".work/kaggle-benchmark-20260924/results/results/single-2048.json": "7957f604c5bf2e0f318a5fcb4499b17d267aa0d30954bfeeba15b2d020f895fe",
+    ".work/kaggle-benchmark-20260924/results/results/single-2048.log": "2e6660b83fdd071a7efd83e773f93cb16a8ba7cec2960de1f5b4ff5ac09a22fd",
+    ".work/kaggle-benchmark-20260924/results/results/smoke-config.json": "c45dc2181a4af787f544d8de498ad29e572e9c4ff644736bdf1c3562f752f433",
+    ".work/kaggle-benchmark-20260924/results/results/smoke.json": "962fb5ee16377fb95772df65b982454811c9b5ad4c0dd4b610f00e2d4e8aeeec",
+    ".work/kaggle-benchmark-20260924/kernel/benchmark.py": "1adcc5cefcef26db33cc0d684a25250d1e6459eb22f856e0464bd22e849e4393"
+  }
+}
