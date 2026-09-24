@@ -18,6 +18,10 @@ print(json.dumps({"python": sys.version.split()[0], "torch": torch.__version__,
                   "gpu_memory_gib": device.total_memory / 2**30,
                   "cpu_count": os.cpu_count(), "bf16": torch.cuda.is_bf16_supported()}))
 PY
+# CPU model, cpuset, cgroup quota and throttling, GPU link: provenance for
+# comparing pods, and the CPU budget that thread counts must come from.
+"$PY" -m infra.cpu_budget --facts "${HOST_FACTS:-runs/host-facts.json}"
+"$PY" -m infra.cpu_budget
 if ! command -v g++ >/dev/null || ! command -v rsync >/dev/null; then
   apt-get update
   apt-get install -y --no-install-recommends build-essential rsync

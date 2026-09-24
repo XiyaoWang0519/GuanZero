@@ -634,9 +634,20 @@ export PYTHONPATH=python:.
 .venv/bin/python bench/ppo_throughput.py --config train/configs/b8-league.json --device cuda --actors 0 4 8
 ```
 
-On a pod, size `num_threads` and `torch_threads` from `nproc --all`. GNU
-`nproc` honours `OMP_NUM_THREADS`, and B11 lost most of its host that way.
-Keep the league's `max_active_models` above the pool's number of network
+On a pod, size `num_threads` and `torch_threads` with `infra/cpu_budget.py`,
+before exporting `OMP_NUM_THREADS`, and save the host facts into the run:
+
+```sh
+# add --actors W when each arm runs W actor processes (num_threads is per actor)
+THREADS=$(python -m infra.cpu_budget --arms 3 --field engine_threads)
+TORCH=$(python -m infra.cpu_budget --arms 3 --field torch_threads)
+python -m infra.cpu_budget --facts runs/host-facts.json
+```
+
+Do not use `nproc`: GNU `nproc` honours `OMP_NUM_THREADS` (B11 phase 1 ran 4
+engine threads per arm on 64 vCPUs that way), and `nproc --all` or
+`os.cpu_count()` ignore the cpuset and the CPU quota (a B8-type host showed
+256 CPUs with 32 allocated). Keep the league's `max_active_models` above the pool's number of network
 entries. With thousands of environments a lower cap means new snapshots and
 imports are almost never drawn (B11 report). After each new entry appears,
 check `league/<name>/games` in `metrics.jsonl`.
