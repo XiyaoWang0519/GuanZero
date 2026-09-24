@@ -1,0 +1,2418 @@
+{
+  "status": "bounded_uniform_search_probe_not_G9",
+  "checkpoint_id": "8e872130189af48adb262a0b218bcc82e711b31f5804272c1dd50854b629bc3e",
+  "config": {
+    "unseen_threshold": 12,
+    "time_ms": 20.0,
+    "max_actions": 4,
+    "max_worlds": 4,
+    "min_worlds": 2,
+    "max_rollout_steps": 120,
+    "prior_blueprint": 0.7,
+    "kl_temperature": 1.0,
+    "value_margin": 0.5
+  },
+  "deals": 64,
+  "seed": 20260924,
+  "duplicate": {
+    "deals": 64,
+    "rounds": 128,
+    "score_definition": "(A net level gain in leg 1 + A net level gain in leg 2) / 2",
+    "mean_net_levels_per_round": 0.0625,
+    "bootstrap_95_ci": [
+      0.0,
+      0.140625
+    ],
+    "mean_pair_difference": 0.125,
+    "banker_rate": 0.5078125,
+    "double_win_rate": 0.2265625,
+    "opponent_double_win_rate": 0.203125,
+    "mean_finish_order_award_per_round": 1.0703125,
+    "pair_scores": [
+      2.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.5,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.5,
+      0.0,
+      0.5,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      -0.5,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "results": [
+      {
+        "first": {
+          "order": [
+            0,
+            3,
+            1,
+            2
+          ],
+          "winning_team": 0,
+          "gain": 1,
+          "seat_return": [
+            1,
+            -1,
+            1,
+            -1
+          ],
+          "decisions": 59
+        },
+        "swapped": {
+          "order": [
+            3,
+            1,
+            2,
+            0
+          ],
+          "winning_team": 1,
+          "gain": 3,
+          "seat_return": [
+            -3,
+            3,
+            -3,
+            3
+          ],
+          "decisions": 65
+        }
+      },
+      {
+        "first": {
+          "order": [
+            3,
+            1,
+            2,
+            0
+          ],
+          "winning_team": 1,
+          "gain": 3,
+          "seat_return": [
+            -3,
+            3,
+            -3,
+            3
+          ],
+          "decisions": 56
+        },
+        "swapped": {
+          "order": [
+            3,
+            1,
+            2,
+            0
+          ],
+          "winning_team": 1,
+          "gain": 3,
+          "seat_return": [
+            -3,
+            3,
+            -3,
+            3
+          ],
+          "decisions": 56
+        }
+      },
+      {
+        "first": {
+          "order": [
+            2,
+            0,
+            1,
+            3
+          ],
+          "winning_team": 0,
+          "gain": 3,
+          "seat_return": [
+            3,
+            -3,
+            3,
+            -3
+          ],
+          "decisions": 62
+        },
+        "swapped": {
+          "order": [
+            2,
+            0,
+            1,
+            3
+          ],
+          "winning_team": 0,
+          "gain": 3,
+          "seat_return": [
+            3,
+            -3,
+            3,
+            -3
+          ],
+          "decisions": 62
+        }
+      },
+      {
+        "first": {
+          "order": [
+            3,
+            0,
+            2,
+            1
+          ],
+          "winning_team": 1,
+          "gain": 1,
+          "seat_return": [
+            -1,
+            1,
+            -1,
+            1
+          ],
+          "decisions": 77
+        },
+        "swapped": {
+          "order": [
+            3,
+            0,
+            2,
+            1
+          ],
+          "winning_team": 1,
+          "gain": 1,
+          "seat_return": [
+            -1,
+            1,
+            -1,
+            1
+          ],
+          "decisions": 77
+        }
+      },
+      {
+        "first": {
+          "order": [
+            2,
+            0,
+            1,
+            3
+          ],
+          "winning_team": 0,
+          "gain": 3,
+          "seat_return": [
+            3,
+            -3,
+            3,
+            -3
+          ],
+          "decisions": 86
+        },
+        "swapped": {
+          "order": [
+            2,
+            0,
+            1,
+            3
+          ],
+          "winning_team": 0,
+          "gain": 3,
+          "seat_return": [
+            3,
+            -3,
+            3,
+            -3
+          ],
+          "decisions": 88
+        }
+      },
+      {
+        "first": {
+          "order": [
+            2,
+            3,
+            1,
+            0
+          ],
+          "winning_team": 0,
+          "gain": 1,
+          "seat_return": [
+            1,
+            -1,
+            1,
+            -1
+          ],
+          "decisions": 80
+        },
+        "swapped": {
+          "order": [
+            2,
+            3,
+            1,
+            0
+          ],
+          "winning_team": 0,
+          "gain": 1,
+          "seat_return": [
+            1,
+            -1,
+            1,
+            -1
+          ],
+          "decisions": 80
+        }
+      },
+      {
+        "first": {
+          "order": [
+            0,
+            2,
+            3,
+            1
+          ],
+          "winning_team": 0,
+          "gain": 3,
+          "seat_return": [
+            3,
+            -3,
+            3,
+            -3
+          ],
+          "decisions": 64
+        },
+        "swapped": {
+          "order": [
+            0,
+            2,
+            3,
+            1
+          ],
+          "winning_team": 0,
+          "gain": 3,
+          "seat_return": [
+            3,
+            -3,
+            3,
+            -3
+          ],
+          "decisions": 66
+        }
+      },
+      {
+        "first": {
+          "order": [
+            0,
+            2,
+            3,
+            1
+          ],
+          "winning_team": 0,
+          "gain": 3,
+          "seat_return": [
+            3,
+            -3,
+            3,
+            -3
+          ],
+          "decisions": 73
+        },
+        "swapped": {
+          "order": [
+            2,
+            3,
+            1,
+            0
+          ],
+          "winning_team": 0,
+          "gain": 1,
+          "seat_return": [
+            1,
+            -1,
+            1,
+            -1
+          ],
+          "decisions": 80
+        }
+      },
+      {
+        "first": {
+          "order": [
+            3,
+            2,
+            0,
+            1
+          ],
+          "winning_team": 1,
+          "gain": 1,
+          "seat_return": [
+            -1,
+            1,
+            -1,
+            1
+          ],
+          "decisions": 71
+        },
+        "swapped": {
+          "order": [
+            3,
+            2,
+            0,
+            1
+          ],
+          "winning_team": 1,
+          "gain": 1,
+          "seat_return": [
+            -1,
+            1,
+            -1,
+            1
+          ],
+          "decisions": 68
+        }
+      },
+      {
+        "first": {
+          "order": [
+            2,
+            0,
+            1,
+            3
+          ],
+          "winning_team": 0,
+          "gain": 3,
+          "seat_return": [
+            3,
+            -3,
+            3,
+            -3
+          ],
+          "decisions": 88
+        },
+        "swapped": {
+          "order": [
+            2,
+            0,
+            1,
+            3
+          ],
+          "winning_team": 0,
+          "gain": 3,
+          "seat_return": [
+            3,
+            -3,
+            3,
+            -3
+          ],
+          "decisions": 88
+        }
+      },
+      {
+        "first": {
+          "order": [
+            1,
+            2,
+            3,
+            0
+          ],
+          "winning_team": 1,
+          "gain": 2,
+          "seat_return": [
+            -2,
+            2,
+            -2,
+            2
+          ],
+          "decisions": 78
+        },
+        "swapped": {
+          "order": [
+            1,
+            2,
+            3,
+            0
+          ],
+          "winning_team": 1,
+          "gain": 2,
+          "seat_return": [
+            -2,
+            2,
+            -2,
+            2
+          ],
+          "decisions": 78
+        }
+      },
+      {
+        "first": {
+          "order": [
+            1,
+            0,
+            2,
+            3
+          ],
+          "winning_team": 1,
+          "gain": 1,
+          "seat_return": [
+            -1,
+            1,
+            -1,
+            1
+          ],
+          "decisions": 68
+        },
+        "swapped": {
+          "order": [
+            1,
+            0,
+            2,
+            3
+          ],
+          "winning_team": 1,
+          "gain": 1,
+          "seat_return": [
+            -1,
+            1,
+            -1,
+            1
+          ],
+          "decisions": 68
+        }
+      },
+      {
+        "first": {
+          "order": [
+            2,
+            0,
+            1,
+            3
+          ],
+          "winning_team": 0,
+          "gain": 3,
+          "seat_return": [
+            3,
+            -3,
+            3,
+            -3
+          ],
+          "decisions": 75
+        },
+        "swapped": {
+          "order": [
+            2,
+            0,
+            1,
+            3
+          ],
+          "winning_team": 0,
+          "gain": 3,
+          "seat_return": [
+            3,
+            -3,
+            3,
+            -3
+          ],
+          "decisions": 68
+        }
+      },
+      {
+        "first": {
+          "order": [
+            3,
+            1,
+            2,
+            0
+          ],
+          "winning_team": 1,
+          "gain": 3,
+          "seat_return": [
+            -3,
+            3,
+            -3,
+            3
+          ],
+          "decisions": 89
+        },
+        "swapped": {
+          "order": [
+            3,
+            1,
+            2,
+            0
+          ],
+          "winning_team": 1,
+          "gain": 3,
+          "seat_return": [
+            -3,
+            3,
+            -3,
+            3
+          ],
+          "decisions": 89
+        }
+      },
+      {
+        "first": {
+          "order": [
+            0,
+            2,
+            3,
+            1
+          ],
+          "winning_team": 0,
+          "gain": 3,
+          "seat_return": [
+            3,
+            -3,
+            3,
+            -3
+          ],
+          "decisions": 59
+        },
+        "swapped": {
+          "order": [
+            0,
+            2,
+            3,
+            1
+          ],
+          "winning_team": 0,
+          "gain": 3,
+          "seat_return": [
+            3,
+            -3,
+            3,
+            -3
+          ],
+          "decisions": 59
+        }
+      },
+      {
+        "first": {
+          "order": [
+            2,
+            3,
+            0,
+            1
+          ],
+          "winning_team": 0,
+          "gain": 2,
+          "seat_return": [
+            2,
+            -2,
+            2,
+            -2
+          ],
+          "decisions": 79
+        },
+        "swapped": {
+          "order": [
+            2,
+            3,
+            1,
+            0
+          ],
+          "winning_team": 0,
+          "gain": 1,
+          "seat_return": [
+            1,
+            -1,
+            1,
+            -1
+          ],
+          "decisions": 77
+        }
+      },
+      {
+        "first": {
+          "order": [
+            1,
+            0,
+            2,
+            3
+          ],
+          "winning_team": 1,
+          "gain": 1,
+          "seat_return": [
+            -1,
+            1,
+            -1,
+            1
+          ],
+          "decisions": 71
+        },
+        "swapped": {
+          "order": [
+            1,
+            0,
+            2,
+            3
+          ],
+          "winning_team": 1,
+          "gain": 1,
+          "seat_return": [
+            -1,
+            1,
+            -1,
+            1
+          ],
+          "decisions": 71
+        }
+      },
+      {
+        "first": {
+          "order": [
+            2,
+            3,
+            0,
+            1
+          ],
+          "winning_team": 0,
+          "gain": 2,
+          "seat_return": [
+            2,
+            -2,
+            2,
+            -2
+          ],
+          "decisions": 68
+        },
+        "swapped": {
+          "order": [
+            2,
+            3,
+            0,
+            1
+          ],
+          "winning_team": 0,
+          "gain": 2,
+          "seat_return": [
+            2,
+            -2,
+            2,
+            -2
+          ],
+          "decisions": 68
+        }
+      },
+      {
+        "first": {
+          "order": [
+            0,
+            3,
+            2,
+            1
+          ],
+          "winning_team": 0,
+          "gain": 2,
+          "seat_return": [
+            2,
+            -2,
+            2,
+            -2
+          ],
+          "decisions": 68
+        },
+        "swapped": {
+          "order": [
+            0,
+            3,
+            2,
+            1
+          ],
+          "winning_team": 0,
+          "gain": 2,
+          "seat_return": [
+            2,
+            -2,
+            2,
+            -2
+          ],
+          "decisions": 68
+        }
+      },
+      {
+        "first": {
+          "order": [
+            2,
+            0,
+            1,
+            3
+          ],
+          "winning_team": 0,
+          "gain": 3,
+          "seat_return": [
+            3,
+            -3,
+            3,
+            -3
+          ],
+          "decisions": 66
+        },
+        "swapped": {
+          "order": [
+            2,
+            0,
+            1,
+            3
+          ],
+          "winning_team": 0,
+          "gain": 3,
+          "seat_return": [
+            3,
+            -3,
+            3,
+            -3
+          ],
+          "decisions": 66
+        }
+      },
+      {
+        "first": {
+          "order": [
+            3,
+            2,
+            1,
+            0
+          ],
+          "winning_team": 1,
+          "gain": 2,
+          "seat_return": [
+            -2,
+            2,
+            -2,
+            2
+          ],
+          "decisions": 66
+        },
+        "swapped": {
+          "order": [
+            3,
+            2,
+            1,
+            0
+          ],
+          "winning_team": 1,
+          "gain": 2,
+          "seat_return": [
+            -2,
+            2,
+            -2,
+            2
+          ],
+          "decisions": 66
+        }
+      },
+      {
+        "first": {
+          "order": [
+            3,
+            2,
+            1,
+            0
+          ],
+          "winning_team": 1,
+          "gain": 2,
+          "seat_return": [
+            -2,
+            2,
+            -2,
+            2
+          ],
+          "decisions": 85
+        },
+        "swapped": {
+          "order": [
+            3,
+            2,
+            1,
+            0
+          ],
+          "winning_team": 1,
+          "gain": 2,
+          "seat_return": [
+            -2,
+            2,
+            -2,
+            2
+          ],
+          "decisions": 85
+        }
+      },
+      {
+        "first": {
+          "order": [
+            3,
+            2,
+            0,
+            1
+          ],
+          "winning_team": 1,
+          "gain": 1,
+          "seat_return": [
+            -1,
+            1,
+            -1,
+            1
+          ],
+          "decisions": 73
+        },
+        "swapped": {
+          "order": [
+            3,
+            2,
+            0,
+            1
+          ],
+          "winning_team": 1,
+          "gain": 1,
+          "seat_return": [
+            -1,
+            1,
+            -1,
+            1
+          ],
+          "decisions": 73
+        }
+      },
+      {
+        "first": {
+          "order": [
+            3,
+            0,
+            1,
+            2
+          ],
+          "winning_team": 1,
+          "gain": 2,
+          "seat_return": [
+            -2,
+            2,
+            -2,
+            2
+          ],
+          "decisions": 64
+        },
+        "swapped": {
+          "order": [
+            3,
+            0,
+            1,
+            2
+          ],
+          "winning_team": 1,
+          "gain": 2,
+          "seat_return": [
+            -2,
+            2,
+            -2,
+            2
+          ],
+          "decisions": 64
+        }
+      },
+      {
+        "first": {
+          "order": [
+            3,
+            1,
+            2,
+            0
+          ],
+          "winning_team": 1,
+          "gain": 3,
+          "seat_return": [
+            -3,
+            3,
+            -3,
+            3
+          ],
+          "decisions": 49
+        },
+        "swapped": {
+          "order": [
+            3,
+            1,
+            2,
+            0
+          ],
+          "winning_team": 1,
+          "gain": 3,
+          "seat_return": [
+            -3,
+            3,
+            -3,
+            3
+          ],
+          "decisions": 49
+        }
+      },
+      {
+        "first": {
+          "order": [
+            3,
+            1,
+            2,
+            0
+          ],
+          "winning_team": 1,
+          "gain": 3,
+          "seat_return": [
+            -3,
+            3,
+            -3,
+            3
+          ],
+          "decisions": 76
+        },
+        "swapped": {
+          "order": [
+            1,
+            3,
+            0,
+            2
+          ],
+          "winning_team": 1,
+          "gain": 3,
+          "seat_return": [
+            -3,
+            3,
+            -3,
+            3
+          ],
+          "decisions": 73
+        }
+      },
+      {
+        "first": {
+          "order": [
+            1,
+            0,
+            3,
+            2
+          ],
+          "winning_team": 1,
+          "gain": 2,
+          "seat_return": [
+            -2,
+            2,
+            -2,
+            2
+          ],
+          "decisions": 81
+        },
+        "swapped": {
+          "order": [
+            1,
+            0,
+            3,
+            2
+          ],
+          "winning_team": 1,
+          "gain": 2,
+          "seat_return": [
+            -2,
+            2,
+            -2,
+            2
+          ],
+          "decisions": 81
+        }
+      },
+      {
+        "first": {
+          "order": [
+            3,
+            0,
+            1,
+            2
+          ],
+          "winning_team": 1,
+          "gain": 2,
+          "seat_return": [
+            -2,
+            2,
+            -2,
+            2
+          ],
+          "decisions": 69
+        },
+        "swapped": {
+          "order": [
+            3,
+            0,
+            1,
+            2
+          ],
+          "winning_team": 1,
+          "gain": 2,
+          "seat_return": [
+            -2,
+            2,
+            -2,
+            2
+          ],
+          "decisions": 69
+        }
+      },
+      {
+        "first": {
+          "order": [
+            3,
+            1,
+            2,
+            0
+          ],
+          "winning_team": 1,
+          "gain": 3,
+          "seat_return": [
+            -3,
+            3,
+            -3,
+            3
+          ],
+          "decisions": 83
+        },
+        "swapped": {
+          "order": [
+            3,
+            1,
+            2,
+            0
+          ],
+          "winning_team": 1,
+          "gain": 3,
+          "seat_return": [
+            -3,
+            3,
+            -3,
+            3
+          ],
+          "decisions": 83
+        }
+      },
+      {
+        "first": {
+          "order": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "winning_team": 0,
+          "gain": 2,
+          "seat_return": [
+            2,
+            -2,
+            2,
+            -2
+          ],
+          "decisions": 84
+        },
+        "swapped": {
+          "order": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "winning_team": 0,
+          "gain": 2,
+          "seat_return": [
+            2,
+            -2,
+            2,
+            -2
+          ],
+          "decisions": 84
+        }
+      },
+      {
+        "first": {
+          "order": [
+            2,
+            0,
+            1,
+            3
+          ],
+          "winning_team": 0,
+          "gain": 3,
+          "seat_return": [
+            3,
+            -3,
+            3,
+            -3
+          ],
+          "decisions": 61
+        },
+        "swapped": {
+          "order": [
+            2,
+            0,
+            1,
+            3
+          ],
+          "winning_team": 0,
+          "gain": 3,
+          "seat_return": [
+            3,
+            -3,
+            3,
+            -3
+          ],
+          "decisions": 61
+        }
+      },
+      {
+        "first": {
+          "order": [
+            1,
+            3,
+            0,
+            2
+          ],
+          "winning_team": 1,
+          "gain": 3,
+          "seat_return": [
+            -3,
+            3,
+            -3,
+            3
+          ],
+          "decisions": 73
+        },
+        "swapped": {
+          "order": [
+            1,
+            3,
+            0,
+            2
+          ],
+          "winning_team": 1,
+          "gain": 3,
+          "seat_return": [
+            -3,
+            3,
+            -3,
+            3
+          ],
+          "decisions": 73
+        }
+      },
+      {
+        "first": {
+          "order": [
+            2,
+            0,
+            1,
+            3
+          ],
+          "winning_team": 0,
+          "gain": 3,
+          "seat_return": [
+            3,
+            -3,
+            3,
+            -3
+          ],
+          "decisions": 62
+        },
+        "swapped": {
+          "order": [
+            2,
+            0,
+            1,
+            3
+          ],
+          "winning_team": 0,
+          "gain": 3,
+          "seat_return": [
+            3,
+            -3,
+            3,
+            -3
+          ],
+          "decisions": 61
+        }
+      },
+      {
+        "first": {
+          "order": [
+            1,
+            3,
+            0,
+            2
+          ],
+          "winning_team": 1,
+          "gain": 3,
+          "seat_return": [
+            -3,
+            3,
+            -3,
+            3
+          ],
+          "decisions": 55
+        },
+        "swapped": {
+          "order": [
+            1,
+            3,
+            0,
+            2
+          ],
+          "winning_team": 1,
+          "gain": 3,
+          "seat_return": [
+            -3,
+            3,
+            -3,
+            3
+          ],
+          "decisions": 55
+        }
+      },
+      {
+        "first": {
+          "order": [
+            2,
+            1,
+            3,
+            0
+          ],
+          "winning_team": 0,
+          "gain": 1,
+          "seat_return": [
+            1,
+            -1,
+            1,
+            -1
+          ],
+          "decisions": 78
+        },
+        "swapped": {
+          "order": [
+            2,
+            1,
+            3,
+            0
+          ],
+          "winning_team": 0,
+          "gain": 1,
+          "seat_return": [
+            1,
+            -1,
+            1,
+            -1
+          ],
+          "decisions": 78
+        }
+      },
+      {
+        "first": {
+          "order": [
+            3,
+            0,
+            2,
+            1
+          ],
+          "winning_team": 1,
+          "gain": 1,
+          "seat_return": [
+            -1,
+            1,
+            -1,
+            1
+          ],
+          "decisions": 76
+        },
+        "swapped": {
+          "order": [
+            3,
+            0,
+            2,
+            1
+          ],
+          "winning_team": 1,
+          "gain": 1,
+          "seat_return": [
+            -1,
+            1,
+            -1,
+            1
+          ],
+          "decisions": 76
+        }
+      },
+      {
+        "first": {
+          "order": [
+            2,
+            1,
+            0,
+            3
+          ],
+          "winning_team": 0,
+          "gain": 2,
+          "seat_return": [
+            2,
+            -2,
+            2,
+            -2
+          ],
+          "decisions": 71
+        },
+        "swapped": {
+          "order": [
+            0,
+            1,
+            3,
+            2
+          ],
+          "winning_team": 0,
+          "gain": 1,
+          "seat_return": [
+            1,
+            -1,
+            1,
+            -1
+          ],
+          "decisions": 70
+        }
+      },
+      {
+        "first": {
+          "order": [
+            1,
+            3,
+            0,
+            2
+          ],
+          "winning_team": 1,
+          "gain": 3,
+          "seat_return": [
+            -3,
+            3,
+            -3,
+            3
+          ],
+          "decisions": 84
+        },
+        "swapped": {
+          "order": [
+            1,
+            3,
+            0,
+            2
+          ],
+          "winning_team": 1,
+          "gain": 3,
+          "seat_return": [
+            -3,
+            3,
+            -3,
+            3
+          ],
+          "decisions": 84
+        }
+      },
+      {
+        "first": {
+          "order": [
+            0,
+            2,
+            3,
+            1
+          ],
+          "winning_team": 0,
+          "gain": 3,
+          "seat_return": [
+            3,
+            -3,
+            3,
+            -3
+          ],
+          "decisions": 67
+        },
+        "swapped": {
+          "order": [
+            0,
+            3,
+            2,
+            1
+          ],
+          "winning_team": 0,
+          "gain": 2,
+          "seat_return": [
+            2,
+            -2,
+            2,
+            -2
+          ],
+          "decisions": 75
+        }
+      },
+      {
+        "first": {
+          "order": [
+            0,
+            2,
+            3,
+            1
+          ],
+          "winning_team": 0,
+          "gain": 3,
+          "seat_return": [
+            3,
+            -3,
+            3,
+            -3
+          ],
+          "decisions": 60
+        },
+        "swapped": {
+          "order": [
+            0,
+            2,
+            3,
+            1
+          ],
+          "winning_team": 0,
+          "gain": 3,
+          "seat_return": [
+            3,
+            -3,
+            3,
+            -3
+          ],
+          "decisions": 62
+        }
+      },
+      {
+        "first": {
+          "order": [
+            2,
+            1,
+            3,
+            0
+          ],
+          "winning_team": 0,
+          "gain": 1,
+          "seat_return": [
+            1,
+            -1,
+            1,
+            -1
+          ],
+          "decisions": 90
+        },
+        "swapped": {
+          "order": [
+            2,
+            1,
+            3,
+            0
+          ],
+          "winning_team": 0,
+          "gain": 1,
+          "seat_return": [
+            1,
+            -1,
+            1,
+            -1
+          ],
+          "decisions": 90
+        }
+      },
+      {
+        "first": {
+          "order": [
+            2,
+            3,
+            0,
+            1
+          ],
+          "winning_team": 0,
+          "gain": 2,
+          "seat_return": [
+            2,
+            -2,
+            2,
+            -2
+          ],
+          "decisions": 87
+        },
+        "swapped": {
+          "order": [
+            2,
+            3,
+            0,
+            1
+          ],
+          "winning_team": 0,
+          "gain": 2,
+          "seat_return": [
+            2,
+            -2,
+            2,
+            -2
+          ],
+          "decisions": 87
+        }
+      },
+      {
+        "first": {
+          "order": [
+            0,
+            3,
+            1,
+            2
+          ],
+          "winning_team": 0,
+          "gain": 1,
+          "seat_return": [
+            1,
+            -1,
+            1,
+            -1
+          ],
+          "decisions": 74
+        },
+        "swapped": {
+          "order": [
+            0,
+            3,
+            1,
+            2
+          ],
+          "winning_team": 0,
+          "gain": 1,
+          "seat_return": [
+            1,
+            -1,
+            1,
+            -1
+          ],
+          "decisions": 74
+        }
+      },
+      {
+        "first": {
+          "order": [
+            2,
+            0,
+            1,
+            3
+          ],
+          "winning_team": 0,
+          "gain": 3,
+          "seat_return": [
+            3,
+            -3,
+            3,
+            -3
+          ],
+          "decisions": 89
+        },
+        "swapped": {
+          "order": [
+            2,
+            0,
+            1,
+            3
+          ],
+          "winning_team": 0,
+          "gain": 3,
+          "seat_return": [
+            3,
+            -3,
+            3,
+            -3
+          ],
+          "decisions": 92
+        }
+      },
+      {
+        "first": {
+          "order": [
+            0,
+            2,
+            3,
+            1
+          ],
+          "winning_team": 0,
+          "gain": 3,
+          "seat_return": [
+            3,
+            -3,
+            3,
+            -3
+          ],
+          "decisions": 79
+        },
+        "swapped": {
+          "order": [
+            0,
+            2,
+            3,
+            1
+          ],
+          "winning_team": 0,
+          "gain": 3,
+          "seat_return": [
+            3,
+            -3,
+            3,
+            -3
+          ],
+          "decisions": 79
+        }
+      },
+      {
+        "first": {
+          "order": [
+            2,
+            1,
+            3,
+            0
+          ],
+          "winning_team": 0,
+          "gain": 1,
+          "seat_return": [
+            1,
+            -1,
+            1,
+            -1
+          ],
+          "decisions": 76
+        },
+        "swapped": {
+          "order": [
+            2,
+            1,
+            3,
+            0
+          ],
+          "winning_team": 0,
+          "gain": 1,
+          "seat_return": [
+            1,
+            -1,
+            1,
+            -1
+          ],
+          "decisions": 76
+        }
+      },
+      {
+        "first": {
+          "order": [
+            0,
+            3,
+            1,
+            2
+          ],
+          "winning_team": 0,
+          "gain": 1,
+          "seat_return": [
+            1,
+            -1,
+            1,
+            -1
+          ],
+          "decisions": 76
+        },
+        "swapped": {
+          "order": [
+            0,
+            3,
+            1,
+            2
+          ],
+          "winning_team": 0,
+          "gain": 1,
+          "seat_return": [
+            1,
+            -1,
+            1,
+            -1
+          ],
+          "decisions": 76
+        }
+      },
+      {
+        "first": {
+          "order": [
+            1,
+            2,
+            0,
+            3
+          ],
+          "winning_team": 1,
+          "gain": 1,
+          "seat_return": [
+            -1,
+            1,
+            -1,
+            1
+          ],
+          "decisions": 82
+        },
+        "swapped": {
+          "order": [
+            1,
+            2,
+            0,
+            3
+          ],
+          "winning_team": 1,
+          "gain": 1,
+          "seat_return": [
+            -1,
+            1,
+            -1,
+            1
+          ],
+          "decisions": 82
+        }
+      },
+      {
+        "first": {
+          "order": [
+            1,
+            2,
+            3,
+            0
+          ],
+          "winning_team": 1,
+          "gain": 2,
+          "seat_return": [
+            -2,
+            2,
+            -2,
+            2
+          ],
+          "decisions": 97
+        },
+        "swapped": {
+          "order": [
+            1,
+            2,
+            3,
+            0
+          ],
+          "winning_team": 1,
+          "gain": 2,
+          "seat_return": [
+            -2,
+            2,
+            -2,
+            2
+          ],
+          "decisions": 97
+        }
+      },
+      {
+        "first": {
+          "order": [
+            1,
+            3,
+            0,
+            2
+          ],
+          "winning_team": 1,
+          "gain": 3,
+          "seat_return": [
+            -3,
+            3,
+            -3,
+            3
+          ],
+          "decisions": 69
+        },
+        "swapped": {
+          "order": [
+            1,
+            3,
+            0,
+            2
+          ],
+          "winning_team": 1,
+          "gain": 3,
+          "seat_return": [
+            -3,
+            3,
+            -3,
+            3
+          ],
+          "decisions": 69
+        }
+      },
+      {
+        "first": {
+          "order": [
+            1,
+            2,
+            0,
+            3
+          ],
+          "winning_team": 1,
+          "gain": 1,
+          "seat_return": [
+            -1,
+            1,
+            -1,
+            1
+          ],
+          "decisions": 58
+        },
+        "swapped": {
+          "order": [
+            1,
+            2,
+            0,
+            3
+          ],
+          "winning_team": 1,
+          "gain": 1,
+          "seat_return": [
+            -1,
+            1,
+            -1,
+            1
+          ],
+          "decisions": 58
+        }
+      },
+      {
+        "first": {
+          "order": [
+            1,
+            2,
+            0,
+            3
+          ],
+          "winning_team": 1,
+          "gain": 1,
+          "seat_return": [
+            -1,
+            1,
+            -1,
+            1
+          ],
+          "decisions": 69
+        },
+        "swapped": {
+          "order": [
+            1,
+            2,
+            0,
+            3
+          ],
+          "winning_team": 1,
+          "gain": 1,
+          "seat_return": [
+            -1,
+            1,
+            -1,
+            1
+          ],
+          "decisions": 69
+        }
+      },
+      {
+        "first": {
+          "order": [
+            0,
+            1,
+            3,
+            2
+          ],
+          "winning_team": 0,
+          "gain": 1,
+          "seat_return": [
+            1,
+            -1,
+            1,
+            -1
+          ],
+          "decisions": 79
+        },
+        "swapped": {
+          "order": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "winning_team": 0,
+          "gain": 2,
+          "seat_return": [
+            2,
+            -2,
+            2,
+            -2
+          ],
+          "decisions": 79
+        }
+      },
+      {
+        "first": {
+          "order": [
+            0,
+            3,
+            1,
+            2
+          ],
+          "winning_team": 0,
+          "gain": 1,
+          "seat_return": [
+            1,
+            -1,
+            1,
+            -1
+          ],
+          "decisions": 78
+        },
+        "swapped": {
+          "order": [
+            0,
+            3,
+            1,
+            2
+          ],
+          "winning_team": 0,
+          "gain": 1,
+          "seat_return": [
+            1,
+            -1,
+            1,
+            -1
+          ],
+          "decisions": 78
+        }
+      },
+      {
+        "first": {
+          "order": [
+            0,
+            2,
+            3,
+            1
+          ],
+          "winning_team": 0,
+          "gain": 3,
+          "seat_return": [
+            3,
+            -3,
+            3,
+            -3
+          ],
+          "decisions": 75
+        },
+        "swapped": {
+          "order": [
+            0,
+            2,
+            3,
+            1
+          ],
+          "winning_team": 0,
+          "gain": 3,
+          "seat_return": [
+            3,
+            -3,
+            3,
+            -3
+          ],
+          "decisions": 75
+        }
+      },
+      {
+        "first": {
+          "order": [
+            2,
+            1,
+            0,
+            3
+          ],
+          "winning_team": 0,
+          "gain": 2,
+          "seat_return": [
+            2,
+            -2,
+            2,
+            -2
+          ],
+          "decisions": 97
+        },
+        "swapped": {
+          "order": [
+            2,
+            1,
+            0,
+            3
+          ],
+          "winning_team": 0,
+          "gain": 2,
+          "seat_return": [
+            2,
+            -2,
+            2,
+            -2
+          ],
+          "decisions": 97
+        }
+      },
+      {
+        "first": {
+          "order": [
+            1,
+            3,
+            0,
+            2
+          ],
+          "winning_team": 1,
+          "gain": 3,
+          "seat_return": [
+            -3,
+            3,
+            -3,
+            3
+          ],
+          "decisions": 65
+        },
+        "swapped": {
+          "order": [
+            1,
+            3,
+            0,
+            2
+          ],
+          "winning_team": 1,
+          "gain": 3,
+          "seat_return": [
+            -3,
+            3,
+            -3,
+            3
+          ],
+          "decisions": 65
+        }
+      },
+      {
+        "first": {
+          "order": [
+            0,
+            3,
+            1,
+            2
+          ],
+          "winning_team": 0,
+          "gain": 1,
+          "seat_return": [
+            1,
+            -1,
+            1,
+            -1
+          ],
+          "decisions": 76
+        },
+        "swapped": {
+          "order": [
+            0,
+            3,
+            1,
+            2
+          ],
+          "winning_team": 0,
+          "gain": 1,
+          "seat_return": [
+            1,
+            -1,
+            1,
+            -1
+          ],
+          "decisions": 76
+        }
+      },
+      {
+        "first": {
+          "order": [
+            0,
+            1,
+            3,
+            2
+          ],
+          "winning_team": 0,
+          "gain": 1,
+          "seat_return": [
+            1,
+            -1,
+            1,
+            -1
+          ],
+          "decisions": 82
+        },
+        "swapped": {
+          "order": [
+            0,
+            1,
+            3,
+            2
+          ],
+          "winning_team": 0,
+          "gain": 1,
+          "seat_return": [
+            1,
+            -1,
+            1,
+            -1
+          ],
+          "decisions": 82
+        }
+      },
+      {
+        "first": {
+          "order": [
+            3,
+            1,
+            2,
+            0
+          ],
+          "winning_team": 1,
+          "gain": 3,
+          "seat_return": [
+            -3,
+            3,
+            -3,
+            3
+          ],
+          "decisions": 53
+        },
+        "swapped": {
+          "order": [
+            3,
+            1,
+            2,
+            0
+          ],
+          "winning_team": 1,
+          "gain": 3,
+          "seat_return": [
+            -3,
+            3,
+            -3,
+            3
+          ],
+          "decisions": 53
+        }
+      },
+      {
+        "first": {
+          "order": [
+            3,
+            1,
+            2,
+            0
+          ],
+          "winning_team": 1,
+          "gain": 3,
+          "seat_return": [
+            -3,
+            3,
+            -3,
+            3
+          ],
+          "decisions": 75
+        },
+        "swapped": {
+          "order": [
+            3,
+            1,
+            2,
+            0
+          ],
+          "winning_team": 1,
+          "gain": 3,
+          "seat_return": [
+            -3,
+            3,
+            -3,
+            3
+          ],
+          "decisions": 75
+        }
+      },
+      {
+        "first": {
+          "order": [
+            0,
+            2,
+            3,
+            1
+          ],
+          "winning_team": 0,
+          "gain": 3,
+          "seat_return": [
+            3,
+            -3,
+            3,
+            -3
+          ],
+          "decisions": 69
+        },
+        "swapped": {
+          "order": [
+            0,
+            2,
+            3,
+            1
+          ],
+          "winning_team": 0,
+          "gain": 3,
+          "seat_return": [
+            3,
+            -3,
+            3,
+            -3
+          ],
+          "decisions": 69
+        }
+      },
+      {
+        "first": {
+          "order": [
+            1,
+            2,
+            0,
+            3
+          ],
+          "winning_team": 1,
+          "gain": 1,
+          "seat_return": [
+            -1,
+            1,
+            -1,
+            1
+          ],
+          "decisions": 74
+        },
+        "swapped": {
+          "order": [
+            1,
+            2,
+            0,
+            3
+          ],
+          "winning_team": 1,
+          "gain": 1,
+          "seat_return": [
+            -1,
+            1,
+            -1,
+            1
+          ],
+          "decisions": 74
+        }
+      },
+      {
+        "first": {
+          "order": [
+            3,
+            0,
+            2,
+            1
+          ],
+          "winning_team": 1,
+          "gain": 1,
+          "seat_return": [
+            -1,
+            1,
+            -1,
+            1
+          ],
+          "decisions": 81
+        },
+        "swapped": {
+          "order": [
+            3,
+            0,
+            2,
+            1
+          ],
+          "winning_team": 1,
+          "gain": 1,
+          "seat_return": [
+            -1,
+            1,
+            -1,
+            1
+          ],
+          "decisions": 81
+        }
+      }
+    ]
+  },
+  "wall_seconds": 9.684955957985949,
+  "search": {
+    "calls": 4719,
+    "triggered": 665,
+    "completed": 649,
+    "fallbacks": 16,
+    "overrides": 17,
+    "complete_worlds": 2428,
+    "extra_search_latency_ms": {
+      "p50": 10.620624991133809,
+      "p95": 20.128584001213312,
+      "max": 20.44395898701623
+    }
+  }
+}
