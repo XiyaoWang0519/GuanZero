@@ -207,6 +207,13 @@ def load_policy(spec: str, device: str = "cpu", margin: float = 0.0) -> Policy:
 
         style_name = spec[len("styled:"):]
         return StyledPolicy(fixed_style(style_name), name=spec)
+    if spec.startswith("search:"):
+        from .search import SearchPolicy
+
+        checkpoint_path = spec.removeprefix("search:")
+        if not checkpoint_path:
+            raise ValueError("search policy requires a checkpoint path")
+        return SearchPolicy(load_policy(checkpoint_path, device, margin))
     from train.ckpt import load_checkpoint
     from train.model import GuandanModel, ModelConfig
 

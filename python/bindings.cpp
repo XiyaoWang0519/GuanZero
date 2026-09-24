@@ -15,6 +15,7 @@
 #include "gd/env.h"
 #include "gd/movegen.h"
 #include "gd/rules.h"
+#include "gd/search.h"
 #include "gd/state.h"
 
 namespace py = pybind11;
@@ -307,6 +308,8 @@ PYBIND11_MODULE(_gd_core, m) {
       .def("serialize", [](const MatchState& s) {
         return py::bytes(reinterpret_cast<const char*>(&s), sizeof(MatchState));
       })
+      .def("determinize_uniform", &determinize_uniform,
+           py::arg("observer"), py::arg("seed"))
       .def_static("deserialize", [](const py::bytes& b) {
         MatchState s;
         const std::string str = b;
