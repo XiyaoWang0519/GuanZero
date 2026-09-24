@@ -167,6 +167,86 @@ def test_k_at_least_n_is_a_noop_and_training_does_not_move_pruning():
     assert torch.equal(before[0], after[0]) and torch.equal(before[1], after[1])
 
 
+def test_choose_is_the_choice_of_act():
+    """Opponents play through `choose`: the same pruning, draws and choice as
+    `act`, greedy and sampled, with or without precomputed reference scores."""
+    torch.manual_seed(6)
+    policy = StageBPolicy.from_model(GuandanModel(SMALL), PolicyConfig(top_k=4, temperature=0.5))
+    with torch.no_grad():
+        for p in policy.net.parameters():
+            p.add_(torch.randn_like(p))
+    obs, cand, offsets, phase = batch(real_decisions(300))
+    assert ((offsets[1:] - offsets[:-1]) > 4).any()
+    with torch.no_grad():
+        ref = policy.reference.score_candidates(obs, cand, offsets, phase)
+    for greedy in (True, False):
+        for ref_scores in (None, ref):
+            g1, g2 = torch.Generator(), torch.Generator()
+            g1.manual_seed(9)
+            g2.manual_seed(9)
+            with torch.no_grad():
+                expected = policy.act(obs, cand, offsets, phase, generator=g1, greedy=greedy,
+                                      ref_scores=ref_scores).choice
+                choice, finite = policy.choose(obs, cand, offsets, phase, generator=g2,
+                                               greedy=greedy, ref_scores=ref_scores)
+            assert torch.equal(choice, expected) and bool(finite)
+            assert torch.equal(g1.get_state(), g2.get_state())
+
+
+def test_select_skips_the_reference_only_when_pruning_keeps_everything():
+    """PrunedPolicy.select skips the reference forward for at most top_k
+    candidates; choices and rng draws must equal pruning every decision. The
+    learned-tribute mode also sends tribute decisions through the model."""
+    torch.manual_seed(4)
+    stage_b = StageBPolicy.from_model(GuandanModel(SMALL), PolicyConfig(top_k=4, temperature=0.5))
+    with torch.no_grad():
+        for p in stage_b.net.parameters():
+            p.add_(torch.randn_like(p))
+    engine, wide, phases = gd.Engine(), set(), set()
+    for mode in ("greedy", "margin", "sample", "tribute"):
+        policy = PrunedPolicy(stage_b, margin=0.05 if mode == "margin" else 0.0,
+                              sample=mode == "sample", heuristic_tribute=mode != "tribute")
+        state, rng, seed, decisions = gd.MatchState(), random.Random(5), 11, 0
+        engine.new_match(state, seed)
+        while decisions < (400 if mode == "tribute" else 150):
+            if state.phase == gd.Phase.RoundEnd:
+                engine.end_round(state)
+                if state.winner < 0:
+                    engine.begin_round(state)
+                else:
+                    engine.new_match(state, seed := seed + 1)
+                continue
+            if mode != "tribute" and state.phase != gd.Phase.Play:
+                engine.apply(state, engine.legal_actions(state)[engine.greedy(state)])
+                continue
+            actions = engine.legal_actions(state)
+            expect_rng = random.Random()
+            expect_rng.setstate(rng.getstate())
+            obs, cand, offsets, phase = batch([(
+                np.asarray(state.observation(state.to_move), dtype=np.float32),
+                np.stack([engine.encode_action(a, state, state.to_move) for a in actions]),
+                int(state.phase))])
+            with torch.no_grad():
+                if mode == "sample":
+                    generator = torch.Generator()
+                    generator.manual_seed(expect_rng.getrandbits(63))
+                    expected = int(stage_b.act(obs, cand, offsets, phase,
+                                               generator=generator).choice)
+                else:
+                    keep, pruned = stage_b.prune(obs, cand, offsets, phase)
+                    logits = stage_b.logits(obs, cand[keep], pruned, phase)
+                    expected = (expect_rng.choice(keep[logits >= logits.max() - 0.05].tolist())
+                                if mode == "margin" else int(keep[logits.argmax()]))
+            choice = policy.select(engine, state, actions, rng)
+            assert choice == expected and rng.getstate() == expect_rng.getstate()
+            wide.add(len(actions) > 4)
+            phases.add(int(state.phase))
+            decisions += 1
+            engine.apply(state, actions[choice])
+    assert wide == {True, False}
+    assert phases == {int(gd.Phase.Tribute), int(gd.Phase.BackTribute), int(gd.Phase.Play)}
+
+
 def test_tribute_phases_go_through_their_own_heads():
     torch.manual_seed(2)
     model = GuandanModel(SMALL)

@@ -129,23 +129,38 @@ class PrunedPolicy(ModelPolicy):
                actions: Sequence[gd.Action], rng: random.Random) -> int:
         import torch
 
+        from train.policy import sample_segments, segment_log_softmax
+
         if self.heuristic_tribute and state.phase != gd.Phase.Play:
             return engine.greedy(state)
         seat = state.to_move
+        code = int(state.phase)
         obs = torch.as_tensor(np.asarray(state.observation(seat), dtype=np.float32)[None, :],
                               device=self.device)
         cand = torch.as_tensor(np.stack([engine.encode_action(a, state, seat) for a in actions]),
                                device=self.device)
         offsets = torch.tensor([0, len(actions)], device=self.device)
-        phase = torch.tensor([int(state.phase)], device=self.device)
+        phase = torch.tensor([code], device=self.device)
+        # Pruning keeps a set of at most top_k candidates whole, so most
+        # decisions can skip the reference forward with identical results.
+        whole = len(actions) <= self.stage_b.config.top_k
         with torch.inference_mode():
             if self.sample:
                 generator = torch.Generator(device=self.device)
                 generator.manual_seed(rng.getrandbits(63))
-                return int(self.stage_b.act(obs, cand, offsets, phase,
-                                            generator=generator).choice.item())
-            keep, pruned_offsets = self.stage_b.prune(obs, cand, offsets, phase)
-            logits = self.stage_b.logits(obs, cand[keep], pruned_offsets, phase)
+                if not whole:
+                    return int(self.stage_b.act(obs, cand, offsets, phase, generator=generator,
+                                                phase_code=code).choice.item())
+                logits = self.stage_b.logits(obs, cand, offsets, phase, code)
+                if not torch.isfinite(logits).all():
+                    raise ValueError("policy must produce finite logits")
+                return int(sample_segments(segment_log_softmax(logits, offsets), offsets,
+                                           generator).item())
+            if whole:
+                keep, pruned_offsets = torch.arange(len(actions), device=self.device), offsets
+            else:
+                keep, pruned_offsets = self.stage_b.prune(obs, cand, offsets, phase, code)
+            logits = self.stage_b.logits(obs, cand[keep], pruned_offsets, phase, code)
             if not torch.isfinite(logits).all():
                 raise ValueError("policy must produce finite logits")
             if self.margin > 0:
