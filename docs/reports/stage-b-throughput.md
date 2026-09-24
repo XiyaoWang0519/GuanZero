@@ -152,7 +152,12 @@ df -h /dev/shm   # actors need 2.7 GiB free here for 2,048 envs (checked at star
 
 - GPU numbers are still missing, and so is the right W for the pod. The learner
   share on GPU is unknown until the bench runs.
-- There is no league (`OpponentSource` object) in actor mode.
+- There is no league (`OpponentSource` object) in actor mode. (Correction,
+  2026-09-23: a `league:<pool.json>` opponent has run in actor mode since the
+  B8 prep, commit e3af492; only opponent objects passed to `PPOTrainer` stay
+  in-process. Also, "no policy lag" above holds for the steps collected within
+  an update; carried-over rounds mean about half of the trained samples come
+  from the previous weights, in actor mode and in-process alike.)
 - `candidate_chunk` (32,768) splits learner minibatches into several launch
   sequences on GPU for no memory benefit, since autograd keeps every chunk.
   Raising it in the GPU config is a free knob to try.
