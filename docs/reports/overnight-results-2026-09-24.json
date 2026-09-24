@@ -1,0 +1,573 @@
+{
+  "schema_version": 1,
+  "created_at_epoch": 1790253299.04884,
+  "protocol": "DanLM duplicate4000 seed2026092477, tribute fraction0.5; paired whole-deal bootstrap5000, common-valid exclusions retained",
+  "summaries": {
+    "b11": {
+      "checkpoint": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod-b11/results/runs/main/run/latest.pt",
+      "checkpoint_id": "8e872130189af48adb262a0b218bcc82e711b31f5804272c1dd50854b629bc3e",
+      "deals": 4000,
+      "scored_deals": 3998,
+      "excluded_deals_mirror_failed": 2,
+      "levels_per_round": -2.056153076538269,
+      "levels_per_round_ci95": [
+        -2.08767196098049,
+        -2.0240026263131567
+      ],
+      "round_win_rate": 0.11668334167083541,
+      "seed": 2026092477,
+      "tribute_fraction": 0.5,
+      "elapsed_seconds": 427.2922940410208
+    },
+    "control-best": {
+      "checkpoint": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/overnight-20260924/evals/control/20260924T084237Z/checkpoint.pt",
+      "checkpoint_id": "c320e541f63c69c818d3e860fa7054f65230a1a726cea71613f85374073782c4",
+      "deals": 4000,
+      "scored_deals": 3998,
+      "excluded_deals_mirror_failed": 2,
+      "levels_per_round": -2.0271385692846424,
+      "levels_per_round_ci95": [
+        -2.0607866433216606,
+        -1.9956165582791396
+      ],
+      "round_win_rate": 0.12331165582791395,
+      "seed": 2026092477,
+      "tribute_fraction": 0.5,
+      "elapsed_seconds": 440.88459674996557
+    },
+    "filter-final": {
+      "checkpoint": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/overnight-20260924/final/filter-final.pt",
+      "checkpoint_id": "bf7dae9cb26a6313f1ed56728f464fa1ed2f851725ff2aa152caaeb525d8bd8e",
+      "deals": 4000,
+      "scored_deals": 3997,
+      "excluded_deals_mirror_failed": 3,
+      "levels_per_round": -2.2760820615461594,
+      "levels_per_round_ci95": [
+        -2.3047285464098075,
+        -2.248057918438829
+      ],
+      "round_win_rate": 0.08806604953715287,
+      "seed": 2026092477,
+      "tribute_fraction": 0.5,
+      "elapsed_seconds": 442.47200020903256
+    },
+    "union-final": {
+      "checkpoint": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/overnight-20260924/final/union-final.pt",
+      "checkpoint_id": "457849f7c762595f95a549e6bd9f558c92b8324f2fc011dfe270b938005b3569",
+      "deals": 4000,
+      "scored_deals": 3998,
+      "excluded_deals_mirror_failed": 2,
+      "levels_per_round": -2.0478989494747375,
+      "levels_per_round_ci95": [
+        -2.0799212106053027,
+        -2.0156328164082042
+      ],
+      "round_win_rate": 0.11955977988994497,
+      "seed": 2026092477,
+      "tribute_fraction": 0.5,
+      "elapsed_seconds": 511.4646795000299
+    },
+    "main-best": {
+      "checkpoint": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/overnight-20260924/evals/main/20260924T091154Z/checkpoint.pt",
+      "checkpoint_id": "004cb894a84f46a78d171c694310bd2cf17650aecc8ca83a23c29296ec72bc24",
+      "deals": 4000,
+      "scored_deals": 3999,
+      "excluded_deals_mirror_failed": 1,
+      "levels_per_round": -2.0320080020005,
+      "levels_per_round_ci95": [
+        -2.0655163790947735,
+        -1.9991216554138536
+      ],
+      "round_win_rate": 0.11890472618154539,
+      "seed": 2026092477,
+      "tribute_fraction": 0.5,
+      "elapsed_seconds": 438.5541853750474
+    },
+    "main-final": {
+      "checkpoint": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/overnight-20260924/final/main-final.pt",
+      "checkpoint_id": "2cc50f0499125cf05e81d32154d3962372c3ca9378b10cdd9c8a85fb7dc92a99",
+      "deals": 4000,
+      "scored_deals": 3997,
+      "excluded_deals_mirror_failed": 3,
+      "levels_per_round": -1.9600950713034777,
+      "levels_per_round_ci95": [
+        -1.9923755316487366,
+        -1.9263134851138355
+      ],
+      "round_win_rate": 0.13209907430572929,
+      "seed": 2026092477,
+      "tribute_fraction": 0.5,
+      "elapsed_seconds": 431.0213980419794
+    }
+  },
+  "comparisons": {
+    "control-v-b11-paired": {
+      "schema_version": 1,
+      "seed": 2026092477,
+      "requested_deals": 4000,
+      "common_scored_deals": 3996,
+      "excluded_deals": [
+        {
+          "deal": 27,
+          "reasons": [
+            "candidate:0:mirror_failed"
+          ]
+        },
+        {
+          "deal": 846,
+          "reasons": [
+            "control:0:mirror_failed"
+          ]
+        },
+        {
+          "deal": 1361,
+          "reasons": [
+            "control:0:mirror_failed"
+          ]
+        },
+        {
+          "deal": 3694,
+          "reasons": [
+            "candidate:0:mirror_failed"
+          ]
+        }
+      ],
+      "candidate_common_levels_per_round": -2.0271521521521523,
+      "control_common_levels_per_round": -2.0564314314314314,
+      "paired_delta_levels_per_round": 0.02927927927927928,
+      "paired_delta_ci95": [
+        -0.00950950950950951,
+        0.06731731731731731
+      ],
+      "paired_delta_round_win_rate": 0.006631631631631631,
+      "paired_win_rate_delta_ci95": [
+        -0.0018768768768768769,
+        0.014764764764764765
+      ],
+      "bootstrap_samples": 5000,
+      "positive_deals": 1400,
+      "negative_deals": 1311,
+      "tied_deals": 1285,
+      "candidate_checkpoint": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/overnight-20260924/evals/control/20260924T084237Z/checkpoint.pt",
+      "control_checkpoint": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod-b11/results/runs/main/run/latest.pt",
+      "definition": "candidate minus control against DanLM; bootstrap resamples whole common-valid duplicate deals"
+    },
+    "filter-v-control-paired": {
+      "schema_version": 1,
+      "seed": 2026092477,
+      "requested_deals": 4000,
+      "common_scored_deals": 3995,
+      "excluded_deals": [
+        {
+          "deal": 27,
+          "reasons": [
+            "control:0:mirror_failed"
+          ]
+        },
+        {
+          "deal": 1595,
+          "reasons": [
+            "candidate:1:mirror_failed"
+          ]
+        },
+        {
+          "deal": 2365,
+          "reasons": [
+            "candidate:0:mirror_failed"
+          ]
+        },
+        {
+          "deal": 3318,
+          "reasons": [
+            "candidate:1:mirror_failed"
+          ]
+        },
+        {
+          "deal": 3694,
+          "reasons": [
+            "control:0:mirror_failed"
+          ]
+        }
+      ],
+      "candidate_common_levels_per_round": -2.2763454317897374,
+      "control_common_levels_per_round": -2.027409261576971,
+      "paired_delta_levels_per_round": -0.24893617021276596,
+      "paired_delta_ci95": [
+        -0.28761264080100124,
+        -0.211639549436796
+      ],
+      "paired_delta_round_win_rate": -0.03529411764705882,
+      "paired_win_rate_delta_ci95": [
+        -0.04355444305381727,
+        -0.027284105131414268
+      ],
+      "bootstrap_samples": 5000,
+      "positive_deals": 1065,
+      "negative_deals": 1716,
+      "tied_deals": 1214,
+      "candidate_checkpoint": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/overnight-20260924/final/filter-final.pt",
+      "control_checkpoint": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/overnight-20260924/evals/control/20260924T084237Z/checkpoint.pt",
+      "definition": "candidate minus control against DanLM; bootstrap resamples whole common-valid duplicate deals"
+    },
+    "main-best-v-b11-paired": {
+      "schema_version": 1,
+      "seed": 2026092477,
+      "requested_deals": 4000,
+      "common_scored_deals": 3997,
+      "excluded_deals": [
+        {
+          "deal": 846,
+          "reasons": [
+            "control:0:mirror_failed"
+          ]
+        },
+        {
+          "deal": 1361,
+          "reasons": [
+            "control:0:mirror_failed"
+          ]
+        },
+        {
+          "deal": 2417,
+          "reasons": [
+            "candidate:0:mirror_failed"
+          ]
+        }
+      ],
+      "candidate_common_levels_per_round": -2.031523642732049,
+      "control_common_levels_per_round": -2.056167125344008,
+      "paired_delta_levels_per_round": 0.02464348261195897,
+      "paired_delta_ci95": [
+        -0.014764198148611457,
+        0.06304728546409807
+      ],
+      "paired_delta_round_win_rate": 0.002251688766574931,
+      "paired_win_rate_delta_ci95": [
+        -0.006379784838628972,
+        0.01075806855141356
+      ],
+      "bootstrap_samples": 5000,
+      "positive_deals": 1395,
+      "negative_deals": 1348,
+      "tied_deals": 1254,
+      "candidate_checkpoint": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/overnight-20260924/evals/main/20260924T091154Z/checkpoint.pt",
+      "control_checkpoint": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod-b11/results/runs/main/run/latest.pt",
+      "definition": "candidate minus control against DanLM; bootstrap resamples whole common-valid duplicate deals"
+    },
+    "main-final-v-b11-paired": {
+      "schema_version": 1,
+      "seed": 2026092477,
+      "requested_deals": 4000,
+      "common_scored_deals": 3995,
+      "excluded_deals": [
+        {
+          "deal": 846,
+          "reasons": [
+            "control:0:mirror_failed"
+          ]
+        },
+        {
+          "deal": 1009,
+          "reasons": [
+            "candidate:1:mirror_failed"
+          ]
+        },
+        {
+          "deal": 1361,
+          "reasons": [
+            "control:0:mirror_failed"
+          ]
+        },
+        {
+          "deal": 2719,
+          "reasons": [
+            "candidate:1:mirror_failed"
+          ]
+        },
+        {
+          "deal": 3984,
+          "reasons": [
+            "candidate:1:mirror_failed"
+          ]
+        }
+      ],
+      "candidate_common_levels_per_round": -1.9596996245306633,
+      "control_common_levels_per_round": -2.0570713391739677,
+      "paired_delta_levels_per_round": 0.09737171464330413,
+      "paired_delta_ci95": [
+        0.056695869837296624,
+        0.13679599499374218
+      ],
+      "paired_delta_round_win_rate": 0.015644555694618274,
+      "paired_win_rate_delta_ci95": [
+        0.007008760951188986,
+        0.024405506883604506
+      ],
+      "bootstrap_samples": 5000,
+      "positive_deals": 1500,
+      "negative_deals": 1304,
+      "tied_deals": 1191,
+      "candidate_checkpoint": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/overnight-20260924/final/main-final.pt",
+      "control_checkpoint": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod-b11/results/runs/main/run/latest.pt",
+      "definition": "candidate minus control against DanLM; bootstrap resamples whole common-valid duplicate deals"
+    },
+    "main-final-v-main-best-paired": {
+      "schema_version": 1,
+      "seed": 2026092477,
+      "requested_deals": 4000,
+      "common_scored_deals": 3996,
+      "excluded_deals": [
+        {
+          "deal": 1009,
+          "reasons": [
+            "candidate:1:mirror_failed"
+          ]
+        },
+        {
+          "deal": 2417,
+          "reasons": [
+            "control:0:mirror_failed"
+          ]
+        },
+        {
+          "deal": 2719,
+          "reasons": [
+            "candidate:1:mirror_failed"
+          ]
+        },
+        {
+          "deal": 3984,
+          "reasons": [
+            "candidate:1:mirror_failed"
+          ]
+        }
+      ],
+      "candidate_common_levels_per_round": -1.960085085085085,
+      "control_common_levels_per_round": -2.0327827827827827,
+      "paired_delta_levels_per_round": 0.0726976976976977,
+      "paired_delta_ci95": [
+        0.03428428428428428,
+        0.11298798798798798
+      ],
+      "paired_delta_round_win_rate": 0.013388388388388388,
+      "paired_win_rate_delta_ci95": [
+        0.005005005005005005,
+        0.021896896896896896
+      ],
+      "bootstrap_samples": 5000,
+      "positive_deals": 1493,
+      "negative_deals": 1291,
+      "tied_deals": 1212,
+      "candidate_checkpoint": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/overnight-20260924/final/main-final.pt",
+      "control_checkpoint": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/overnight-20260924/evals/main/20260924T091154Z/checkpoint.pt",
+      "definition": "candidate minus control against DanLM; bootstrap resamples whole common-valid duplicate deals"
+    },
+    "union-v-control-paired": {
+      "schema_version": 1,
+      "seed": 2026092477,
+      "requested_deals": 4000,
+      "common_scored_deals": 3996,
+      "excluded_deals": [
+        {
+          "deal": 27,
+          "reasons": [
+            "control:0:mirror_failed"
+          ]
+        },
+        {
+          "deal": 909,
+          "reasons": [
+            "candidate:0:mirror_failed"
+          ]
+        },
+        {
+          "deal": 1361,
+          "reasons": [
+            "candidate:0:mirror_failed"
+          ]
+        },
+        {
+          "deal": 3694,
+          "reasons": [
+            "control:0:mirror_failed"
+          ]
+        }
+      ],
+      "candidate_common_levels_per_round": -2.0482982982982985,
+      "control_common_levels_per_round": -2.0272772772772774,
+      "paired_delta_levels_per_round": -0.021021021021021023,
+      "paired_delta_ci95": [
+        -0.05893393393393393,
+        0.018646771771771726
+      ],
+      "paired_delta_round_win_rate": -0.0037537537537537537,
+      "paired_win_rate_delta_ci95": [
+        -0.012012012012012012,
+        0.00513013013013013
+      ],
+      "bootstrap_samples": 5000,
+      "positive_deals": 1355,
+      "negative_deals": 1406,
+      "tied_deals": 1235,
+      "candidate_checkpoint": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/overnight-20260924/final/union-final.pt",
+      "control_checkpoint": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/overnight-20260924/evals/control/20260924T084237Z/checkpoint.pt",
+      "definition": "candidate minus control against DanLM; bootstrap resamples whole common-valid duplicate deals"
+    }
+  },
+  "main_selection": {
+    "frozen_at_epoch": 1790251446.281179,
+    "development_seed": 2026092401,
+    "final_seed": 2026092477,
+    "best": {
+      "checkpoint": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/overnight-20260924/evals/main/20260924T091154Z/checkpoint.pt",
+      "development_only": true,
+      "evaluated_at_epoch": 1790241291.511445,
+      "final": false,
+      "levels_per_round": -1.9859719438877756,
+      "report": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/overnight-20260924/evals/main/20260924T091154Z/development.json",
+      "sha256": "c282f13aff3f194c531c945068ac268c55f24731253b13eba59875a565d6e83d",
+      "stdout": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/overnight-20260924/evals/main/20260924T091154Z/stdout.log"
+    },
+    "final_sha256": "ebb614f35f825e835c9d5b18bdc5a6efb0f79d5ba5ed9bfcdf44eca98ae139fe",
+    "final_endpoint_development": {
+      "checkpoint": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/overnight-20260924/evals/main/20260924T115942Z/checkpoint.pt",
+      "development_only": true,
+      "evaluated_at_epoch": 1790251340.11845,
+      "final": false,
+      "levels_per_round": -2.0145145145145147,
+      "report": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/overnight-20260924/evals/main/20260924T115942Z/development.json",
+      "sha256": "ebb614f35f825e835c9d5b18bdc5a6efb0f79d5ba5ed9bfcdf44eca98ae139fe",
+      "stdout": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/overnight-20260924/evals/main/20260924T115942Z/stdout.log"
+    },
+    "training_progress": {
+      "decisions": 583161856,
+      "elapsed_seconds": 18000.278353844013,
+      "learner_decisions": 284796229,
+      "matches": 749468,
+      "optimizer_steps": 142928,
+      "rounds": 7855439,
+      "updates": 4450
+    },
+    "selection_basis": "Maximum development score among recorded main checkpoints, including prescribed 5h endpoint, frozen before either main heldout result"
+  },
+  "budget": {
+    "at_epoch": 1790253190.987943,
+    "balance_usd": 42.9647907151,
+    "provider_spend_per_hour": 0,
+    "balance_change_since_start": 7.348340616599998,
+    "rows": [
+      {
+        "manifest": "main-pod.json",
+        "pod_id": "oyzhj7bbgjoi3t",
+        "state": "terminated",
+        "live": false,
+        "hours": 5.326457373102506,
+        "estimated_accrued_usd": 3.9732835595071787,
+        "reserved_usd": 5.0,
+        "deadline_epoch": 1790253788.9399948
+      },
+      {
+        "manifest": "experiments-pod.json",
+        "pod_id": "flemmcad4fr87j",
+        "state": "terminated",
+        "live": false,
+        "hours": 4.236169677774112,
+        "estimated_accrued_usd": 3.159980857253879,
+        "reserved_usd": 5.0,
+        "deadline_epoch": 1790252109.432852
+      },
+      {
+        "manifest": "probe-pod.json",
+        "pod_id": "n3gykm66zuch00",
+        "state": "terminated",
+        "live": false,
+        "hours": 0.11557629889912076,
+        "estimated_accrued_usd": 0.08621441534546317,
+        "reserved_usd": 0.4,
+        "deadline_epoch": 1790231979.6441238
+      },
+      {
+        "manifest": "ttl-probe-pod.json",
+        "pod_id": "az28cr6ba985wc",
+        "state": "terminated",
+        "live": false,
+        "hours": 0.16850114001168146,
+        "estimated_accrued_usd": 0.08356854158198392,
+        "reserved_usd": 0.2,
+        "deadline_epoch": 1790232247.285063
+      },
+      {
+        "manifest": "selfstop-probe-pod.json",
+        "pod_id": "2x85ctkw19sjo8",
+        "state": "terminated",
+        "live": false,
+        "hours": 0.10827903416421679,
+        "estimated_accrued_usd": 0.05370124480096752,
+        "reserved_usd": 0.25,
+        "deadline_epoch": 1790233631.3795881
+      }
+    ],
+    "cost_note": "Final live balance and no-pods check. Manifest estimate includes allocation-to-confirmed-removal time and conservative storage; provider balance difference is authoritative observed charge, subject to later invoice adjustments.",
+    "estimated_total_usd": 7.356748618489473,
+    "provider_all_pods_absent": true,
+    "provider_confirmation_utc": "2026-09-24T12:33:10Z",
+    "outstanding_reservations_usd": 0
+  },
+  "search_transfer": {
+    "status": "paired_external_transfer_probe_not_G9",
+    "seed": 2026092497,
+    "requested_deals": 4000,
+    "completed_deals": 4000,
+    "scored_deals": 3998,
+    "excluded_legs": {
+      "baseline:mirror_failed": 2,
+      "search:mirror_failed": 2
+    },
+    "wall_seconds": 2649.459941792011,
+    "checkpoint": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod-b11/results/runs/main/run/latest.pt",
+    "raw_results": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/overnight-20260924/search-danlm-transfer-4000.raw.json.gz",
+    "scores": {
+      "baseline": {
+        "mean_levels_per_round": -2.0407703851925962,
+        "bootstrap_95_ci": [
+          -2.0716639569784894,
+          -2.0084917458729366
+        ],
+        "positive": 51,
+        "negative": 3602,
+        "zero": 345
+      },
+      "search": {
+        "mean_levels_per_round": -2.024887443721861,
+        "bootstrap_95_ci": [
+          -2.055781015507754,
+          -1.9923649324662331
+        ],
+        "positive": 54,
+        "negative": 3589,
+        "zero": 355
+      },
+      "delta": {
+        "mean_levels_per_round": 0.01588294147073537,
+        "bootstrap_95_ci": [
+          0.009254627313656828,
+          0.022511255627813906
+        ],
+        "positive": 99,
+        "negative": 36,
+        "zero": 3863
+      }
+    }
+  },
+  "artifact_manifest": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/overnight-20260924/final-artifact-manifest.json",
+  "provider_confirmation": {
+    "checked_at_epoch": 1790253190.987943,
+    "checked_at_utc": "2026-09-24T12:33:10Z",
+    "balance_usd": 42.9647907151,
+    "current_spend_per_hour": 0,
+    "pods": []
+  },
+  "codex_remaining_percent": 83,
+  "codex_window_minutes": 10080,
+  "codex_secondary_window": null
+}
