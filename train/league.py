@@ -202,18 +202,26 @@ class TorchModel:
 
         from .model import select_actions
 
+        # Rows of one phase (callers pass only play rows to heuristic-tribute
+        # models) go straight to that phase's head: the same scores, without
+        # the per-phase masking that synchronizes CUDA.
+        code = int(phase[0]) if len(phase) and (phase == phase[0]).all() else None
         obs_t = torch.as_tensor(obs, device=self.device)
         cand_t = torch.as_tensor(cand, device=self.device)
         off_t = torch.as_tensor(offsets.astype(np.int64), device=self.device)
         phase_t = torch.as_tensor(phase.astype(np.int64), device=self.device)
         with torch.inference_mode():
             if self.pruned is not None:
-                step = self.pruned.act(obs_t, cand_t, off_t, phase_t,
-                                       generator=self.generator, greedy=not self.sample)
-                choice = step.choice
-            else:
-                scores = self.model.score_candidates(obs_t, cand_t, off_t, phase_t)
-                choice = select_actions(scores, off_t)
+                choice, finite = self.pruned.choose(obs_t, cand_t, off_t, phase_t,
+                                                    generator=self.generator,
+                                                    greedy=not self.sample, phase_code=code)
+                # One copy back, with the finiteness flag riding along.
+                host = torch.cat((choice, finite.reshape(1).to(choice.dtype))).cpu().numpy()
+                if not host[-1]:
+                    raise ValueError("reference scores must be finite")
+                return host[:-1].astype(np.int32)
+            scores = self.model.score_candidates(obs_t, cand_t, off_t, phase_t, phase_code=code)
+            choice = select_actions(scores, off_t)
         return choice.to("cpu").numpy().astype(np.int32)
 
 
@@ -442,6 +450,16 @@ class League:
             self.env.set_styles(self.styles)
 
     def act(self, rows: OpponentRows) -> np.ndarray:
+        return self.act_split(rows)[0]
+
+    def act_split(self, rows: OpponentRows, defer: Callable[[NetworkModel], bool] | None = None
+                  ) -> tuple[np.ndarray, list[tuple[NetworkModel, np.ndarray]]]:
+        """`act`, except that a network group whose model satisfies
+        `defer(model)` is not run: it is returned as (model, row index), in the
+        order `act` would have run it, with its rows left at greedy_choice for
+        the caller to fill (PPO scores them in its shared reference forward).
+        Models are looked up exactly as in `act`, so caching, eviction and
+        `forward_calls` are unchanged."""
         env_id = np.asarray(rows.env_id, np.int64)
         seat = np.asarray(rows.seat, np.int64)
         if len(env_id) and (seat % 2 == self.learner_team[env_id]).any():
@@ -458,6 +476,7 @@ class League:
                 choice[r] = styled[r]
             elif entry.kind == "network":
                 groups.setdefault(entry.spec, []).append(r)
+        deferred = []
         for spec, members in groups.items():
             model = self._model(spec)
             index = np.asarray(members, np.int64)
@@ -465,14 +484,17 @@ class League:
                 index = index[phase[index] == self.play_phase]
             if not len(index):
                 continue
+            self.forward_calls += 1
+            if defer is not None and defer(model):
+                deferred.append((model, index))
+                continue
             obs, cand, offsets = _gather(rows, index)
             local = np.asarray(model.choose(obs, cand, offsets, phase[index]), np.int32)
             sizes = offsets[1:] - offsets[:-1]
             if local.shape != index.shape or (local < 0).any() or (local >= sizes).any():
                 raise ValueError(f"{spec}: invalid candidate indices")
-            self.forward_calls += 1
             choice[index] = local
-        return choice
+        return choice, deferred
 
     def on_match_end(self, env_ids: np.ndarray, learner_won: np.ndarray) -> None:
         alpha = self.config.ema_alpha

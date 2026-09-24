@@ -18,10 +18,14 @@ no trajectory data is pickled. Per update:
    `rollout_steps` vector steps;
 3. the learner waits for all actors, then learns.
 
-Actors never run while the learner trains, so every stored sample was drawn
-from exactly the weights the learner starts the update with: no policy lag,
-the first-epoch importance ratio is 1 up to float noise, as in-process
-(tests/test_ppo_actors.py bounds it). What differs from the in-process path
+Actors never run while the learner trains, so every step collected in an
+update was drawn from exactly the weights the learner starts that update
+with: actors add no policy lag to the in-process path (tests/test_ppo_actors.py
+bounds the first-epoch importance ratio of those steps). As in-process, a
+round still open at an update boundary is carried over (`carry_over`), and
+its earlier steps were drawn from the previous weights: with rounds of about
+70 decisions against 64-step rollouts, about half of the trained samples are
+one update old, and their ratios start away from 1. What differs from the in-process path
 under the same seed is only which random streams drive what: the shards'
 environment seeds and sampling generators are drawn from the trainer RNG,
 and minibatches are permuted over the union of shards. The distribution of
@@ -264,7 +268,7 @@ class Actor:
         from train.model import GuandanModel, ModelConfig
         from train.opponents import FrozenModelOpponent, config_opponent
         from train.policy import PolicyConfig, StageBPolicy
-        from train.ppo import PPOConfig, RolloutCollector, Uploader
+        from train.ppo import PPOConfig, RolloutCollector, Uploader, shares_opponent_forward
         from train.rollout_buffer import RolloutBuffer, RolloutBufferConfig
 
         cfg = PPOConfig(**{**spec["config"], "num_envs": spec["num_envs"]})  # this shard
@@ -314,6 +318,8 @@ class Actor:
         opponent.bind(collector.env, collector.learner_team)
         collector.fused_opponent = (cfg.fast_rollout and isinstance(opponent, FrozenModelOpponent)
                                     and opponent.model is policy.reference)
+        collector.shared_opponent = shares_opponent_forward(cfg, collector.phase_code, opponent,
+                                                            collector.fused_opponent)
         collector.upload = Uploader(device)
         collector.timers = None
         collector.generator = torch.Generator(device=device)

@@ -34,7 +34,7 @@ hidden counts (CLAUDE.md, privileged information never reaches a policy).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Callable, Protocol
 
 import numpy as np
 
@@ -197,6 +197,12 @@ class CheckpointOpponent:
         del env_ids, learner_won
 
     def act(self, rows: OpponentRows) -> np.ndarray:
+        return self.act_split(rows)[0]
+
+    def act_split(self, rows: OpponentRows, defer: Callable[[Any], bool] | None = None
+                  ) -> tuple[np.ndarray, list]:
+        """`act`, deferring the model's rows to the caller when `defer(model)`
+        holds (see `League.act_split`)."""
         from train.league import _gather
 
         choices = np.array(rows.greedy_choice, dtype=np.int32, copy=True)
@@ -205,14 +211,16 @@ class CheckpointOpponent:
         if self.model.heuristic_tribute:
             index = index[phase == self.play_phase]
         if not index.size:
-            return choices
+            return choices, []
+        if defer is not None and defer(self.model):
+            return choices, [(self.model, index)]
         obs, cand, offsets = _gather(rows, index)
         local = np.asarray(self.model.choose(obs, cand, offsets, phase[index]), np.int32)
         sizes = offsets[1:] - offsets[:-1]
         if local.shape != index.shape or (local < 0).any() or (local >= sizes).any():
             raise ValueError(f"{self.name}: invalid candidate indices")
         choices[index] = local
-        return choices
+        return choices, []
 
 
 class FollowOpponent:
@@ -303,6 +311,12 @@ class FollowOpponent:
         del env_ids, learner_won
 
     def act(self, rows: OpponentRows) -> np.ndarray:
+        return self.act_split(rows)[0]
+
+    def act_split(self, rows: OpponentRows, defer: Callable[[Any], bool] | None = None
+                  ) -> tuple[np.ndarray, list]:
+        """`act`, deferring the rows of each model with `defer(model)` to the
+        caller (see `League.act_split`)."""
         from train.league import _gather
 
         choices = np.array(rows.greedy_choice, dtype=np.int32, copy=True)
@@ -313,6 +327,7 @@ class FollowOpponent:
             if path is None:
                 raise RuntimeError(f"environment {int(e)} has no opponent; call on_match_start")
             groups.setdefault(path, []).append(r)
+        deferred = []
         for path, members in groups.items():
             model = self._model(path)
             index = np.asarray(members, np.int64)
@@ -320,13 +335,16 @@ class FollowOpponent:
                 index = index[phase[index] == self.play_phase]
             if not index.size:
                 continue
+            if defer is not None and defer(model):
+                deferred.append((model, index))
+                continue
             obs, cand, offsets = _gather(rows, index)
             local = np.asarray(model.choose(obs, cand, offsets, phase[index]), np.int32)
             sizes = offsets[1:] - offsets[:-1]
             if local.shape != index.shape or (local < 0).any() or (local >= sizes).any():
                 raise ValueError(f"{path}: invalid candidate indices")
             choices[index] = local
-        return choices
+        return choices, deferred
 
 
 def config_opponent(spec: str, reference, device: str = "cpu",

@@ -83,7 +83,7 @@ import resource
 import signal
 import sys
 import time
-from typing import Any, Iterator
+from typing import Any, Iterator, Sequence
 import warnings
 
 import numpy as np
@@ -192,7 +192,8 @@ class PPOConfig:
     # 0 rolls out in this process. W > 0 steps num_envs / W environments in
     # each of W actor processes (train/ppo_actors.py), each with num_threads
     # engine threads and torch_threads torch threads, synchronously: actors
-    # wait while the learner trains, so there is no policy lag. Needs a
+    # wait while the learner trains, so actors add no policy lag (carried-over
+    # rounds still hold steps from the previous weights). Needs a
     # config opponent (frozen, frozen:<path>, greedy, league:<pool.json>);
     # the league's semantics across actors are in train/ppo_actors.py.
     actor_processes: int = 0
@@ -401,6 +402,18 @@ class Uploader:
         return staged.to(self.device, non_blocking=True).to(dtype)
 
 
+def shares_opponent_forward(config: PPOConfig, phase_code: int | None,
+                            opponent: OpponentSource | None, fused_opponent: bool) -> bool:
+    """Whether the rollout plays the opponent through `act_split`, scoring the
+    rows of its models that share the learner's frozen reference in its own
+    reference forward (`RolloutCollector._fast_act`). Needs the fast path and
+    heuristic tribute, where that forward computes what the model's own
+    reference would, up to the float rounding of a differently sized batch
+    (bitwise equal on CPU for batches of two or more rows)."""
+    return (config.fast_rollout and phase_code == PLAY and not fused_opponent
+            and hasattr(opponent, "act_split"))
+
+
 def to_host(device: torch.device, *values: torch.Tensor) -> list[np.ndarray]:
     """Copy tensors back with a single synchronisation."""
     if device.type != "cuda":
@@ -417,8 +430,9 @@ class RolloutCollector:
     `train/ppo_actors.py`. Needs `config`, `device`, `policy`, `env`,
     `learner_team`, `env_match`, `buffer`, `opponent`, `fused_opponent`,
     `league_fused` (the opponent is a `League` whose `external` specs are the
-    frozen reference), `upload`, `timers`, `generator`, `progress`, `window`,
-    `phase_code`, `bound` and `should_stop()`.
+    frozen reference), `shared_opponent` (see `shares_opponent_forward`),
+    `upload`, `timers`, `generator`, `progress`, `window`, `phase_code`,
+    `bound` and `should_stop()`.
     """
 
     def _finish_rounds(self, results) -> None:
@@ -501,16 +515,32 @@ class RolloutCollector:
             ref_logp=step.ref_log_probs.float().cpu().numpy())
         self.progress["learner_decisions"] += int(rows.size)
 
+    def _shares_reference(self, model) -> bool:
+        """An opponent's Stage B model whose pruning reference has the learner's
+        frozen reference weights (same digest), on this device, playing play
+        rows only: the rollout's shared reference forward can score its rows,
+        after which it only prunes and runs its own policy network."""
+        pruned = getattr(model, "pruned", None)
+        reference = self.policy.reference_checkpoint_id
+        return (pruned is not None and reference is not None
+                and bool(getattr(model, "heuristic_tribute", False))
+                and pruned.reference_checkpoint_id == reference
+                and getattr(model, "device", None) == self.device)
+
     def _fast_act(self, batch, learner_rows: np.ndarray, opponent_rows: np.ndarray,
                   offsets: np.ndarray, env_id: np.ndarray, seat: np.ndarray,
-                  phase: np.ndarray, match_id: np.ndarray, choices: np.ndarray) -> None:
-        """Learner sampling plus, for the fused frozen opponent, its play-row
-        argmax, from ONE reference forward over both row sets.
+                  phase: np.ndarray, match_id: np.ndarray, choices: np.ndarray,
+                  shared: Sequence[tuple[Any, np.ndarray]] = ()) -> None:
+        """Learner sampling, the fused frozen opponent's play-row argmax
+        (`opponent_rows`) and the play rows of every `shared` (model, rows)
+        opponent group (see `_shares_reference`), from ONE reference forward
+        over all of those rows.
 
-        Rows are laid out learner first, so each part is a contiguous slice of
-        the scored candidates and nothing on the device needs a data-dependent
-        shape except the pruning. Results come back in one copy."""
-        rows = np.concatenate((learner_rows, opponent_rows))
+        Rows are laid out learner first, then the argmax rows, then each shared
+        group, so each part is a contiguous slice of the scored candidates and
+        nothing on the device needs a data-dependent shape except the pruning.
+        Results come back in one copy."""
+        rows = np.concatenate((learner_rows, opponent_rows, *(g for _, g in shared)))
         if not rows.size:
             return
         counts = offsets[rows + 1] - offsets[rows]
@@ -518,7 +548,9 @@ class RolloutCollector:
         np.cumsum(counts, out=local[1:])
         src = _ragged_index(offsets[rows], counts, int(local[-1]))
         n_learner = learner_rows.size
+        n_fused = n_learner + opponent_rows.size
         c_learner = int(local[n_learner])
+        c_fused = int(local[n_fused])
         with self._phase("upload"):
             obs_all = self.upload("obs", batch.obs, torch.uint8, torch.float32)
             cand_all = self.upload("cand", batch.cand, torch.uint8, torch.float32)
@@ -544,14 +576,28 @@ class RolloutCollector:
                             step.keep_index, step.pruned_offsets, step.ref_log_probs.float()]
             if opponent_rows.size:
                 with self._phase("opponent argmax"):
-                    outputs.append(select_actions(ref[c_learner:],
-                                                  local_t[n_learner:] - c_learner))
+                    outputs.append(select_actions(ref[c_learner:c_fused],
+                                                  local_t[n_learner:n_fused + 1] - c_learner))
+            begin = n_fused
+            for model, group in shared:
+                end = begin + group.size
+                c0, c1 = int(local[begin]), int(local[end])
+                with self._phase("shared opponent prune + forward"):
+                    choice, _ = model.pruned.choose(
+                        obs[begin:end], cand[c0:c1], local_t[begin:end + 1] - c0,
+                        phase_t[begin:end], generator=model.generator,
+                        greedy=not model.sample, phase_code=self.phase_code,
+                        ref_scores=ref[c0:c1])
+                outputs.append(choice)
+                begin = end
             with self._phase("device to host"):
                 host = to_host(self.device, *outputs)
         if not bool(host[0]):
             raise FloatingPointError("non-finite reference scores")
+        for (_, group), choice in zip(shared, host[len(host) - len(shared):]):
+            choices[group] = choice
         if opponent_rows.size:
-            choices[opponent_rows] = host[-1]
+            choices[opponent_rows] = host[len(host) - len(shared) - 1]
         if not n_learner:
             return
         choice, pruned_choice, log_prob, keep, pruned_offsets, ref_logp = host[1:7]
@@ -628,18 +674,27 @@ class RolloutCollector:
                         fused = opponent_rows[external]
                         fused_rows = fused[phase[fused] == PLAY]
                         opponent_rows = opponent_rows[~external]
+                shared = []
                 if opponent_rows.size:
                     with self._phase("opponent act"):
-                        picked = np.asarray(self.opponent.act(self._opponent_rows(
-                            batch, opponent_rows, offsets, env_id, seat, phase, match_id)),
-                            np.int32)
+                        rows_in = self._opponent_rows(batch, opponent_rows, offsets, env_id,
+                                                      seat, phase, match_id)
+                        if self.shared_opponent:
+                            # Groups of models sharing the frozen reference
+                            # come back unplayed; _fast_act scores them.
+                            picked, deferred = self.opponent.act_split(
+                                rows_in, self._shares_reference)
+                            shared = [(model, opponent_rows[index]) for model, index in deferred]
+                        else:
+                            picked = self.opponent.act(rows_in)
+                        picked = np.asarray(picked, np.int32)
                     if picked.shape != opponent_rows.shape:
                         raise ValueError("opponent returned the wrong number of choices")
                     choices[opponent_rows] = picked
-                if learner_rows.size or fused_rows.size:
+                if learner_rows.size or fused_rows.size or shared:
                     if self.config.fast_rollout:
                         self._fast_act(batch, learner_rows, fused_rows, offsets, env_id,
-                                       seat, phase, match_id, choices)
+                                       seat, phase, match_id, choices, shared)
                     else:
                         with self._phase("learner act (B5 path)"):
                             self._learner_act(batch, learner_rows, offsets, env_id, seat,
@@ -841,6 +896,8 @@ class PPOTrainer(RolloutCollector):
             self.fused_opponent = (config.fast_rollout
                                    and isinstance(self.opponent, FrozenModelOpponent)
                                    and self.opponent.model is self.policy.reference)
+        self.shared_opponent = shares_opponent_forward(config, self.phase_code, self.opponent,
+                                                       self.fused_opponent)
         self.upload = Uploader(self.device)
         self.timers: dict[str, float] | None = None   # phase timers, see bench/ppo_throughput.py
         self.bound = False

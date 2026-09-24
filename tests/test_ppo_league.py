@@ -134,6 +134,81 @@ def test_fused_m1_entry_plays_exactly_like_the_league_model(init_checkpoint, tmp
     np.testing.assert_allclose(fused["logp"], plain["logp"], rtol=0, atol=1e-6)
 
 
+@pytest.mark.parametrize("kind", ["league", "frozen"])
+def test_shared_reference_opponents_play_exactly_like_their_own_models(init_checkpoint,
+                                                                       tmp_path, kind):
+    """Stage B opponents whose reference is the learner's (league snapshots at
+    argmax and sampled, a frozen: checkpoint) are scored by the rollout's
+    shared reference forward: same choices, draws and league state as when
+    each model runs on its own."""
+    first = PPOTrainer(tiny(init_checkpoint, pool(tmp_path, init_checkpoint), max_updates=1),
+                       tmp_path / "first")
+    first.run()
+    snapshot = str(first.league.snapshots[0][0])
+    first.close()
+    entries = [{"spec": snapshot, "name": "snap"},
+               {"spec": f"sample=0.5:{snapshot}", "name": "snap/T"},
+               {"spec": str(init_checkpoint), "name": "m1"}, {"spec": "greedy"}]
+    path = pool(tmp_path, init_checkpoint, entries, uniform_mix=1.0)
+    opponent = f"league:{path}" if kind == "league" else f"frozen:{snapshot}"
+    runs = []
+    for shared in (True, False):
+        trainer = PPOTrainer(tiny(init_checkpoint, path, rollout_steps=600, opponent=opponent),
+                             tmp_path / str(shared))
+        assert trainer.shared_opponent
+        trainer.shared_opponent = shared
+        deferred = []
+        fast_act = trainer._fast_act
+
+        def spy(*args, **kwargs):
+            deferred.extend(group.size for _, group in (args[9] if len(args) > 9 else ()))
+            return fast_act(*args, **kwargs)
+
+        trainer._fast_act = spy
+        trainer.collect()
+        buffer = trainer.buffer
+        runs.append({"chosen": buffer.chosen[:buffer.n_steps].copy(),
+                     "obs": buffer.obs[:buffer.n_steps].copy(),
+                     "logp": buffer.logp[:buffer.n_steps].copy(),
+                     "ref_logp": buffer.ref_logp[:buffer.n_steps].copy(),
+                     "progress": dict(trainer.progress), "deferred": sum(deferred),
+                     "league": trainer.league.state_dict() if trainer.league else None,
+                     "calls": trainer.league.forward_calls if trainer.league else None})
+        trainer.close()
+    fused, plain = runs
+    assert fused["deferred"] > 0 and plain["deferred"] == 0
+    for key in ("progress", "league", "calls"):
+        assert fused[key] == plain[key], key
+    for key in ("chosen", "obs"):
+        assert np.array_equal(fused[key], plain[key]), key
+    for key in ("logp", "ref_logp"):
+        np.testing.assert_allclose(fused[key], plain[key], rtol=0, atol=1e-6)
+
+
+def test_only_models_on_the_learners_reference_join_its_forward():
+    from types import SimpleNamespace
+
+    from train.ppo import RolloutCollector
+
+    device = torch.device("cpu")
+    collector = RolloutCollector()
+    collector.device = device
+    collector.policy = SimpleNamespace(reference_checkpoint_id="m1")
+
+    def model(reference="m1", heuristic_tribute=True, dev=device, stage_b=True):
+        pruned = SimpleNamespace(reference_checkpoint_id=reference) if stage_b else None
+        return SimpleNamespace(pruned=pruned, heuristic_tribute=heuristic_tribute, device=dev)
+
+    assert collector._shares_reference(model())
+    assert not collector._shares_reference(model(reference="b6"))
+    assert not collector._shares_reference(model(reference=None))
+    assert not collector._shares_reference(model(heuristic_tribute=False))
+    assert not collector._shares_reference(model(dev=torch.device("meta")))
+    assert not collector._shares_reference(model(stage_b=False))
+    collector.policy = SimpleNamespace(reference_checkpoint_id=None)
+    assert not collector._shares_reference(model(reference=None))
+
+
 def test_actor_league_end_to_end_and_snapshots_reach_actors(init_checkpoint, tmp_path):
     run = tmp_path / "run"
     trainer = PPOTrainer(tiny(init_checkpoint, pool(tmp_path, init_checkpoint), actor_processes=2,

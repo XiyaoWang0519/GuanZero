@@ -246,6 +246,32 @@ class StageBPolicy:
                           logits=logits, ref_log_probs=ref_log_probs,
                           finite=None if sync_checks else torch.isfinite(ref_scores).all())
 
+    def choose(self, obs: Tensor, cand: Tensor, offsets: Tensor, phase: Tensor, *,
+               generator: torch.Generator | None = None, greedy: bool = False,
+               phase_code: int | None = None,
+               ref_scores: Tensor | None = None) -> tuple[Tensor, Tensor]:
+        """`act`'s choice alone, for opponents: the same candidate index per
+        row from the same draws, without log-probabilities, entropy or
+        reference log-probabilities, and without device synchronization
+        except the pruning's `nonzero`. Returns (choice, finite), `finite`
+        being whether the reference scores were all finite; the caller checks
+        it when it copies the choice back."""
+        if ref_scores is None:
+            with torch.no_grad():
+                ref_scores = self.reference.score_candidates(
+                    obs, cand, offsets, phase, chunk_size=self.config.chunk_size,
+                    phase_code=phase_code)
+        keep_index, pruned_offsets = prune_candidates(
+            ref_scores, offsets, self.config.top_k, pass_mask(cand), check_finite=False)
+        logits = self.logits(obs, cand[keep_index], pruned_offsets, phase, phase_code)
+        if greedy:
+            local = select_actions(logits, pruned_offsets)
+        else:
+            local = sample_segments(segment_log_softmax(logits, pruned_offsets), pruned_offsets,
+                                    generator, validate=False)
+        return (keep_index[pruned_offsets[:-1] + local] - offsets[:-1],
+                torch.isfinite(ref_scores).all())
+
     def evaluate(self, obs: Tensor, pruned_cand: Tensor, pruned_offsets: Tensor,
                  phase: Tensor, pruned_choice: Tensor,
                  phase_code: int | None = None) -> tuple[Tensor, Tensor]:
