@@ -604,3 +604,36 @@ M1 strength and the architecture decision need real training/evaluation data.
 The external Rule One--Four/DanZero/SDMC/GS2 ladder is unavailable as recorded
 in M0. M2/M3 gates must be revised against an agreed reference before those
 stages; local greedy wins cannot be reported as those published benchmark wins.
+
+## DanLM external baseline (Stage C row C0)
+
+DanLM plays in its own engine, which ships as CPython 3.12 macOS binaries.
+It is evaluation only (non-commercial licence) and is never vendored. One-time
+setup, all under `.work/`:
+
+```sh
+git clone --depth 1 https://github.com/dashidhy/DanLM.git .work/external/DanLM
+uv venv .work/external/danlm-venv --python 3.12
+VIRTUAL_ENV=$PWD/.work/external/danlm-venv uv pip install --python .work/external/danlm-venv/bin/python torch numpy onnxruntime pybind11 pytest
+cmake -S . -B .work/build-py312 -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DPython_EXECUTABLE=$PWD/.work/external/danlm-venv/bin/python -DGD_BUILD_TESTS=OFF
+cmake --build .work/build-py312 -j --target _gd_core   # lands in python/gd/ beside the 3.14 module
+```
+
+Rules diff (DanLM in every seat, both engines compared at every decision) and
+the duplicate evaluation of a checkpoint, DanLM's engine refereeing:
+
+```sh
+export PYTHONPATH=python:. DANLM_ROOT=.work/external/DanLM
+.work/external/danlm-venv/bin/python -m eval.danlm.arena diff --rounds 200
+.work/external/danlm-venv/bin/python -m eval.danlm.arena duplicate \
+  --checkpoint .work/runpod-b8/results/runs/league/run/latest.pt --deals 1000 --workers 8
+.work/external/danlm-venv/bin/python -m eval.danlm.arena duplicate \
+  --checkpoint "danlm:v1t:ckpts/DanZero_v3_rep_v1t/v3_rep_v1t_best_eval_001_int8.onnx" --deals 1000 --workers 4
+```
+
+About 75 s per 1,000 deals with 8 workers. `DANLM_SLOW_OBS=1` disables the
+verified observation replacement (`eval/danlm/fast_obs.py`), which is 16x
+slower. Tests: `tests/test_danlm_bridge.py` runs anywhere;
+`tests/test_danlm_fast_obs.py` runs in the 3.12 environment and skips
+elsewhere. Report: `docs/reports/stage-c-danlm.md`.

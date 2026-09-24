@@ -1,0 +1,77 @@
+{
+  "mode": "duplicate",
+  "checkpoint": "danlm:v1t:ckpts/DanZero_v3_rep_v1t/v3_rep_v1t_best_eval_001_int8.onnx",
+  "checkpoint_name": "danlm:v1t:ckpts/DanZero_v3_rep_v1t/v3_rep_v1t_best_eval_001_int8.onnx",
+  "checkpoint_id": null,
+  "danlm": "ckpts/DanLM_v1/dansformer_v1_best_eval.pt",
+  "deals": 1000,
+  "seed": 20260930,
+  "tribute_fraction": 0.5,
+  "elapsed_seconds": 203.51675675000297,
+  "scored_deals": 990,
+  "excluded_deals_mirror_failed": 10,
+  "levels_per_round": -0.48333333333333334,
+  "levels_per_round_ci95": [
+    -0.5601010101010101,
+    -0.41008838383838386
+  ],
+  "round_win_rate": 0.42474747474747476,
+  "round_legs": 1980,
+  "by_tribute": {
+    "double": {
+      "deals": 122,
+      "levels_per_round": -0.3442622950819672
+    },
+    "none": {
+      "deals": 490,
+      "levels_per_round": -0.513265306122449
+    },
+    "single": {
+      "deals": 319,
+      "levels_per_round": -0.4592476489028213
+    },
+    "anti": {
+      "deals": 59,
+      "levels_per_round": -0.652542372881356
+    }
+  },
+  "divergences": {
+    "counts": {
+      "their_choice_missing": 10,
+      "their_choice_reading": 15
+    },
+    "samples": {
+      "their_choice_reading": [
+        "deal-2/b: NormalizedPlay(type='Single', cards=(25,), key=8) -> Single 12 [H8]",
+        "deal-154/b: NormalizedPlay(type='Single', cards=(17,), key=11) -> Single 12 [H6]",
+        "deal-160/a: NormalizedPlay(type='Single', cards=(49,), key=11) -> Single 12 [HA]",
+        "deal-253/a: NormalizedPlay(type='Single', cards=(37,), key=11) -> Single 12 [HJ]",
+        "deal-300/a: NormalizedPlay(type='Single', cards=(33,), key=11) -> Single 12 [HT]",
+        "deal-331/b: NormalizedPlay(type='Pair', cards=(1, 1), key=10) -> Pair 12 [H2 H2]",
+        "deal-433/b: NormalizedPlay(type='Single', cards=(17,), key=11) -> Single 12 [H6]",
+        "deal-435/b: NormalizedPlay(type='Single', cards=(17,), key=11) -> Single 12 [H6]",
+        "deal-450/a: NormalizedPlay(type='Single', cards=(1,), key=11) -> Single 12 [H2]",
+        "deal-556/a: NormalizedPlay(type='Single', cards=(17,), key=8) -> Single 12 [H6]",
+        "deal-591/b: NormalizedPlay(type='Single', cards=(1,), key=10) -> Single 12 [H2]",
+        "deal-619/a: NormalizedPlay(type='Single', cards=(9,), key=10) -> Single 12 [H4]",
+        "deal-705/a: NormalizedPlay(type='Single', cards=(13,), key=9) -> Single 12 [H5]",
+        "deal-914/b: NormalizedPlay(type='Single', cards=(33,), key=11) -> Single 12 [HT]",
+        "deal-980/b: NormalizedPlay(type='Single', cards=(33,), key=11) -> Single 12 [HT]"
+      ],
+      "their_choice_missing": [
+        "deal-2/b: NormalizedPlay(type='Single', cards=(46,), key=10)",
+        "deal-154/b: NormalizedPlay(type='Single', cards=(19,), key=12)",
+        "deal-160/a: NormalizedPlay(type='Single', cards=(51,), key=12)",
+        "deal-253/a: NormalizedPlay(type='Single', cards=(38,), key=12)",
+        "deal-300/a: NormalizedPlay(type='Single', cards=(35,), key=12)",
+        "deal-331/b: NormalizedPlay(type='Pair', cards=(2, 3), key=12)",
+        "deal-435/b: NormalizedPlay(type='Single', cards=(18,), key=12)",
+        "deal-450/a: NormalizedPlay(type='Single', cards=(2,), key=12)",
+        "deal-556/a: NormalizedPlay(type='Single', cards=(19,), key=12)",
+        "deal-591/b: NormalizedPlay(type='Single', cards=(50,), key=11)"
+      ]
+    }
+  },
+  "reading": "levels_per_round is our team's mean net level gain per round over both legs of each deal (DanLM's engine scores); round_win_rate is the fraction of legs whose first finisher is on our team, DanLM's single-round metric",
+  "danlm_root": ".work/external/DanLM"
+}

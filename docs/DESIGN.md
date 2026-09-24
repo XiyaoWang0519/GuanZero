@@ -1,6 +1,6 @@
 # Guandan AI: system design
 
-Status: v0.4, empirical progress updated Sept. 22, 2026. v0.2 fixed the house rules (RULES.md section 13). v0.3 added phase heads and brought learned tribute forward to M2. v0.4 adds the Transformer history encoder (v2), the match memory experiment (v3) and the belief probe that gates them. Owner: Irvin. Companion documents: `RULES.md` (rules and acceptance tests), `gd_reference.py` (Python rules oracle).
+Status: v0.5, research review folded in Sept. 23, 2026. v0.2 fixed the house rules (RULES.md section 13). v0.3 added phase heads and brought learned tribute forward to M2. v0.4 adds the Transformer history encoder (v2), the match memory experiment (v3) and the belief probe that gates them. v0.5 records the Stage B results, corrects the novelty claims against DanLM and FableDan, promotes search with joint belief sampling from optional to the main line, and adds the learning-signal and external-baseline work of `STAGE_C_TODO.md`. Owner: Irvin. Companion documents: `RULES.md` (rules and acceptance tests), `gd_reference.py` (Python rules oracle).
 
 Implementation update, Sept. 21: the pre-training M1 pipeline is implemented
 and verified on CPU and an RTX 5090. See `M1_TODO.md`, `TRAINING.md`,
@@ -36,11 +36,44 @@ but no history playing policy has been promoted. See
 [the memory report](reports/M2-memory.md). All 15 selected checkpoints are
 verified and the GPU is released; see [the completed run record](reports/M2-next-run.md).
 
+Stage B update, Sept. 23: the perfect-information critic, PPO, league and
+exploiter test are implemented and measured (`STAGE_B_TODO.md`, gates G1 to
+G4). At equal wall clock PPO from the M1 final beats continued DMC by +0.256
+levels per round; the league checkpoint beats the single-opponent checkpoint
+head to head by +0.087 and on every held-out bot; a two-hour exploiter still
+reaches 40% of matches against it. The strongest model so far is the B8
+league final, an MLP.
+
+Research review, Sept. 23: two independent reviews of the design against the
+2025 to 2026 literature reached the same conclusions and are merged here. The
+full notes are in [the model research note](reports/model-research-2026-09-23.md).
+The consequences for this document: (1) DanLM and FableDan already play
+Guandan with a history Transformer, so the novelty claim of section 7.2 is
+withdrawn and DanLM becomes the external baseline (section 9.2); (2) the
+supervised belief probe measured per-card marginal cross-entropy, which is
+the wrong metric for both policy quality and search, so its negative result
+demotes the history tower as the policy backbone but does not settle the
+architecture (section 7.4); (3) search with joint belief sampling moves from
+an optional Stage C to the main line (section 8.5); (4) the learning signal
+(Q-critic with expected SARSA, advantage filtering, match-level value) is a
+lever of at least the size of the architecture and comes first because it is
+cheap (section 8.4). The task breakdown is `STAGE_C_TODO.md`.
+
+External calibration, Sept. 23 evening: the DanLM baseline is playable
+(`eval/danlm/`, `reports/stage-c-danlm.md`). Under DanLM's engine as referee,
+over 3,998 duplicate deals, the B8 league final scores −2.065 [−2.097,
+−2.034] levels per round and wins 11.5% of rounds; the M1 final −2.46; DanLM's
+own MLP reproduction of DanZero −0.48. The pruning audit (`reports/
+stage-c-pruning-audit.md`) found the top-32 cap not binding. Reading: the gap
+to the public state of the art is about two levels per round, and most of it
+sits below the architecture question, in training volume. The Stage C order
+is revised in `STAGE_C_TODO.md`.
+
 ## 1. Summary
 
 Build a reinforcement learning agent for Guandan (掼蛋) that beats every published baseline and is competitive with experienced human players, trained on one rented GPU node on a personal budget.
 
-The plan in one paragraph: a fast C++ rules engine with a batched Python interface feeds a small network that scores candidate actions. The first version of that network is a plain MLP. The second reads the full play history of the round with a Transformer, which no published Guandan agent does. Deep Monte Carlo self-play produces a strong baseline. PPO with a perfect-information critic and an opponent league takes it further, with optional search in endgames. Progress is measured by an evaluation harness built on duplicate deals and on the OpenGuanDan benchmark agents.
+The plan in one paragraph: a fast C++ rules engine with a batched Python interface feeds a small network that scores candidate actions. The first version of that network is a plain MLP. Deep Monte Carlo self-play produces a strong baseline. PPO with a perfect-information critic and an opponent league with exploiters takes it further; this is the current strongest model. The next levers, in the order they are tried, are a lower-variance learning signal, test-time search over sampled hidden hands, and only then a history Transformer, which DanLM and FableDan have already shown to work under DMC. Progress is measured by an evaluation harness built on duplicate deals, on an external baseline (DanLM) and, where available, on the OpenGuanDan benchmark agents.
 
 ### 1.1 Why this is still worth doing
 
@@ -79,8 +112,16 @@ Match win rates are measured inside the OpenGuanDan simulator over 1,000 matches
 | TAO (ICLR 2024) and OMIS (NeurIPS 2024) | Transformers that adapt in context to unseen opponent policies | Precedent for the v3 match memory. Their environments are far smaller than Guandan. |
 | PerfectDou (arXiv 2203.16406) | Perfect-information critic, imperfect-information actor | Critic design for the PPO stage |
 | OpenGuanDan (arXiv 2602.00676) | Java simulator, JSON per-player API, seven built-in agents | Reference rules, baseline opponents, evaluation protocol |
+| DanLM (github.com/dashidhy/DanLM, 2026) | Causal Transformer over the tokenized public play history plus a hand MLP, DMC self-play, next-token prediction as an auxiliary loss, no search. Author-reported 59.6% of rounds and 74.9% of matches against the author's own DanZero reproduction; first on the Botzone Guandan ladder in April 2026. Weights published under Apache 2.0 with a non-commercial clause. | The external baseline (section 9.2). The existence proof that a history Transformer trains under self-play in Guandan. The NTP auxiliary, a behaviour-prediction target rather than per-card belief, is the part worth copying. |
+| FableDan (github.com/lrx0716/FableDan, 2026) | Open training code for the DanLM recipe: 4-block, width-128 causal Transformer with RoPE, QK-norm, RMSNorm, SwiGLU; DMC plus NTP plus an oracle-supervised belief head; Botzone rules; 1 to 2 GPU-days. | The reference configuration for any history-tower arm (section 7.4), instead of our own section 7.2 design. |
+| Ataraxos (arXiv 2511.07312, Stratego) | Transformer policy, belief and setup networks; damped self-play with reverse-KL regularization, advantage-filtered samples and parameter EMA; at play time about 1,000 rollouts of depth 40 over sampled hidden configurations with a KL-regularized tabular correction. 16 H100 for a week plus 4 for the belief net. Beat a four-time world champion 15 to 1. | The template for section 8.5: self-play blueprint plus belief sampling plus rollouts plus a regularized correction. Full replication is out of budget; endgame-only search is not. |
+| VRPO, "GAE falls short" (arXiv 2605.19235) | Shows GAE adds variance from sampled future actions under a stochastic equilibrium policy even with a perfect critic; replaces it with expected SARSA(λ) from a centralized action-value critic. Tested on DouDizhu and heads-up no-limit hold'em. | The Q-critic and advantage estimator of section 8.4. Our two-tower net already scores (state, action) pairs. |
+| Reevaluating policy gradient methods (arXiv 2502.08938, ICLR 2026) | Over 7,000 runs on five games: FP-, DO- and CFR-based deep methods do not beat generic PPO on exploitability. | Keep PPO. Do not switch to CFR or R-NaD variants. |
+| Lightweight agent study, Gin Rummy (arXiv 2607.06854) | MLP, convolutional, set, attention and recurrent encoders at matched budgets; capacity barely mattered; "the limit is information rather than network size". | Tempers architecture expectations and agrees with our belief probe. |
+| Test-time RL in imperfect-information games (arXiv 2608.30635) | Policy-gradient subgame solving with a generative belief at play time; regularized policy gradient bounds the degradation from test-time reasoning. Two-player zero-sum only. | The regularization argument for the search correction of section 8.5; the theory does not cover four seats with two teams. |
+| Generals.io agent (arXiv 2606.23348) | Vision Transformer policy, sparse rewards, advantage filtering and EMA; a 10,000x faster simulator was the enabling step. | Confirms that engine throughput is the multiplier; the perf work on `gd_core` is not a side quest. |
 
-AlphaZero-style MCTS is not the base method. Its search assumes a fully observed state, while Guandan hides three hands, has legal action sets on the order of 10^4 on an opening hand and runs about 100 decisions per player per match. Search is kept for endgames, where hidden information is small.
+AlphaZero-style MCTS is not the base method. Its search assumes a fully observed state, while Guandan hides three hands, has legal action sets on the order of 10^4 on an opening hand and runs about 100 decisions per player per match. Search enters as rollouts over sampled hidden hands on top of the self-play blueprint, first in endgames where the sample space is small, then wherever the per-move budget allows (section 8.5).
 
 ## 3. Requirements
 
@@ -156,9 +197,11 @@ Components:
 | D6 | One network shared by all four seats | One network per seat or role | Seats are symmetric in Guandan, unlike the three roles of DouDizhu |
 | D7 | Duplicate deals as the primary internal metric | Plain win rate | Card luck dominates single results. Pairing removes most of it. |
 | D8 | Python oracle written independently of the engine | Test the engine against itself | A shared misunderstanding of the rules would otherwise pass every test |
-| D9 | History enters through a causal Transformer over public action tokens, read by one private query token | Flat cumulative features only, or an LSTM over the last few moves | Who passed on what, and in which order, is the evidence for hidden hands and is absent from flat features. Keeping the stream public lets all four seats share one KV cache per environment. |
-| D10 | Cross-round opponent memory as one summary vector per seat per finished round | The raw token history of the whole match in context | Raw match context costs about 75 GB of KV cache across 8,192 environments. Summaries cost almost nothing. |
-| D11 | Architecture choices are gated by a cheap supervised belief probe before any RL compute is spent | Decide by full RL ablations only | Hours instead of weeks, and it tests the exact mechanism the Transformer is supposed to improve |
+| D9 | History enters through a causal Transformer over public action tokens, read by one private query token | Flat cumulative features only, or an LSTM over the last few moves | Who passed on what, and in which order, is the evidence for hidden hands and is absent from flat features. Keeping the stream public lets all four seats share one KV cache per environment. **Status Sept. 23: not promoted.** The probe found no belief gain from history over the no-history query tower; the policy backbone stays the MLP. Re-tested only under the conditions of section 7.4. |
+| D10 | **Revised Sept. 23 (owner decision): the raw token history of the whole match stays in context.** Summaries were the original choice because 8,192 environments would hold about 75 GB of KV cache; the owner's reading is that perfect memory is the point of a Transformer and the budget should come out of the environment count instead. | Summary vectors per seat per finished round (the v3 prototype) | A match is 1,000 to 2,500 public tokens. At 4 layers, width 128, about 2 KB per token, 2,048 environments hold under 10 GB. Tokens carry a round-index embedding and a seat embedding; a config field sets how many previous rounds the query may see (0 reproduces DanLM's per-round context, all is the full match), so the value of the memory is measured, not assumed. The v3 summary probe stays as history (`v3_not_yet_justified` under its belief metric); the retest is at match level with habit-bearing opponents, `STAGE_C_TODO.md` row C8. |
+| D11 | Architecture choices are gated by a cheap supervised belief probe before any RL compute is spent | Decide by full RL ablations only | Hours instead of weeks, and it tests the exact mechanism the Transformer is supposed to improve. **Caveat Sept. 23:** the probe's per-card marginal cross-entropy is dominated by trivially known entries and does not measure joint structure or behaviour prediction. Future architecture gates use the metrics of section 7.4. |
+| D12 | DanLM is the external baseline, played under a rules profile that matches its engine | Keep reporting against our own M1 and Stage B checkpoints only | Every internal comparison is within one model family. M1 is saturated as a yardstick (B8). DanLM has public weights and a public ladder rank; nothing else does. Evaluation only, never training data or vendored code, because of its non-commercial licence. |
+| D13 | Learning-signal changes (Q-critic, expected SARSA, advantage filtering, match-level value) are tried before architecture changes | Architecture first | B6 showed the critic and PPO worth +0.78 levels per round over M1 in one hour, more than any architecture result in the literature; these changes are config-sized and evaluated under the existing equal-compute protocol. |
 
 ## 5. Rules engine
 
@@ -275,7 +318,7 @@ The flat features of section 6 go through a 4 x 512 MLP. Action tower 2 x 256, f
 
 ### 7.2 v2: Transformer over the round history
 
-**Why.** The network never sees hidden hands, so its play quality depends on how well it infers them. The evidence is in the sequence: who passed on which play, who spent a bomb on what, in which order. Cumulative played-card features throw that away. DanZero sees only the last action of each seat. This is the most likely place to pass the published agents on architecture alone.
+**Why.** The network never sees hidden hands, so its play quality depends on how well it infers them. The evidence is in the sequence: who passed on which play, who spent a bomb on what, in which order. Cumulative played-card features throw that away. DanZero sees only the last action of each seat. *Original claim, withdrawn Sept. 23:* "this is the most likely place to pass the published agents on architecture alone." DanLM and FableDan already train this kind of tower under DMC, and our own probe found no belief gain from history at the tested scale (section 7.4). The design below is kept as the record of what was built (`train/belief_model.py`, `train/history_cache.py`); any future history arm follows the FableDan configuration and the conditions in section 7.4.
 
 **Public stream.** One token per play or pass, built from public information only and tagged with the absolute seat. A causal Transformer encodes the stream. Starting size: 4 layers, width 256, 4 heads. Because nothing private enters the stream, its encoding is identical for all four seats, so each environment keeps one KV cache and appends one token per action.
 
@@ -289,7 +332,7 @@ The flat features of section 6 go through a 4 x 512 MLP. Action tower 2 x 256, f
 
 **Goal.** Adapt within a match to how these particular opponents play: whether they hoard bombs, how they spend wild cards, how they defend when someone is nearly out. No published Guandan agent does this, and it matters most against humans, which is where every published agent is still below 50%.
 
-**Mechanism.** When a round ends, pool the v2 stream outputs at each seat's tokens, together with that seat's remaining cards if the round end revealed them, into one summary vector per seat. The private query of later rounds also attends to these vectors. A match holds a few dozen of them, so the cost is negligible.
+**Mechanism, revised Sept. 23.** The public token stream runs across the whole match, not one round: every play, pass, tribute card and round end of every earlier round stays in context as raw tokens, each tagged with the round index and the absolute seat, and revealed hands at a round end enter as tokens too. The private query of a decision attends to the full stream. A config field bounds how many previous rounds are visible so that the memory's value can be measured against a per-round context. The original summary design (one pooled vector per seat per finished round, the v3 prototype in `train/belief_memory.py`) is kept only as the record of what was tested.
 
 **Precondition.** Testing adaptation to individual opponents needs stable differences between their styles. Identical learner copies may share tendencies, but do not provide controlled between-opponent style variation. The league therefore needs stylized opponents whose style stays fixed for a whole match: bomb-happy and bomb-shy variants, older checkpoints at different sampling temperatures, heuristic bots with different parameters. Memory can still receive gradients and learn other match information without this variation, so a prediction gain alone does not identify opponent-habit learning.
 
@@ -347,6 +390,69 @@ The same probe, with opponents of fixed style and the log loss measured round by
 
 Expectation, stated in advance so that results can be judged against it: v2 is a moderate and fairly certain gain, a few points of win rate at equal compute, not a step change. v3 has the highest ceiling and the highest chance of showing nothing.
 
+**Reading of the probe, Sept. 23.** The negative history result stands for
+what it measured, and it agrees with the Gin Rummy study in section 2. But
+the metric limits what it can decide:
+
+1. Per-card marginal cross-entropy over 3 x 54 entries is dominated by
+   cards already played or otherwise known. Differences of 1e-4 in that
+   quantity say little about the decision-relevant questions: does RHO hold
+   a bomb, who holds the largest remaining single, can the partner beat this
+   pair.
+2. Marginals do not give a joint hand. Sampling each card independently from
+   them produces hands that violate the count and multiplicity constraints,
+   so the head cannot feed search as it stands (section 8.5).
+3. The probe measured belief, not policy. History may matter for reading the
+   partner's line rather than for card counting, which no belief metric sees.
+   DanLM's gain comes with a next-event prediction loss, a behaviour target.
+
+Decisions that follow. The MLP remains the policy backbone. Architecture
+gates from here on use one of three metrics: duplicate-deal strength at equal
+wall clock, joint log-likelihood of the true hidden hands under a sampler
+(for belief models that feed search), or held-out accuracy of predicting the
+next non-forced public event by seat (for behaviour models). A history arm is
+run only if the external baseline (section 9.2) shows a gap that the
+learning-signal and search work of `STAGE_C_TODO.md` does not close, and then
+with the FableDan configuration, its NTP loss, a GRU control and at least
+three seeds. Hand-as-tokens attention over the candidate set (section 14,
+item 6) is a separate, cheaper architecture question that the same protocol
+covers; the looped state tower of section 7.5 is its recurrent-depth form
+and is the architecture experiment the owner chose to run first.
+
+### 7.5 v4: looped state tower (experiment, added Sept. 23)
+
+**What.** A recurrent-depth network: one Transformer block applied several
+times to the same tokens, with the input re-injected at every pass, instead
+of a stack of distinct layers. Loop count is a test-time knob. The design
+follows the 2025 to 2026 recurrent-depth work (Huginn, Ouro, HRM and TRM,
+Looped World Models; the architecture reportedly used by GPT-6 Astra).
+Evidence there is on puzzles, mazes, Sudoku, code and math, where accuracy
+rises with loop count; there is no published result on card games or RL.
+
+**Why it might fit Guandan.** The two hard sub-problems at a decision are
+combinatorial: splitting 27 cards into a plan, and reconciling the unseen
+cards with the count and multiplicity constraints. Both are iterative
+refinement problems of the Sudoku kind, which is where looped networks have
+shown their gains. Tokens are the hand's cards, the candidate actions and
+one context token, so the loops refine "what is left after this play"
+jointly for all candidates (section 14, item 6).
+
+**Why it is affordable now.** Collection dominates wall clock and the GPU
+sits mostly idle (8.6); loops multiply inference compute, not parameters,
+so a few loops of a small block may cost little wall clock. That is
+measured, not assumed.
+
+**What it is not.** Latent computation inside the network. It does not
+consult the rules engine about the future. Section 8.5 search does, and
+the two stack: Ataraxos used both a large network and rollouts.
+
+**Gate.** `STAGE_C_TODO.md` row C7 and gate G12: first a supervised probe
+whose success signature is accuracy rising with loop count at matched
+parameters, then an equal-wall-clock RL arm. Known failure modes from the
+literature, accuracy collapsing past a loop count and training instability,
+are handled with sampled loop counts and truncated backprop, both config
+fields.
+
 ## 8. Training
 
 ### 8.1 Rollout loop
@@ -401,9 +507,92 @@ observation-semantics correction are recorded in `reports/M2-A2.md`.
 5. Auxiliary losses stay on.
 6. Tribute and back-tribute decisions are ordinary steps of the trajectory from here on. Their heads start from Stage A2 and train with the same advantage estimates as the play head.
 
-### 8.5 Stage C: endgame search (optional)
+**As built, Sept. 23** (`STAGE_B_TODO.md`, `train/ppo.py`, `train/critic.py`,
+`train/league.py`): the critic takes the actor observation plus the three
+hidden-count rows and outputs V; GAE with λ 0.95 and γ 1; candidates are the
+frozen M1 top 32 plus pass; temperature 0.02; the league draws one opponent
+per match with win-rate-proportional weights, at most four network opponents
+active, snapshots of the learner at two temperatures; B11 adds a live
+exploiter whose checkpoints are imported into the pool. The tribute heads
+stayed on the heuristic (Stage A2 decision). Gates G1 to G4 passed; the B8
+league final is the strongest checkpoint.
 
-When few cards remain unseen, sample hidden hands consistent with public information, weighted by the hidden hand head. For each of the top few candidates, roll the round out with the policy in every seat and average the returns. Override the policy only when the margin is clear. The engine's trivially copyable state makes rollouts cheap.
+**Stage B2: learning signal, planned** (`STAGE_C_TODO.md`, rows C1 and C2).
+Each item is one `PPOConfig` field and one equal-wall-clock arm from the B8
+league final; none replaces the current default until it passes the revised
+G3 protocol head to head and on the held-out suite.
+
+7. **Candidate pruning audit.** The learner can only choose among the frozen
+   M1's top 32. Measure how often the full canonical set is larger, which
+   types are pruned and how often the current policy's preferred action is
+   outside the set; then compare top 32, top 64 and "top 32 plus the current
+   policy's top 8" arms. The buffer must store the set that was sampled from.
+8. **Centralized Q-critic and expected SARSA(λ).** Critic input becomes
+   (observation, hidden counts, action) through the shared action tower;
+   the advantage is the expected SARSA(λ) trace of VRPO instead of GAE, so
+   sampled future actions no longer add variance. λ and the estimator are
+   config fields; GAE stays available as the control.
+9. **Advantage-magnitude filtering and parameter EMA.** Keep only samples
+   above an advantage quantile for the policy update (Ataraxos, Generals.io);
+   evaluate and snapshot an EMA of the policy weights.
+10. **Match-level value.** Fit V_match over (round level, both team levels,
+    owner, A-failure counts) from self-play matches; use ΔV_match as a
+    potential-based term or as a weight on the round return so that play
+    near level A trades round gain for match win probability. Checked on
+    the level-A behaviour probes.
+11. **Scale at equal wall clock.** Collection dominates wall clock (8.6), so
+    a 10M to 30M parameter policy may be nearly free. Run as a curve, not one
+    arm: about 3M, 30M and 100M parameters, each against DanLM, so that the
+    point where parameters stop paying is measured before anything larger is
+    considered. The record of card and board games (AlphaZero, Ataraxos at
+    15M to 57M, DanLM's tiny network, the Gin Rummy study) says that point
+    comes early and that games played and search compute are the axes that
+    keep scaling; the owner's ambition to go to billions of parameters is
+    gated on this curve, not ruled out.
+
+### 8.5 Stage C: search over sampled hidden hands (main line)
+
+Promoted from optional on Sept. 23. GS2 beat its own blueprint by 56.7%
+with endgame subgame refinement, and Ataraxos reached superhuman Stratego
+with rollouts over sampled hidden configurations on top of a self-play
+blueprint. No published Guandan agent searches with a learned belief. The
+engine was built for this: trivially copyable state, `VecEnv::fork`,
+canonical candidates, batched inference.
+
+1. **Trigger.** A configurable threshold on unseen cards, starting in
+   endgames; widened as the per-move budget allows.
+2. **Belief sampler.** v0: per-card marginals from the hidden head plus
+   exact constraints (cards left per seat, two-deck multiplicity, known
+   holdings, unseen set), sampled by sequential assignment with rejection.
+   v1: an autoregressive sampler over the unseen cards conditioned on the
+   state, trained on self-play labels and scored by the joint log-likelihood
+   of the true hands and the fraction of valid samples. Optional
+   reweighting of samples by the blueprint's likelihood of the observed
+   passes and plays, which is where a history model earns its place.
+3. **Rollouts.** Root actions are the blueprint's top k. For each sampled
+   world and root action, play the round out with the blueprint in every
+   seat, each seat seeing only what it may legally see in that world. Value
+   is the mean return, optionally the critic at a depth cutoff.
+4. **Correction.** Not argmax over rollout values. A KL-regularized tabular
+   update toward the blueprint policy (magnetic mirror descent, as in
+   Ataraxos and the test-time RL paper), so that randomization survives and
+   the strategy-fusion optimism of per-world search is bounded. Override
+   only above a margin.
+5. **Evaluation.** Three arms, no search, uniform-legal belief, learned
+   belief, on duplicate deals against the blueprint and on the held-out
+   suite, at stated per-move budgets (20, 100, 500 ms). The curve decides
+   how far the trigger widens. Rough cost: 8 root actions x 32 worlds x
+   about 80 decisions per rollout is about 20,000 network decisions per
+   move, well under a second on one GPU.
+6. **Distillation.** Only after the curve shows a gain: search-improved
+   targets for the policy on a fraction of decisions, with the total
+   training cost reported. Search everywhere during collection would cut
+   data throughput; it is not the default.
+
+Caveats: per-world rollouts assume the future can branch on cards not yet
+known (strategy fusion); the two-player subgame guarantees of ReBeL and the
+test-time RL paper do not extend to four seats with two teams. This is an
+empirical method, gated by strength.
 
 ### 8.6 Measured first-run load
 
@@ -442,6 +631,22 @@ Settled in M0, and not as hoped. The repository ships no agents and no weights: 
 The consequence is that the opponents named in the M1, M2 and M3 gates cannot currently be played against. The fallback from the risk table becomes the plan: train a DanZero-style baseline with our own pipeline and use it as the reference point, treating the published win rates as calibration rather than as a ladder. This needs a decision before M2 begins, because it changes what those gates can mean. See `docs/reports/M0.md` section 5.
 
 M0 also replaced the socket route with something cheaper: the repository's `guandan-java/` directory exposes the Java move generator to Python directly, which is what the trace logger and replay diff use.
+
+**External baseline, added Sept. 23: DanLM.** It has public weights, a public
+ladder rank and an engine of its own, which the OpenGuanDan agents do not.
+The route is the one that worked for OpenGuanDan: log games from its engine,
+replay them in ours under a rules profile that matches it (`botzone`, a
+`RuleConfig` profile alongside `house` and `ogd`, with every difference
+recorded in RULES.md section 13), then play the B8 league final against it
+in duplicate deals and full matches with seats swapped. Constraints: its
+model, encoder and engine ship as CPython 3.12 macOS binary extensions, so
+it runs in its own virtual environment behind an adapter in `eval/`; its
+licence is Apache 2.0 with a non-commercial clause, so it is an evaluation
+opponent only, never training data or vendored code; its reported 59.6% is
+against the author's own DanZero reproduction, not the original checkpoint,
+and is not transferred to our gate table. The result is a calibration, the
+first external one since M0, and it decides whether the history-tower arm of
+section 7.4 is run at all.
 
 ### 9.3 Behavior probes
 
@@ -504,8 +709,8 @@ Gates, not dates. Each milestone ends with a short written report in `docs/repor
 |---|---|---|
 | M0 | Engine, oracle cross-checks, fuzzing, vectorized env, benchmarks, OpenGuanDan parity, feature encoder | Section 1.2, row M0 |
 | M1 | v1 model, DMC training end to end, arena, Elo, behavior probes, belief probe on the self-play logs | Row M1 |
-| M2 | v2 Transformer if the belief probe supports it, confirmed at equal compute. Learned tribute heads with their measured payoff. PPO with critic and league. Exploiter test. | Row M2 |
-| M3 | Endgame search, human play UI, v3 match memory experiment with stylized league opponents | Row M3 and the stretch goal |
+| M2 | v2 Transformer if the belief probe supports it, confirmed at equal compute. Learned tribute heads with their measured payoff. PPO with critic and league. Exploiter test. **Status Sept. 23:** probe did not support v2; tribute heads did not beat the heuristic; critic, PPO, league and exploiter done with gates G1 to G4 passed (`STAGE_B_TODO.md`). | Row M2, external opponents unavailable; DanLM calibration replaces it (Stage C row C0) |
+| M3 | In the order of `STAGE_C_TODO.md`: DanLM external baseline and `botzone` profile; candidate pruning audit; learning-signal arms (Q-critic with expected SARSA, advantage filtering, EMA, match-level value, scale); endgame search over sampled hidden hands with the budget curve; joint belief sampler; history tower with NTP only if the baseline shows a gap; human play UI. v3 match memory retest after these. | Row M3 read as: beats DanLM under the `botzone` profile with intervals clear of even, and the stretch goal |
 
 ### 12.1 M0 task list
 
@@ -541,15 +746,21 @@ Work top to bottom. Each task is done when its check passes in CI.
 | v2 adds complexity without strength | Wasted weeks | Belief probe first, then an equal-compute comparison. The two-tower interface keeps v1 as a drop-in fallback. |
 | KV cache or sequence replay slows the rollout loop | Lower throughput than v1 | Measure decisions per second for v2 before any long run. Fewer environments or a narrower encoder if needed. |
 | v3 learns nothing because opponents have no habits | Research time with no result | Stylized league opponents, the adaptation metric and a small run before any commitment |
+| DanLM's rules differ from ours in ways the replay diff misses | Baseline numbers are meaningless | Same method as the `ogd` profile: trace replay, divergence classes closed one by one in RULES.md section 13 before any strength number is reported |
+| The frozen M1 top-32 pruning caps the policy | Silent ceiling on every Stage B and C result | Coverage audit and widened-candidate arms (8.4 item 7) before further long runs |
+| Per-world search is optimistic (strategy fusion) and over-fits sampled worlds | Search arm looks good on rollouts, loses on deals | Strength gate on duplicate deals only; KL-regularized correction toward the blueprint; report the uniform-belief arm so belief and search gains are separated |
+| Learning-signal changes interact (Q-critic, filtering, EMA, match value) | Attribution lost | One config field per change, one arm per change from the same start, the combination as its own arm |
 
 ## 14. What to revisit later
 
-1. Training the tribute heads jointly from the first step, if Stage A2 shows that tribute is worth a lot.
-2. A match-level value so the agent trades round reward for match win probability near level A.
+1. Training the tribute heads jointly from the first step, if Stage A2 shows that tribute is worth a lot. (A2 said no for now.)
+2. A match-level value so the agent trades round reward for match win probability near level A. (Scheduled: 8.4 item 10.)
 3. Whether `wild_usage = all` or a richer treatment of suits buys strength.
-4. Population diversity beyond a single learner, if the exploiter test shows a persistent weakness.
+4. Population diversity beyond a single learner, if the exploiter test shows a persistent weakness. (B9 showed one; B11 is the first response.)
 5. Multi-GPU only if the learner is measurably the bottleneck and the budget allows.
-6. Attention over the hand itself, with cards as tokens, if the flat hand features turn out to limit v2.
+6. Attention over the hand itself, with cards as tokens, and over the candidate set, so that candidates are scored relative to each other and to the hand left after the play (afterstate). This, not the history stream, is the Transformer use with the clearest mechanism for Guandan's hand-planning problem. An MLP with the same afterstate features is the control.
+7. Human game records as league opponents by behaviour cloning, and as self-play start states (DAGS, arXiv 2605.14379), if a licensed source appears. Every published agent is below 50% against humans; self-play alone does not see human play.
+8. v3 match memory, retested at match level with a shuffled-history control after Stage C, not by belief cross-entropy.
 
 ## 15. References
 
@@ -565,3 +776,18 @@ Work top to bottom. Each task is done when its check passes in CI.
 10. Li et al., Tjong: a transformer-based Mahjong AI, CAAI Transactions on Intelligence Technology, 2024.
 11. Jing et al., Towards offline opponent modeling with in-context learning (TAO), ICLR 2024.
 12. Jing et al., Opponent modeling with in-context search (OMIS), NeurIPS 2024.
+13. DanLM: https://github.com/dashidhy/DanLM (2026). Weights, Apache 2.0 with non-commercial clause.
+14. FableDan: https://github.com/lrx0716/FableDan (2026). Training code for the DanLM recipe.
+15. Ataraxos: Superhuman AI for Stratego using self-play RL and test-time search. arXiv 2511.07312.
+16. GAE falls short in imperfect-information self-play RL (VRPO, Q-boosting). arXiv 2605.19235.
+17. Reevaluating policy gradient methods for imperfect-information games. arXiv 2502.08938, ICLR 2026.
+18. A gold-standard study of what makes a lightweight game-playing agent strong. arXiv 2607.06854.
+19. Test-time reinforcement learning in imperfect information games. arXiv 2608.30635.
+20. Superhuman AI for Generals.io using self-play RL. arXiv 2606.23348.
+21. Data-augmented game starts for self-play exploration in imperfect information games. arXiv 2605.14379.
+22. Self-play RL under imperfect information in Big 2. arXiv 2605.28863.
+23. Internal: model research note, Sept. 23, 2026, `reports/model-research-2026-09-23.md`.
+24. Geiping et al., Scaling up test-time compute with latent reasoning: a recurrent depth approach (Huginn). arXiv 2502.05171.
+25. Stabilizing recurrent dynamics for test-time scalable latent reasoning in looped language models. arXiv 2605.26733.
+26. Looped world models. arXiv 2606.18208.
+27. Raschka, OpenAI Astra and looped transformers, 2026 blog post: https://sebastianraschka.com/blog/2026/openai-astra-looped-transformers.html

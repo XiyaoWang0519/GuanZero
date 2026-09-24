@@ -1,0 +1,97 @@
+{
+  "mode": "duplicate",
+  "checkpoint": ".work/runpod-b8/results/runs/league/run/latest.pt",
+  "checkpoint_name": "latest.pt@0196bd768c5bc4e2/ppo",
+  "checkpoint_id": "0196bd768c5bc4e20a2922d91006aa73d5492746f8577fa5d5272bac27e7931f",
+  "danlm": "ckpts/DanLM_v1/dansformer_v1_best_eval.pt",
+  "deals": 4000,
+  "seed": 20260929,
+  "tribute_fraction": 0.5,
+  "elapsed_seconds": 294.3533062500064,
+  "scored_deals": 3998,
+  "excluded_deals_mirror_failed": 2,
+  "levels_per_round": -2.064657328664332,
+  "levels_per_round_ci95": [
+    -2.0968015257628814,
+    -2.03426088044022
+  ],
+  "round_win_rate": 0.11543271635817909,
+  "round_legs": 7996,
+  "by_tribute": {
+    "none": {
+      "deals": 2006,
+      "levels_per_round": -2.047108673978066
+    },
+    "double": {
+      "deals": 505,
+      "levels_per_round": -2.0732673267326733
+    },
+    "single": {
+      "deals": 1258,
+      "levels_per_round": -2.0898251192368837
+    },
+    "anti": {
+      "deals": 229,
+      "levels_per_round": -2.061135371179039
+    }
+  },
+  "divergences": {
+    "counts": {
+      "our_candidate_unmatched": 262,
+      "their_choice_missing": 2,
+      "their_choice_reading": 37
+    },
+    "samples": {
+      "their_choice_reading": [
+        "deal-11/b: NormalizedPlay(type='Single', cards=(1,), key=0) -> Single 12 [H2]",
+        "deal-42/b: NormalizedPlay(type='Single', cards=(37,), key=9) -> Single 12 [HJ]",
+        "deal-142/a: NormalizedPlay(type='Single', cards=(5,), key=11) -> Single 12 [H3]",
+        "deal-349/a: NormalizedPlay(type='Single', cards=(41,), key=2) -> Single 12 [HQ]",
+        "deal-438/a: NormalizedPlay(type='Single', cards=(17,), key=11) -> Single 12 [H6]",
+        "deal-623/a: NormalizedPlay(type='Single', cards=(1,), key=11) -> Single 12 [H2]",
+        "deal-704/b: NormalizedPlay(type='Single', cards=(13,), key=11) -> Single 12 [H5]",
+        "deal-706/b: NormalizedPlay(type='Single', cards=(45,), key=11) -> Single 12 [HK]",
+        "deal-744/a: NormalizedPlay(type='Single', cards=(1,), key=11) -> Single 12 [H2]",
+        "deal-911/a: NormalizedPlay(type='Single', cards=(21,), key=7) -> Single 12 [H7]",
+        "deal-1039/a: NormalizedPlay(type='Single', cards=(17,), key=11) -> Single 12 [H6]",
+        "deal-1339/a: NormalizedPlay(type='Single', cards=(5,), key=10) -> Single 12 [H3]",
+        "deal-1495/b: NormalizedPlay(type='Single', cards=(17,), key=7) -> Single 12 [H6]",
+        "deal-1664/b: NormalizedPlay(type='Single', cards=(21,), key=11) -> Single 12 [H7]",
+        "deal-1767/a: NormalizedPlay(type='Single', cards=(1,), key=11) -> Single 12 [H2]",
+        "deal-1895/a: NormalizedPlay(type='Single', cards=(45,), key=2) -> Single 12 [HK]",
+        "deal-1911/b: NormalizedPlay(type='Single', cards=(9,), key=11) -> Single 12 [H4]",
+        "deal-2079/b: NormalizedPlay(type='Single', cards=(1,), key=11) -> Single 12 [H2]",
+        "deal-2203/a: NormalizedPlay(type='Single', cards=(13,), key=11) -> Single 12 [H5]",
+        "deal-2301/a: NormalizedPlay(type='Single', cards=(1,), key=11) -> Single 12 [H2]"
+      ],
+      "our_candidate_unmatched": [
+        "deal-94/a: FullHouse 12/5 [ST HT HT CT DT]",
+        "deal-94/a: FullHouse 12/0 [ST HT HT CT DT]",
+        "deal-105/a: FullHouse 12/8 [ST ST HT HT CT]",
+        "deal-105/a: FullHouse 12/8 [ST ST HT HT DT]",
+        "deal-105/a: FullHouse 12/8 [ST HT HT CT DT]",
+        "deal-105/a: FullHouse 12/0 [ST ST HT HT CT]",
+        "deal-105/a: FullHouse 12/8 [ST ST HT HT DT]",
+        "deal-105/a: FullHouse 12/8 [ST HT HT CT DT]",
+        "deal-105/a: FullHouse 12/1 [ST ST HT HT CT]",
+        "deal-105/a: FullHouse 12/5 [ST ST HT HT DT]",
+        "deal-105/a: FullHouse 12/5 [ST HT HT CT DT]",
+        "deal-105/a: FullHouse 12/0 [ST ST HT HT CT]",
+        "deal-105/a: FullHouse 12/8 [ST ST HT HT DT]",
+        "deal-105/a: FullHouse 12/8 [ST HT HT CT DT]",
+        "deal-105/a: FullHouse 12/3 [ST ST HT HT CT]",
+        "deal-105/a: FullHouse 12/10 [ST ST HT HT DT]",
+        "deal-105/a: FullHouse 12/0 [ST HT HT CT DT]",
+        "deal-119/a: FullHouse 12/2 [S8 H8 H8 C8 D8]",
+        "deal-119/a: FullHouse 12/2 [S8 H8 H8 C8 D8]",
+        "deal-119/a: FullHouse 12/9 [S8 H8 H8 C8 D8]"
+      ],
+      "their_choice_missing": [
+        "deal-911/a: NormalizedPlay(type='Single', cards=(40,), key=9)",
+        "deal-2687/b: NormalizedPlay(type='Single', cards=(47,), key=12)"
+      ]
+    }
+  },
+  "reading": "levels_per_round is our team's mean net level gain per round over both legs of each deal (DanLM's engine scores); round_win_rate is the fraction of legs whose first finisher is on our team, DanLM's single-round metric",
+  "danlm_root": ".work/external/DanLM"
+}

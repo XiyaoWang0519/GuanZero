@@ -452,6 +452,36 @@ compiled jar and cannot be read; see `docs/ogd_parity_probes.md`. The
 simulator also passes the wild count to the generator as a caller-supplied
 `heartsNum` rather than deriving it, which the adapter must get right.
 
+### 13.3 DanLM (Botzone rules): parity measured Sept. 23, 2026
+
+DanLM (github.com/dashidhy/DanLM) is the external baseline of Stage C
+(`STAGE_C_TODO.md` row C0). Its engine plays the Botzone ruleset. The
+lockstep adapter in `eval/danlm/` plays every round in both engines at once,
+with DanLM's engine as the referee, and counts every disagreement. The owner's
+standing instruction is to align our rules toward DanLM's where they differ.
+
+Measured over 70 rounds of diff mode (20 with DanLM in every seat, 50 with
+random players) and the duplicate runs: **no disagreement** in tribute (single,
+double, anti-tribute, receivers, leader), trick flow, teammate lead, finishing
+order or per-seat reward under the `house` profile. The tie rule in a double
+tribute is our `downstream` (each loser pays its upstream neighbour, the
+Banker's downstream seat leads), back-tribute excludes level cards of every
+suit and jokers, anti-tribute follows section 9. No new `RuleConfig` field was
+needed; the `house` profile is the `botzone` profile for everything the round
+score depends on. Match-level rules (level A, ownership, failures) were not
+compared, because the comparison plays single rounds as DanLM's own evaluation
+does.
+
+Two classes of difference remain, both in the legal set only:
+
+| Class | What DanLM does | Us | Frequency | Decision |
+|---|---|---|---|---|
+| Wild single or wild pair declared at another rank | A lone wild card (or two wilds) may be declared as a single (pair) of any natural rank 2 to A as well as the level rank; the declared rank is what the next player must beat | Section 4.2: a lone wild card is a single of the level power; two wilds are a pair of power 12 | About 40% of decisions list such a reading; DanLM chose one 0 times in 1,592 decisions, random players once in 6,821 | Not emulated. Dominated readings (a weaker declaration of the same card) of the kind canonical mode already drops. The adapter maps such a choice to our level-power reading and counts it (`their_choice_reading`); rounds with one are reported separately. Revisit only if a DanLM opponent is seen to use it on purpose. |
+| Full house with the level's own rank as the triple and wilds as the pair, such as `S7 S7 H7 H7 C7` at level 7 | Not listed; the cards are listed as a 5-bomb only | Section 5 and T-FH-04: both the bomb and the full house are readings | A few per thousand decisions | Same as O11: our set is a strict superset, no DanLM play is ever missing from ours. Not emulated. |
+
+Neither class affects which team wins under DanLM's referee, and every action
+DanLM chose in the measured rounds was legal in our engine.
+
 ## 14. Engine invariants for property tests
 
 1. Conservation: for every card id, copies in the four hands plus copies played equals 2, after every step and after tribute.
