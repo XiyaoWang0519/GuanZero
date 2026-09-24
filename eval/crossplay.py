@@ -15,8 +15,9 @@ copies of the M1 final), on one shared deal set:
 - `partner_lift = (X+P) - (P+P)`: whether X lifts or drags that partner.
 
 Both differences are per deal, with a 95% percentile bootstrap over deals.
-Deal `i` uses play seed `seed + i` in every lineup, so results do not depend
-on the worker count.
+The scalar reference uses play seed `seed + i` for deal `i` in every lineup.
+Batched deterministic results retain that parity; stochastic draw order depends
+on chunking.
 """
 from __future__ import annotations
 
@@ -31,6 +32,7 @@ import time
 
 import numpy as np
 
+from .batched import EvalConfig, add_eval_arguments, config_from_args, play_duplicate_batch
 from .duplicate import bootstrap_interval, generate_deals, play_duplicate_teams, summarize_duplicates
 from .policies import Policy, load_policy
 from .stage_b_baseline import _init_worker, file_sha256, host_info, resolve_path
@@ -87,35 +89,43 @@ def _policy(spec: str, device: str) -> Policy:
 
 
 def _run_chunk(task: tuple) -> tuple[int, list]:
-    lineup, reference, device, deals, seed, start, stop = task
+    lineup, reference, device, deals, seed, start, stop, *options = task
+    config = options[0] if options else EvalConfig()
     team = (_policy(lineup[0], device), _policy(lineup[1], device))
     opponents = (_policy(reference[0], device), _policy(reference[1], device))
     if (deals, seed) not in _DEALS:
         _DEALS[(deals, seed)] = generate_deals(deals, seed)
     deal_set = _DEALS[(deals, seed)]
+    if config.backend == "batched":
+        return start, play_duplicate_batch(deal_set[start:stop], team, opponents, seed + start, config)
     return start, [play_duplicate_teams(deal_set[i], team, opponents, seed + i)
                    for i in range(start, stop)]
 
 
 def _chunks(total: int, workers: int) -> list[tuple[int, int]]:
-    size = max(1, -(-total // max(1, workers * 4)))
+    # Balance long runs with roughly four chunks per worker, but avoid
+    # shrinking inference batches below 256 while workers can still stay busy.
+    size = max(1, -(-total // max(1, workers * 4)),
+               min(256, -(-total // max(1, workers))))
     return [(start, min(start + size, total)) for start in range(0, total, size)]
 
 
 def evaluate_lineup(lineup: tuple[str, str], reference: tuple[str, str], deals: int, seed: int,
                     bootstrap_samples: int, device: str = "cpu",
-                    pool: ProcessPoolExecutor | None = None, workers: int = 1) -> dict:
+                    pool: ProcessPoolExecutor | None = None, workers: int = 1,
+                    eval_config: EvalConfig = EvalConfig()) -> dict:
     """Lineup (a at s, b at s+2) against the reference lineup, over `deals` duplicate deals.
 
     The report keeps `pair_scores` (per deal, in deal order) for paired differences.
     """
-    tasks = [(lineup, reference, device, deals, seed, a, b) for a, b in _chunks(deals, workers)]
+    tasks = [(lineup, reference, device, deals, seed, a, b, eval_config) for a, b in _chunks(deals, workers)]
     started = time.monotonic()
     parts = list(pool.map(_run_chunk, tasks)) if pool else [_run_chunk(task) for task in tasks]
     scores = [score for _, part in sorted(parts, key=lambda item: item[0]) for score in part]
     report = summarize_duplicates(scores, seed, bootstrap_samples)
     report.pop("results")
     report["lineup"] = list(lineup)
+    report["evaluation"] = eval_config.metadata()
     report["seconds"] = time.monotonic() - started
     return report
 
@@ -134,7 +144,7 @@ def _public(result: dict) -> dict:
 
 def run_crossplay(model: str, partners: tuple[str, ...], reference: str, deals: int, seed: int,
                   bootstrap_samples: int = 2000, device: str = "cpu", threads: int = 1,
-                  workers: int = 1, log=print) -> dict:
+                  workers: int = 1, log=print, eval_config: EvalConfig = EvalConfig()) -> dict:
     """`model`, `partners` and `reference` are load_policy specs (`m1` = `reference`)."""
     import torch
 
@@ -157,7 +167,9 @@ def run_crossplay(model: str, partners: tuple[str, ...], reference: str, deals: 
         "reference_team": {"lineup": list(ref_team), **describe(reference, load_policy(reference, device))},
         "seating": ("lineup (a, b): a at seat s, b at seat s + 2; s = 0 in leg 1 and 1 in the swapped "
                     "leg; the reference team takes the other two seats"),
-        "seeds": {"deal_seed": seed, "play_seed_rule": "deal i uses seed + i in every lineup",
+        "seeds": {"deal_seed": seed, "play_seed_rule": ("deal i uses seed + i in every lineup"
+                                            if eval_config.backend == "scalar" else
+                                            "chunk/wave starts at seed + first deal index; actor streams are seeded by policy index"),
                   "bootstrap_seed": seed},
         "requested": {"deals": deals, "bootstrap_samples": bootstrap_samples,
                       "partners": list(partners)},
@@ -171,6 +183,7 @@ def run_crossplay(model: str, partners: tuple[str, ...], reference: str, deals: 
         },
         "partners": {},
     }
+    report["evaluation"] = eval_config.metadata()
     pool = None
     if workers > 1:
         pool = ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("spawn"),
@@ -180,7 +193,7 @@ def run_crossplay(model: str, partners: tuple[str, ...], reference: str, deals: 
     def lineup(a: str, b: str) -> dict:
         if (a, b) not in cache:
             cache[(a, b)] = evaluate_lineup((a, b), ref_team, deals, seed, bootstrap_samples,
-                                            device, pool, workers)
+                                            device, pool, workers, eval_config)
             result = cache[(a, b)]
             log(f"[crossplay] ({Path(a).name}, {Path(b).name}) vs reference: "
                 f"{result['mean_net_levels_per_round']:+.4f} CI [{result['bootstrap_95_ci'][0]:+.4f}, "
@@ -225,15 +238,16 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--bootstrap-samples", type=int, default=2000)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--workers", type=int, default=min(6, os.cpu_count() or 1),
-                        help="evaluation processes; results do not depend on it")
+                        help="evaluation processes; deterministic policies preserve results")
     parser.add_argument("--threads", type=int, default=1, help="PyTorch CPU threads per worker")
     parser.add_argument("--out", "--output", dest="output", type=Path, default=DEFAULT_OUTPUT)
+    add_eval_arguments(parser)
     args = parser.parse_args(argv)
     if args.deals < 1 or args.bootstrap_samples < 1 or args.threads < 1 or args.workers < 1:
         parser.error("require deals, bootstrap samples, threads and workers > 0")
     report = run_crossplay(args.model, tuple(args.partners + args.extra_partners), args.reference,
                            args.deals, args.seed, args.bootstrap_samples, args.device,
-                           args.threads, args.workers)
+                           args.threads, args.workers, eval_config=config_from_args(args))
     report["command"] = ["python", "-m", "eval.crossplay", *(argv if argv is not None else sys.argv[1:])]
     output = args.output if args.output.is_absolute() else Path.cwd() / args.output
     output.parent.mkdir(parents=True, exist_ok=True)

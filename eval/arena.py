@@ -174,7 +174,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--belief-batch-size", type=int, default=64)
     parser.add_argument("--belief-max-rounds", type=int, default=10000)
     parser.add_argument("--output", type=Path)
+    from .batched import (add_eval_arguments, config_from_args, play_duplicate_batch,
+                          play_matches_batch)
+    from .duplicate import summarize_duplicates
+    add_eval_arguments(parser)
     args = parser.parse_args(argv)
+    eval_config = config_from_args(args)
     if args.deals < 1 or args.matches < 0 or args.bootstrap_samples < 1 or args.probe_repeats < 1:
         parser.error("require deals > 0, matches >= 0, bootstrap samples > 0 and probe repeats > 0")
     if not math.isfinite(args.margin) or args.margin < 0:
@@ -190,18 +195,26 @@ def main(argv: list[str] | None = None) -> None:
     opponent = load_policy(args.opponent, args.device, args.margin)
     belief = (evaluate_checkpoint_belief(agent, args.belief_logs, args.belief_batch_size,
                                          args.belief_max_rounds) if args.belief_logs else None)
+    deals = generate_deals(args.deals, args.seed, args.level)
+    duplicate = (summarize_duplicates(play_duplicate_batch(
+        deals, (agent, agent), (opponent, opponent), args.seed, eval_config),
+        args.seed, args.bootstrap_samples) if eval_config.backend == "batched" else
+        evaluate_duplicates(agent, opponent, deals, args.seed, args.bootstrap_samples))
     report = {
+        "evaluation": eval_config.metadata(),
         "schema_version": 1, "protocol": "internal-house", "agent": agent.name,
         "opponent": opponent.name, "seed": args.seed,
         "agent_source": args.agent, "opponent_source": args.opponent,
         "checkpoint_sampling_margin": args.margin,
         "baseline_note": "random and greedy are local sanity baselines, not OpenGuanDan Rule One--Four",
-        "duplicate": evaluate_duplicates(agent, opponent, generate_deals(args.deals, args.seed, args.level),
-                                          args.seed, args.bootstrap_samples),
+        "duplicate": duplicate,
         "probes": evaluate_probes(agent, args.seed, args.probe_repeats),
     }
     if args.matches:
-        report["match"] = evaluate_matches(agent, opponent, args.matches, args.seed)
+        report["match"] = (summarize_matches(play_matches_batch(
+            agent, opponent, range(args.matches), args.seed, config=eval_config))
+            if eval_config.backend == "batched" else
+            evaluate_matches(agent, opponent, args.matches, args.seed))
     if belief is not None:
         report["belief"] = belief
     output = json.dumps(report, indent=2, allow_nan=False) + "\n"

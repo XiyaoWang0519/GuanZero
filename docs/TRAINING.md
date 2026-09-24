@@ -711,3 +711,57 @@ verified observation replacement (`eval/danlm/fast_obs.py`), which is 16x
 slower. Tests: `tests/test_danlm_bridge.py` runs anywhere;
 `tests/test_danlm_fast_obs.py` runs in the 3.12 environment and skips
 elsewhere. Report: `docs/reports/stage-c-danlm.md`.
+
+### Batched internal evaluation
+
+`eval.arena`, `eval.stage_b_baseline` (including callers of `evaluate_pair`),
+`eval.crossplay`, and the evaluation portion of `eval.exploiter` use the batched
+VecEnv evaluator by default. Training and the DanLM arena are unchanged.
+The existing `eval.duplicate` and `eval.arena.play_matches` functions remain the
+scalar reference implementations.
+
+Common CLI controls:
+
+```sh
+PYTHONPATH=python:. .venv/bin/python -m eval.arena \
+  --agent path/to/checkpoint.pt --opponent greedy --deals 10000 \
+  --eval-backend batched --eval-batch-size 256 --engine-threads 1
+# Run the reference with the same arguments using --eval-backend scalar.
+```
+
+`--eval-batch-size` bounds each wave to that many duplicate deals (two VecEnv
+slots per deal) or full matches. `--workers` remains the process count in the
+suite runners; `--threads` controls PyTorch threads per process, while
+`--engine-threads` controls VecEnv threads per process. Start with one thread
+of each kind per worker to avoid oversubscribing the CPU. Smaller chunks from
+process scheduling may produce waves below the requested maximum.
+
+The runner batches decisions by policy identity, preserving four-seat crossplay
+assignments, legal candidate order, first-index tie breaking, top-k plus pass
+pruning, heuristic/learned tribute, per-deal records and report statistics.
+Full matches explicitly reset each slot with the scalar `seed + match_index`
+seed and preserve alternating team assignment. Completed slots are excluded
+from scoring and policy inference; VecEnv still advances those slots with greedy
+choices while waiting for the slowest live slot in the wave.
+
+Deterministic argmax policies should match the scalar reference, subject to
+floating-point differences between batch-1 and batch-N inference on the chosen
+device. Random policies, `sample:` specs, near-best margins and styles with
+nonzero temperature preserve their selection distributions, but draw order
+changes: their results can vary with backend, wave size or process chunking.
+A fixed batched configuration and seed replays. Reports record the backend and
+batch settings. For exact reproduction of older stochastic reports, select the
+scalar backend. Custom policy classes must use the scalar backend; unsupported
+classes fail explicitly instead of silently changing their behavior.
+
+A repeatable benchmark compares all duplicate record fields and optional full
+match counters, excluding checkpoint loading from both timings:
+
+```sh
+PYTHONPATH=python:. .venv/bin/python -m bench.eval_batched \
+  --agent path/to/checkpoint.pt --opponent greedy --deals 1024 --matches 16
+```
+
+This measures evaluation speed only. It does not establish a training speedup,
+a playing-strength improvement, or a full milestone wall-clock time. DanLM
+matches continue to use their own arena and per-decision model calls.

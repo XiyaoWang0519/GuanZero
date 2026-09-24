@@ -231,13 +231,17 @@ VecEnv::VecEnv(int num_envs, int num_threads, EnvConfig cfg, uint64_t seed)
 }
 VecEnv::~VecEnv() = default;
 
-void VecEnv::reset(std::span<const DealSpec> deals) {
+void VecEnv::reset(std::span<const DealSpec> deals, std::span<const uint64_t> match_seeds) {
   Impl& s = *impl_;
+  if (!match_seeds.empty() && (!deals.empty() || match_seeds.size() != s.states.size()))
+    throw std::invalid_argument("match_seeds requires one seed per slot and no explicit deals");
   uint64_t root = s.seed;
   for (size_t i = 0; i < s.states.size(); ++i) {
     s.rngs[i] = splitmix64(root) | 1ULL;
     if (!deals.empty()) {
       s.engine.set_deal(s.states[i], deals[i % deals.size()]);
+    } else if (!match_seeds.empty()) {
+      s.engine.new_match(s.states[i], match_seeds[i]);
     } else {
       s.engine.new_match(s.states[i], splitmix64(s.rngs[i]));
     }

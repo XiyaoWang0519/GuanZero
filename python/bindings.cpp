@@ -570,9 +570,11 @@ PYBIND11_MODULE(_gd_core, m) {
            py::arg("rules") = RuleConfig::house(), py::arg("actions") = ActionConfig{},
            py::arg("encode") = true, py::arg("log_public_actions") = false,
            py::arg("log_env_limit") = -1)
-      .def("reset", [](VecEnv& e, const std::vector<DealSpec>& deals) {
-        e.reset(std::span<const DealSpec>(deals.data(), deals.size()));
-      }, py::arg("deals") = std::vector<DealSpec>{})
+      .def("reset", [](VecEnv& e, const std::vector<DealSpec>& deals,
+                       const std::vector<uint64_t>& match_seeds) {
+        e.reset(std::span<const DealSpec>(deals.data(), deals.size()), match_seeds);
+      }, py::arg("deals") = std::vector<DealSpec>{},
+         py::arg("match_seeds") = std::vector<uint64_t>{})
       .def("pending", &VecEnv::pending, py::keep_alive<0, 1>())
       .def("step", [](VecEnv& e, py::array_t<int32_t, py::array::c_style> ch) {
         if (ch.ndim() != 1) throw py::value_error("choices must be a one-dimensional int32 array");

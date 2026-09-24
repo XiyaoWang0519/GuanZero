@@ -25,6 +25,8 @@ import time
 from concurrent.futures import ProcessPoolExecutor
 import multiprocessing
 
+from .batched import (EvalConfig, add_eval_arguments, config_from_args,
+                      play_duplicate_batch, play_matches_batch)
 from .arena import MATCH_COUNTERS, play_matches, summarize_matches
 from .duplicate import generate_deals, play_duplicate, summarize_duplicates
 from .policies import Policy, load_policy
@@ -153,34 +155,43 @@ def _run_chunk(task: tuple) -> tuple:
     """One contiguous slice of deals or matches for one pair.
 
     Deal `i` is played with seed `seed + i` and match `m` with seed `seed + m`,
-    exactly as in the serial eval/duplicate.py and eval/arena.py loops, so the
-    result does not depend on how the work is split.
+    as in the serial reference. Batched stochastic policies use a different
+    draw order and depend on the chunk and wave configuration.
     """
-    kind, checkpoint, opponent_spec, device, deals, seed, start, stop = task
+    kind, checkpoint, opponent_spec, device, deals, seed, start, stop, *options = task
+    config = options[0] if options else EvalConfig()
     agent = _policy(checkpoint, device)
     opponent = agent if opponent_spec == "self" else _policy(opponent_spec, device)
     if kind == "duplicate":
         if (deals, seed) not in _DEALS:
             _DEALS[(deals, seed)] = generate_deals(deals, seed)
         deal_set = _DEALS[(deals, seed)]
+        if config.backend == "batched":
+            return kind, start, play_duplicate_batch(deal_set[start:stop], (agent, agent),
+                                                      (opponent, opponent), seed + start, config)
         return kind, start, [play_duplicate(deal_set[i], agent, opponent, seed + i)
                              for i in range(start, stop)]
+    if config.backend == "batched":
+        return kind, start, play_matches_batch(agent, opponent, range(start, stop), seed, config=config)
     return kind, start, play_matches(agent, opponent, range(start, stop), seed)
 
 
 def _chunks(total: int, workers: int) -> list[tuple[int, int]]:
-    # About four chunks per worker balances uneven chunk times.
-    size = max(1, -(-total // max(1, workers * 4)))
+    # Balance long runs with roughly four chunks per worker, but avoid
+    # shrinking inference batches below 256 while workers can still stay busy.
+    size = max(1, -(-total // max(1, workers * 4)),
+               min(256, -(-total // max(1, workers))))
     return [(start, min(start + size, total)) for start in range(0, total, size)]
 
 
 def evaluate_pair(checkpoint: str, opponent_spec: str, deals: int, matches: int, seed: int,
                   bootstrap_samples: int, device: str = "cpu",
-                  pool: ProcessPoolExecutor | None = None, workers: int = 1) -> dict:
-    tasks = [("duplicate", checkpoint, opponent_spec, device, deals, seed, a, b)
+                  pool: ProcessPoolExecutor | None = None, workers: int = 1,
+                  eval_config: EvalConfig = EvalConfig()) -> dict:
+    tasks = [("duplicate", checkpoint, opponent_spec, device, deals, seed, a, b, eval_config)
              for a, b in _chunks(deals, workers)]
     if matches:
-        tasks += [("match", checkpoint, opponent_spec, device, deals, seed, a, b)
+        tasks += [("match", checkpoint, opponent_spec, device, deals, seed, a, b, eval_config)
                   for a, b in _chunks(matches, workers)]
     started = time.monotonic()
     results = list(pool.map(_run_chunk, tasks)) if pool else [_run_chunk(task) for task in tasks]
@@ -192,7 +203,7 @@ def evaluate_pair(checkpoint: str, opponent_spec: str, deals: int, matches: int,
     # Per-deal records are large (10,000 per pair) and reproducible from seeds.
     duplicate.pop("pair_scores")
     duplicate.pop("results")
-    report = {"duplicate": duplicate, "seconds": seconds}
+    report = {"duplicate": duplicate, "seconds": seconds, "evaluation": eval_config.metadata()}
     if matches:
         parts = sorted(((start, part) for kind, start, part in results if kind == "match"),
                        key=lambda item: item[0])
@@ -248,7 +259,8 @@ def measure_dmc_throughput(config_path: Path, seconds: float, torch_threads: int
 def run_baseline(checkpoint: Path, deals: int, matches: int, seed: int,
                  bootstrap_samples: int = 2000, opponents: tuple[str, ...] = OPPONENTS,
                  throughput_config: Path | None = None, throughput_seconds: float = 0.0,
-                 device: str = "cpu", threads: int = 1, workers: int = 1, log=print) -> dict:
+                 device: str = "cpu", threads: int = 1, workers: int = 1, log=print,
+                 eval_config: EvalConfig = EvalConfig()) -> dict:
     """Evaluate every pair. `workers` processes each use `threads` torch threads."""
     import torch
 
@@ -269,7 +281,8 @@ def run_baseline(checkpoint: Path, deals: int, matches: int, seed: int,
                        "tribute": "heuristic" if agent.heuristic_tribute else "learned",
                        "selection": "argmax Q, margin 0"},
         "seeds": {"deal_seed": seed, "duplicate_play_seed": seed,
-                  "duplicate_play_seed_rule": "deal i uses seed + i",
+                  "duplicate_play_seed_rule": ("deal i uses seed + i" if eval_config.backend == "scalar"
+                                               else "chunk/wave starts at seed + first deal index; actor streams are seeded by policy index"),
                   "match_seed": seed, "match_seed_rule": "match m uses seed + m; agent team is m % 2",
                   "bootstrap_seed": seed},
         "requested": {"deals": deals, "matches": matches, "bootstrap_samples": bootstrap_samples},
@@ -290,7 +303,7 @@ def run_baseline(checkpoint: Path, deals: int, matches: int, seed: int,
             opponent = agent if spec == "self" else load_policy(spec, device)
             log(f"[stage-b-baseline] {agent.name} vs {spec}: {deals} deals, {matches} matches")
             result = evaluate_pair(str(checkpoint), spec, deals, matches, seed, bootstrap_samples,
-                                   device, pool, workers)
+                                   device, pool, workers, eval_config)
             result["opponent"] = opponent_description(spec, opponent)
             report["pairs"][spec] = result
             dup = result["duplicate"]
@@ -332,10 +345,11 @@ def main(argv: list[str] | None = None) -> None:
                         help="wall-clock budget for the DMC timing run; 0 skips it")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--workers", type=int, default=os.cpu_count() or 1,
-                        help="evaluation processes (default: all logical CPUs); results do not depend on it")
+                        help="evaluation processes (default: all logical CPUs); deterministic policies preserve results")
     parser.add_argument("--threads", type=int, default=1,
                         help="PyTorch CPU threads per evaluation worker")
     parser.add_argument("--out", "--output", dest="output", type=Path, default=DEFAULT_OUTPUT)
+    add_eval_arguments(parser)
     args = parser.parse_args(argv)
     if (args.deals < 1 or args.matches < 0 or args.bootstrap_samples < 1
             or args.threads < 1 or args.workers < 1):
@@ -346,7 +360,7 @@ def main(argv: list[str] | None = None) -> None:
     throughput_config = resolve_path(args.throughput_config) if args.throughput_seconds else None
     report = run_baseline(checkpoint, args.deals, args.matches, args.seed, args.bootstrap_samples,
                           tuple(args.opponents), throughput_config, args.throughput_seconds,
-                          args.device, args.threads, args.workers)
+                          args.device, args.threads, args.workers, eval_config=config_from_args(args))
     report["command"] = ["python", "-m", "eval.stage_b_baseline",
                          *(argv if argv is not None else sys.argv[1:])]
     output = args.output if args.output.is_absolute() else Path.cwd() / args.output

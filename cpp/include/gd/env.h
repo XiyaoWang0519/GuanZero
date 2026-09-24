@@ -64,7 +64,9 @@ class VecEnv {
   VecEnv& operator=(const VecEnv&) = delete;
 
   // Empty `deals` means random deals from the seed.
-  void reset(std::span<const DealSpec> deals = {});
+  // Optional explicit match seeds preserve the serial evaluation seed schedule.
+  // Mutually exclusive with deals; one seed per slot. Training omits these.
+  void reset(std::span<const DealSpec> deals = {}, std::span<const uint64_t> match_seeds = {});
   // Advance every environment until it needs a decision or its match ends,
   // then describe the pending decisions.
   DecisionBatch pending();
