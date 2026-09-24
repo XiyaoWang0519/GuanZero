@@ -142,6 +142,7 @@ class RolloutBuffer:
         self.seat = np.zeros(s, np.int8)
         self.traj = np.zeros(s, np.int64)
         self.advantage = np.zeros(s, np.float32)
+        self.policy_keep = np.zeros(s, bool)
         self.returns = np.zeros(s, np.float32)
         self.samples = np.zeros(s, np.int64)   # finalized step indices, first n_samples
         # Candidate pool, addressed by cand_start/cand_count, and per candidate
@@ -382,6 +383,7 @@ class RolloutBuffer:
             "logp": t(self.logp[steps], torch.float32),
             "value": t(self.value[steps], torch.float32),
             "advantage": t(self.advantage[steps], torch.float32),
+            "policy_keep": t(self.policy_keep[steps], torch.bool),
             "returns": t(self.returns[steps], torch.float32),
             "phase": t(self.phase[steps], torch.long),
             "seat": t(self.seat[steps], torch.long),

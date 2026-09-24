@@ -16,7 +16,9 @@ from train.ckpt import save_checkpoint  # noqa: E402
 from train.model import GuandanModel, ModelConfig, select_actions  # noqa: E402
 from train.opponents import FrozenModelOpponent, GreedyOpponent, OpponentRows  # noqa: E402
 from train.policy import segment_log_softmax  # noqa: E402
-from train.ppo import PPOConfig, PPOTrainer, load_config, policy_terms  # noqa: E402
+from train.ppo import (PPOConfig, PPOTrainer, assign_advantage_filter, load_config,
+                       policy_terms)  # noqa: E402
+from train.rollout_buffer import RolloutBuffer, RolloutBufferConfig  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 M1_FINAL = next((p / ".work/runpod/artifacts/pilot/final.pt"
@@ -104,6 +106,9 @@ def test_config_validation_and_shipped_configs(init_checkpoint):
            dict(checkpoint_seconds=900), dict(tribute_policy="random"),
            dict(opponent="styled"), dict(opponent="frozen:"), dict(action_mode="abstract"),
            dict(init_checkpoint=""), dict(buffer_steps=-1)]
+    bad += [dict(advantage_filter_quantile=-0.1), dict(advantage_filter_quantile=1.1),
+            dict(advantage_filter_quantile=float("nan")),
+            dict(advantage_filter_min_magnitude=-0.1)]
     for override in bad:
         with pytest.raises(ValueError):
             tiny(init_checkpoint, **override).validate()
@@ -191,6 +196,79 @@ def test_frozen_model_opponent_plays_argmax_q_and_heuristic_tribute():
 
 
 # ------------------------------------------------------------------ update
+def synthetic_filter_buffer(advantages: list[float], pass_steps: tuple[int, ...] = ()) -> RolloutBuffer:
+    n = len(advantages)
+    buffer = RolloutBuffer(RolloutBufferConfig(num_envs=2, obs_dim=gd.OBS_DIM,
+                                              act_dim=gd.ACT_DIM, max_steps=n,
+                                              max_candidates=n, max_trajectories=2))
+    buffer.n_samples = n
+    buffer.samples[:n] = np.arange(n)
+    buffer.advantage[:n] = advantages
+    buffer.cand_start[:n] = np.arange(n)
+    buffer.cand_count[:n] = 1
+    buffer.cand[list(pass_steps), 108] = 1
+    return buffer
+
+
+def test_advantage_filter_uses_update_wide_raw_magnitudes_and_keeps_pass():
+    a = synthetic_filter_buffer([0.1, 0.4], pass_steps=(0,))
+    b = synthetic_filter_buffer([-0.5, 0.0])
+    stats = assign_advantage_filter([a, b], 0.5, 0.3)
+    assert stats["policy_filter_threshold"] == pytest.approx(0.3)
+    assert a.policy_keep[:2].tolist() == [True, True]
+    assert b.policy_keep[:2].tolist() == [True, False]
+    assert stats["policy_filter_kept_fraction"] == 0.75
+    assert stats["policy_filter_pass_kept"] == 1
+    assert stats["policy_filter_positive_kept"] == 2
+    assert stats["policy_filter_negative_kept"] == 1
+    assert assign_advantage_filter([a, b], 0.0, 0.0)["policy_filter_kept_fraction"] == 1
+    assert b.policy_keep[:2].all()  # default retains even zero-advantage rows
+
+
+def test_advantage_filter_all_removed_keeps_one_defined_zero_loss_row():
+    buffer = synthetic_filter_buffer([0.0, 0.0, 0.0])
+    stats = assign_advantage_filter([buffer], 0.9, 1.0)
+    assert buffer.policy_keep[:3].tolist() == [True, False, False]
+    assert stats["policy_filter_kept_fraction"] == pytest.approx(1 / 3)
+    assert stats["policy_filter_positive_kept"] == stats["policy_filter_negative_kept"] == 0
+
+
+def test_filtered_update_preserves_other_losses_and_resumes(init_checkpoint, tmp_path):
+    config = tiny(init_checkpoint, advantage_filter_quantile=0.8,
+                  advantage_filter_min_magnitude=0.05, rollout_steps=160,
+                  max_updates=1)
+    trainer = PPOTrainer(config, tmp_path)
+    trainer.collect()
+    trainer.refresh_values()
+    assert trainer.buffer.finalize(config.gamma, config.gae_lambda) > 0
+    assign_advantage_filter([trainer.buffer], config.advantage_filter_quantile,
+                            config.advantage_filter_min_magnitude)
+    mb = next(trainer.buffer.minibatches(10**6, np.random.default_rng(0)))
+    assert mb["policy_keep"].any() and not mb["policy_keep"].all()
+    filtered = trainer.minibatch_loss(mb, 0.1)
+    trainer.config = replace(config, advantage_filter_quantile=0.0)
+    unfiltered = trainer.minibatch_loss(mb, 0.1)
+    assert not torch.allclose(filtered["policy_loss"], unfiltered["policy_loss"])
+    for name in ("value_loss", "hidden_loss", "finish_loss", "kl_ref", "entropy"):
+        assert torch.equal(filtered[name], unfiltered[name]), name
+    trainer.close()
+
+    run = tmp_path / "run"
+    PPOTrainer(config, run).run()
+    record = metrics(run / "metrics.jsonl")[0]
+    assert 0 < record["policy_filter_kept_fraction"] < 1
+    assert record["policy_filter_pass_kept"] >= 0
+    saved = torch.load(run / "latest.pt", map_location="cpu", weights_only=False)
+    assert saved["config"]["advantage_filter_quantile"] == 0.8
+    resumed = PPOTrainer(replace(config, max_updates=2), run, resume=run / "latest.pt")
+    assert resumed.progress["resumes"] == 1
+    resumed.run()
+    assert metrics(run / "metrics.jsonl")[-1]["updates"] == 2
+    with pytest.raises(ValueError, match="resume config differs at advantage_filter_quantile"):
+        PPOTrainer(replace(config, advantage_filter_quantile=0.5),
+                   run, resume=run / "latest.pt")
+
+
 def snapshot(module) -> dict:
     return {k: v.detach().clone() for k, v in module.state_dict().items()}
 
