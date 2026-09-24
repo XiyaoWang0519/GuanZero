@@ -1,0 +1,47 @@
+# 优势过滤实验诊断（2026-09-24）
+
+## 结论与证据边界
+
+这是对本地归档配置、`metrics.jsonl`、固定开发集评估以及 `train/ppo.py` / `train/rollout_buffer.py` 的只读审查；没有重训或新评估。对照与过滤配置逐字段比较，仅 `advantage_filter_quantile`（0→0.8）和 `advantage_filter_min_magnitude`（0→0.05）不同。两臂相同随机种子、warm start、对手池、PPO 学习率与训练时限。控制臂完成 1,153 次更新，过滤臂完成 1,137 次；以下训练指标在共同的第 1–1,137 次更新上比较。
+
+固定开发集是 DanLM duplicate，1000 deals、seed `2026092401`、tribute fraction 0.5。共同起点 B11 为 −2.1101 levels/round（999 scored，95% bootstrap CI [−2.1727, −2.0475]）；控制终点为 −2.0395（999 scored，CI [−2.1026, −1.9780]）；过滤过程与终点分别为 −2.2540（1000 scored）和 −2.2795（1000 scored，CI [−2.3370, −2.2245]）。开发集重复查看过，且这不是两臂逐 deal 的配对差值置信区间；它提示过滤臂退化，最终判断应以已冻结模型的独立同牌 heldout 比较为准。
+
+## 实际过滤量与训练动态
+
+`policy_filter_pass_kept` 计数的是该 update **所有** pass，过滤启用时它们全部保留；pass 包括可能没有策略梯度的强制 pass，所以样本占比不等于梯度占比。`policy_filter_positive_kept` / `negative_kept` 用原始 GAE 符号计数。聚合按 `update_samples` 加权，其余连续指标为逐 update 均值。
+
+| 更新区间 | 臂 | pass / 全部 | 策略保留 / 全部 | pass / 保留 | 非 pass 保留率 | 原始正/负优势占保留 | 阈值均值 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1–1,137 | 控制 | 34.55% | 100% | 34.55% | 100% | 52.52% / 47.48% | 0 |
+| 1–1,137 | 过滤 | 31.28% | 45.01% | 69.51% | 19.97% | 53.66% / 46.34% | 1.112 |
+| 1–200 | 过滤 | 33.84% | 46.92% | 72.13% | 19.77% | 51.91% / 48.09% | 1.104 |
+| 201–500 | 过滤 | 30.80% | 44.59% | 69.08% | 19.93% | 53.16% / 46.84% | 1.136 |
+| 501–800 | 过滤 | 30.45% | 44.39% | 68.60% | 20.05% | 54.28% / 45.72% | 1.115 |
+| 801–1,137 | 过滤 | 30.89% | 44.75% | 69.01% | 20.07% | 54.67% / 45.33% | 1.092 |
+
+第 1–1,137 次更新，控制使用 72.716M、过滤使用 70.254M 完成回合样本；全局 decisions 分别为 149.029M 与 149.006M。因行为轨迹不同，完成回合样本数并不相等。过滤臂非 pass 的实际保留率稳定在约 20%，与 0.8 分位选择相符；其额外保留量几乎全是 pass。
+
+| 第 1–1,137 次更新的逐 update 均值 | 控制 | 过滤 |
+| --- | ---: | ---: |
+| policy gradient norm（裁剪前） | 1.730 | 3.532 |
+| approximate KL | 0.0049 | 0.0068 |
+| clip fraction | 0.0312 | 0.0387 |
+| entropy | 0.1987 | 0.2218 |
+| reference KL（系数为 0） | 3.997 | 4.793 |
+| critic gradient norm | 1.146 | 1.157 |
+| value loss | 0.743 | 0.751 |
+| explained variance | 0.785 | 0.783 |
+
+后段第 801–1,137 次更新仍有同向差异：策略梯度 1.768→3.615、approximate KL 0.0050→0.0069、熵 0.1940→0.2215、reference KL 4.000→5.199，而 value loss 0.749→0.731、explained variance 0.783→0.793。`policy_loss` 两臂计算的目标和分母不同（全样本均值与保留样本均值），不能把数值 −0.0044 与 −0.0307 当作同一标尺。训练中的 league 胜率也混有随各臂行为自适应变化的对手抽样，不宜直接视作固定对手强度测试。
+
+## 实现审查：确认事实与待测机制
+
+没有在所审路径中找到能明确解释结果的索引、mask 或梯度路由错误。`assign_advantage_filter` 在完成轨迹样本上汇总原始 `|GAE|`，取一次 update 级阈值；`cand_start + chosen` 对应已存候选，`PASS_FEATURE` 与策略模块定义一致。mask 经 `RolloutBuffer.gather` 进入 minibatch，只乘在 clipped PPO surrogate 上；critic MSE、entropy、reference KL、hidden/finish auxiliary 仍使用全体样本。无样本与全被滤掉有定义的处理；配置校验、checkpoint/resume 与现有单元和 tiny 集成测试覆盖该功能。因此目前证据更支持**目标函数改变后的不利效果**，尚不能归因为已证实的代码 bug。
+
+以下是可检验假设，均未被当前指标单独证明：
+
+1. **pass 强制保留改变了策略样本构成。** pass 从控制样本的 34.55% 变为过滤后样本的 69.51%；非 pass 只保留 19.97%。如果许多 pass 是唯一合法动作，它们的策略梯度接近零，但仍进入保留样本分母；若是可选 pass，它们会被显著重加权。需要另记「强制 / 可选 pass」及各自有效梯度，才能判断哪一条在起作用。最小后续对照可在新训练中分别限制可选 pass 的保留率，而不是直接修改运行归档。
+2. **被选的大幅度 GAE 改变了更新尺度。** surrogate 除以保留数，所选样本是 `|GAE|` 的尾部；同时策略梯度约 2.0 倍、approximate KL 约 1.4 倍、clip fraction 更高，critic 指标基本贴近。较大策略步长或对高方差回报的追逐可能损害固定 DanLM 表现。可在新的等预算对照中降低过滤臂 policy LR，或用全样本数作 surrogate 分母，以分离筛选效果与步长效果；这不是本次运行的已证实修复。
+3. **筛选与归一化的口径不同。** 筛选用 update 级原始 `|GAE|`，但 minibatch 的均值/标准差由**所有**样本计算后才施加 mask。因而未保留样本仍影响保留样本的标准化值，少数保留样本的符号甚至可能相对原始 GAE 翻转。代码行为确实如此；本轮没有原始 GAE 分布，无法量化翻转频率或归因退化。最小诊断测试是在合成 minibatch 中令被滤样本改变均值，断言当前 kept surrogate 随之改变；若想修改，应先明确目标是全样本基线还是保留样本基线，再做单独消融。
+
+数据来源：`../experiments-results/cfg/{control,filter}.json`、`../experiments-results/runs/{control,filter}/run/metrics.jsonl`、`../evals/{control,filter}/*/development.json`（均为主 checkout 下 `.work/overnight-20260924/` 的归档）；实现来源为本 worktree 的 `train/ppo.py`、`train/rollout_buffer.py` 与 `tests/test_ppo.py`。本报告没有修改它们。
