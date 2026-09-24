@@ -81,3 +81,26 @@ The harness writes raw legs after each completed chunk and bootstraps only
 whole deals whose two legs succeeded in both arms. This run completed in
 337.7 seconds. The CPython 3.12 extension was built only in this worktree;
 the main checkout's compiled module was untouched.
+
+## Independent 4,000-deal transfer confirmation
+
+After the 500-deal pilot, the unchanged search configuration was evaluated on
+new seed 2026092497 with 4,000 paired deals. Both policies used the same B11
+checkpoint. The run completed in 2,649.46 seconds on one CPU inference thread.
+Two deals were excluded because of mirror failures; 3,998 common valid deals
+remain. Their raw rewards were independently joined and rescored after the run.
+
+| Arm | Mean net levels/round | Bootstrap 95% interval |
+|---|---:|---:|
+| B11 | −2.04077 | [−2.07166, −2.00849] |
+| Search:B11 | −2.02489 | [−2.05578, −1.99236] |
+| Paired search minus B11 | +0.01588 | [+0.00925, +0.02251] |
+
+There were 99 improved deals, 36 worse deals, and 3,863 ties. This confirms a
+small transfer gain against this frozen DanLM opponent under the tested
+protocol, while leaving the large absolute gap to DanLM. It does not establish
+full-match strength, unfamiliar-partner performance, or G9. No search latency
+claim for this external matchup is inferred from the internal timing sample.
+The final raw legs and summary are retained alongside this report as
+`search-danlm-transfer-4000.raw.json.gz` and
+`search-danlm-transfer-4000.summary.json`.

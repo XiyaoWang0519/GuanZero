@@ -1,0 +1,46 @@
+{
+  "status": "paired_external_transfer_probe_not_G9",
+  "seed": 2026092497,
+  "requested_deals": 4000,
+  "completed_deals": 4000,
+  "scored_deals": 3998,
+  "excluded_legs": {
+    "baseline:mirror_failed": 2,
+    "search:mirror_failed": 2
+  },
+  "wall_seconds": 2649.459941792011,
+  "checkpoint": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod-b11/results/runs/main/run/latest.pt",
+  "raw_results": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/overnight-20260924/search-danlm-transfer-4000.raw.json.gz",
+  "scores": {
+    "baseline": {
+      "mean_levels_per_round": -2.0407703851925962,
+      "bootstrap_95_ci": [
+        -2.0716639569784894,
+        -2.0084917458729366
+      ],
+      "positive": 51,
+      "negative": 3602,
+      "zero": 345
+    },
+    "search": {
+      "mean_levels_per_round": -2.024887443721861,
+      "bootstrap_95_ci": [
+        -2.055781015507754,
+        -1.9923649324662331
+      ],
+      "positive": 54,
+      "negative": 3589,
+      "zero": 355
+    },
+    "delta": {
+      "mean_levels_per_round": 0.01588294147073537,
+      "bootstrap_95_ci": [
+        0.009254627313656828,
+        0.022511255627813906
+      ],
+      "positive": 99,
+      "negative": 36,
+      "zero": 3863
+    }
+  }
+}
