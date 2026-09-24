@@ -1,0 +1,36 @@
+{
+  "mode": "duplicate",
+  "checkpoint": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod-b11/results/runs/main/run/latest.pt",
+  "checkpoint_name": "latest.pt@8e872130189af48a/ppo",
+  "checkpoint_id": "8e872130189af48adb262a0b218bcc82e711b31f5804272c1dd50854b629bc3e",
+  "danlm": "ckpts/DanLM_v1/dansformer_v1_best_eval.pt",
+  "deals": 4,
+  "seed": 2026092491,
+  "tribute_fraction": 0.5,
+  "elapsed_seconds": 2.0377529580146074,
+  "scored_deals": 4,
+  "excluded_deals_mirror_failed": 0,
+  "levels_per_round": -1.75,
+  "levels_per_round_ci95": [
+    -2.375,
+    -0.875
+  ],
+  "round_win_rate": 0.125,
+  "round_legs": 8,
+  "by_tribute": {
+    "none": {
+      "deals": 2,
+      "levels_per_round": -2.0
+    },
+    "single": {
+      "deals": 2,
+      "levels_per_round": -1.5
+    }
+  },
+  "divergences": {
+    "counts": {},
+    "samples": {}
+  },
+  "reading": "levels_per_round is our team's mean net level gain per round over both legs of each deal (DanLM's engine scores); round_win_rate is the fraction of legs whose first finisher is on our team, DanLM's single-round metric",
+  "danlm_root": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/external/DanLM"
+}

@@ -34,3 +34,17 @@ Pending: final diff review and commit. No cloud resource or local long training 
   scalar, add calibrated marginal/learned beliefs, measure the required three
   budgets, and run G9's larger paired evaluation. The current interval
   includes zero; no strength claim is supported.
+
+## Independent audit and external transfer — later September 24
+
+- Independently recomputed all 1,000 development and 4,000 held-out internal
+  pair scores from their raw legs; the held-out mean and whole-deal bootstrap
+  interval match the supplied report exactly.
+- Built a CPython 3.12 `gd` module in this worktree's `build-cp312`, without
+  overwriting the main checkout. DanLM four-deal smoke runs for B11 and
+  search:B11 each had zero mirror failures.
+- Ran a new-seed, 500-pair transfer against DanLM's referee using one worker
+  and one CPU thread. Raw records and paired summary are under
+  `docs/reports/search-danlm-transfer-500.*`; interpretation and limits
+  are in `docs/reports/stage-c-search-transfer-2026-09-24.md`.
+- No model training, paid inference, GPU, or cloud job was started.

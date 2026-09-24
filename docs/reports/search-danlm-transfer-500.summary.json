@@ -1,0 +1,43 @@
+{
+  "status": "paired_external_transfer_probe_not_G9",
+  "seed": 2026092491,
+  "requested_deals": 500,
+  "completed_deals": 500,
+  "scored_deals": 500,
+  "excluded_legs": {},
+  "wall_seconds": 337.7069256249815,
+  "checkpoint": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/runpod-b11/results/runs/main/run/latest.pt",
+  "raw_results": "docs/reports/search-danlm-transfer-500.raw.json.gz",
+  "scores": {
+    "baseline": {
+      "mean_levels_per_round": -2.017,
+      "bootstrap_95_ci": [
+        -2.107,
+        -1.928
+      ],
+      "positive": 6,
+      "negative": 448,
+      "zero": 46
+    },
+    "search": {
+      "mean_levels_per_round": -2.001,
+      "bootstrap_95_ci": [
+        -2.094,
+        -1.909
+      ],
+      "positive": 7,
+      "negative": 446,
+      "zero": 47
+    },
+    "delta": {
+      "mean_levels_per_round": 0.016,
+      "bootstrap_95_ci": [
+        0.0,
+        0.03502499999999987
+      ],
+      "positive": 11,
+      "negative": 1,
+      "zero": 488
+    }
+  }
+}
