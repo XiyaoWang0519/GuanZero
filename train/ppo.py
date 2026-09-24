@@ -97,7 +97,7 @@ from train.dmc import schedule, tensor
 from train.model import GuandanModel, ModelConfig, select_actions
 from train.opponents import (FollowOpponent, FrozenModelOpponent, OpponentRows, OpponentSource,
                              config_opponent)
-from train.policy import (PolicyConfig, StageBPolicy, gather_segments, policy_from_payload,
+from train.policy import (PASS_FEATURE, PolicyConfig, StageBPolicy, gather_segments, policy_from_payload,
                           segment_entropy, segment_log_softmax, segment_rows)
 from train.rollout_buffer import (HIDDEN_DIM, RolloutBuffer, RolloutBufferConfig, _ragged_index,
                                   to_device)
@@ -162,6 +162,10 @@ class PPOConfig:
     gamma: float = 1.0
     gae_lambda: float = 0.95
     normalize_advantages: bool = True
+    # 0 disables filtering. Otherwise keep policy samples with |raw GAE| at
+    # least this update-wide quantile and the minimum magnitude; always keep pass.
+    advantage_filter_quantile: float = 0.0
+    advantage_filter_min_magnitude: float = 0.0
     entropy_coef: float = 0.01
     kl_coef: float = 0.1
     kl_anneal_updates: int = 1000
@@ -212,7 +216,8 @@ class PPOConfig:
         nonnegative = ("policy_lr", "critic_lr", "entropy_coef", "kl_coef", "target_kl",
                        "value_coef", "hidden_weight", "finish_weight", "buffer_steps",
                        "buffer_candidates", "buffer_trajectories", "actor_processes",
-                       "league_snapshot_every", "exploiter_win_rate")
+                       "league_snapshot_every", "exploiter_win_rate",
+                       "advantage_filter_quantile", "advantage_filter_min_magnitude")
         for name in nonnegative:
             value = getattr(self, name)
             if not math.isfinite(value) or value < 0:
@@ -221,6 +226,8 @@ class PPOConfig:
             raise ValueError("num_envs must be at least 2 so both learner teams are covered")
         if self.clip >= 1:
             raise ValueError("clip must be in (0, 1)")
+        if self.advantage_filter_quantile > 1:
+            raise ValueError("advantage_filter_quantile must be in [0, 1]")
         if not 0 < self.gamma <= 1 or not 0 <= self.gae_lambda <= 1:
             raise ValueError("gamma must be in (0, 1] and gae_lambda in [0, 1]")
         if self.checkpoint_seconds > 600:
@@ -270,6 +277,53 @@ class PPOConfig:
 MUTABLE_ON_RESUME = {"max_updates", "max_seconds", "checkpoint_seconds", "snapshot_updates",
                      "tensorboard", "torch_threads", "num_threads", "init_checkpoint", "critic_init",
                      "fast_rollout", "actor_processes"}
+
+
+def assign_advantage_filter(buffers: Sequence[RolloutBuffer], quantile: float,
+                            min_magnitude: float) -> dict[str, float]:
+    """Mark policy samples using one threshold across all completed trajectories.
+
+    The threshold uses raw GAE, before minibatch normalization. Value and
+    auxiliary losses still see every sample. Pass decisions are always kept;
+    if nothing survives, keep the largest-magnitude sample so the policy loss
+    has a defined denominator (its gradient is zero when every advantage is 0).
+    """
+    batches = [b.samples[:b.n_samples] for b in buffers]
+    magnitudes = [np.abs(b.advantage[steps]) for b, steps in zip(buffers, batches)]
+    total = sum(len(steps) for steps in batches)
+    if not total:
+        return {"policy_filter_threshold": 0.0, "policy_filter_kept_fraction": 0.0,
+                "policy_filter_pass_kept": 0.0, "policy_filter_positive_kept": 0.0,
+                "policy_filter_negative_kept": 0.0}
+    threshold = (max(float(np.quantile(np.concatenate(magnitudes), quantile)), min_magnitude)
+                 if quantile else 0.0)
+    kept = pass_kept = positive_kept = negative_kept = 0
+    for buffer, steps, magnitude in zip(buffers, batches, magnitudes):
+        chosen_rows = buffer.cand_start[steps] + buffer.chosen[steps]
+        is_pass = buffer.cand[chosen_rows, PASS_FEATURE] != 0
+        if quantile:
+            keep = ((magnitude >= threshold) & (magnitude > 0)) | is_pass
+        else:
+            keep = np.ones(len(steps), bool)
+        buffer.policy_keep[steps] = keep
+        kept += int(keep.sum())
+        pass_kept += int(is_pass.sum())
+        positive_kept += int(np.count_nonzero(keep & (buffer.advantage[steps] > 0)))
+        negative_kept += int(np.count_nonzero(keep & (buffer.advantage[steps] < 0)))
+    if kept == 0:
+        winner = max(range(len(buffers)), key=lambda i: magnitudes[i].max(initial=-1))
+        steps = batches[winner]
+        winning_step = steps[int(np.argmax(magnitudes[winner]))]
+        buffers[winner].policy_keep[winning_step] = True
+        kept = 1
+        value = buffers[winner].advantage[winning_step]
+        positive_kept += int(value > 0)
+        negative_kept += int(value < 0)
+    return {"policy_filter_threshold": threshold,
+            "policy_filter_kept_fraction": kept / total,
+            "policy_filter_pass_kept": float(pass_kept),
+            "policy_filter_positive_kept": float(positive_kept),
+            "policy_filter_negative_kept": float(negative_kept)}
 
 
 def resolve_artifact(path: str | Path) -> Path:
@@ -1053,6 +1107,8 @@ class PPOTrainer(RolloutCollector):
         stats: dict[str, float] = {"update_samples": samples, "kl_coef": self.kl_coef()}
         if samples == 0:
             return stats
+        stats.update(assign_advantage_filter(self.buffers, cfg.advantage_filter_quantile,
+                                             cfg.advantage_filter_min_magnitude))
         returns = np.concatenate([b.returns[b.samples[:b.n_samples]] for b in self.buffers])
         values = np.concatenate([b.value[b.samples[:b.n_samples]] for b in self.buffers])
         variance = float(np.var(returns))
@@ -1129,8 +1185,15 @@ class PPOTrainer(RolloutCollector):
         advantage = mb["advantage"]
         if cfg.normalize_advantages and len(advantage) > 1:
             advantage = (advantage - advantage.mean()) / (advantage.std() + 1e-8)
-        surrogate = -torch.minimum(ratio * advantage,
-                                   ratio.clamp(1 - cfg.clip, 1 + cfg.clip) * advantage).mean()
+        clipped = torch.minimum(ratio * advantage,
+                                ratio.clamp(1 - cfg.clip, 1 + cfg.clip) * advantage)
+        if cfg.advantage_filter_quantile:
+            # A minibatch may contain no selected samples. Sum keeps the loss
+            # connected to the policy graph while clamp avoids a zero divisor.
+            keep = mb["policy_keep"]
+            surrogate = -(clipped * keep).sum() / keep.sum().clamp_min(1)
+        else:
+            surrogate = -clipped.mean()
         if cfg.fast_rollout:
             kl_ref = cached_reference_kl(log_probs, mb["ref_logp"], mb["offsets"]).mean()
         else:

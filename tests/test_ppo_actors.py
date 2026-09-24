@@ -103,6 +103,20 @@ def test_actor_runs_are_reproducible_under_a_seed(tmp_path):
             assert first[key] == pytest.approx(second[key], rel=1e-6), key
 
 
+def test_filtered_actor_update_uses_one_threshold_for_all_shards(tmp_path):
+    init = init_checkpoint(tmp_path / "init.pt")
+    trainer = PPOTrainer(config(init, num_envs=4, actor_processes=2, rollout_steps=150,
+                                advantage_filter_quantile=0.8,
+                                advantage_filter_min_magnitude=0.05), tmp_path / "run")
+    try:
+        stats = trainer.update()
+        assert stats["update_samples"] > 0
+        assert 0 < stats["policy_filter_kept_fraction"] < 1
+        assert np.isfinite(stats["policy_loss"])
+    finally:
+        trainer.close()
+
+
 def test_actor_processes_reject_an_opponent_object_and_bad_shards(tmp_path):
     init = init_checkpoint(tmp_path / "init.pt")
     with pytest.raises(ValueError):
