@@ -90,7 +90,9 @@ def load_audited_policy(path: Path, device: str, top_k: int | None) -> tuple[Sta
             "checkpoint_updates": int(payload.get("progress", {}).get("updates", 0)),
             "training_seed": payload.get("config", {}).get("seed"),
             "policy_config": {"temperature": policy.config.temperature,
-                              "top_k": policy.config.top_k}}
+                              "top_k": policy.config.top_k,
+                              "candidate_mode": policy.config.candidate_mode,
+                              "candidate_extra": policy.config.candidate_extra}}
     policy.net.eval()
     return policy, info
 
@@ -270,10 +272,14 @@ def audit(checkpoint: str | Path, *, decisions: int = 100_000, num_envs: int = 2
         policy, info = load_audited_policy(checkpoint, device, top_k)
     else:
         info = {"stage": "in-memory", "policy_config": {"temperature": policy.config.temperature,
-                                                        "top_k": policy.config.top_k}}
+                                                        "top_k": policy.config.top_k,
+                                                        "candidate_mode": policy.config.candidate_mode,
+                                                        "candidate_extra": policy.config.candidate_extra}}
     if info.get("training_seed") is not None and seed == info["training_seed"]:
         raise ValueError("audit seed must differ from the training seed")
     k = policy.config.top_k
+    support_generator = (torch.Generator(device=device).manual_seed(seed)
+                         if policy.config.candidate_extra else None)
     acc = Accumulator(k, tuple(sorted(set(coverage_ks) | {k})), max_candidates)
     env = gd.VecEnv(num_envs, num_threads=threads, seed=seed,
                     rules=gd.RuleConfig.house(), actions=gd.ActionConfig())
@@ -307,7 +313,7 @@ def audit(checkpoint: str | Path, *, decisions: int = 100_000, num_envs: int = 2
                 if not bool(torch.isfinite(ref_scores).all()):
                     raise FloatingPointError("non-finite reference scores")
                 step = policy.act(obs, cand, offsets, phase_t, greedy=True, phase_code=PLAY,
-                                  ref_scores=ref_scores)
+                                  ref_scores=ref_scores, generator=support_generator)
                 full_logits = policy.logits(obs, cand, offsets, phase_t, phase_code=PLAY)
                 if not bool(torch.isfinite(full_logits).all()):
                     raise FloatingPointError("non-finite policy logits")

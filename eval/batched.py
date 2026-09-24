@@ -107,7 +107,8 @@ class BatchActor:
                     bo, bc, bf = gather(obs, cand, off, big)
                     kept, _ = policy.stage_b.prune(
                         torch.from_numpy(bo).to(device), torch.from_numpy(bc).to(device),
-                        torch.from_numpy(bf).to(device), phase[big], code)
+                        torch.from_numpy(bf).to(device), phase[big], code,
+                        generator=self.generator)
                     mask = np.ones(len(cand), bool)
                     local = np.zeros(len(bc), bool)
                     local[kept.cpu().numpy()] = True

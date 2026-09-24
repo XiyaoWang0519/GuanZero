@@ -74,6 +74,7 @@ import argparse
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 import json
+from numbers import Integral
 import math
 import os
 import platform
@@ -176,6 +177,8 @@ class PPOConfig:
     grad_clip: float = 10.0
     temperature: float = 0.02      # measured: M1 sampled at 0.02 is within noise of argmax M1 (B5 report)
     top_k: int = 32
+    candidate_mode: str = "top_k"
+    candidate_extra: int = 0
     candidate_chunk: int = 32768
     # Rollout buffer capacities; 0 derives them from num_envs and rollout_steps.
     buffer_steps: int = 0
@@ -216,12 +219,18 @@ class PPOConfig:
         nonnegative = ("policy_lr", "critic_lr", "entropy_coef", "kl_coef", "target_kl",
                        "value_coef", "hidden_weight", "finish_weight", "buffer_steps",
                        "buffer_candidates", "buffer_trajectories", "actor_processes",
-                       "league_snapshot_every", "exploiter_win_rate",
+                       "league_snapshot_every", "exploiter_win_rate", "candidate_extra",
                        "advantage_filter_quantile", "advantage_filter_min_magnitude")
         for name in nonnegative:
             value = getattr(self, name)
             if not math.isfinite(value) or value < 0:
                 raise ValueError(f"{name} must be nonnegative and finite")
+        if self.candidate_mode not in ("top_k", "union"):
+            raise ValueError("candidate_mode must be top_k or union")
+        if not isinstance(self.candidate_extra, Integral) or isinstance(self.candidate_extra, bool):
+            raise ValueError("candidate_extra must be an integer")
+        if self.candidate_mode == "top_k" and self.candidate_extra:
+            raise ValueError("candidate_extra requires union mode")
         if self.num_envs < 2:
             raise ValueError("num_envs must be at least 2 so both learner teams are covered")
         if self.clip >= 1:
@@ -268,7 +277,7 @@ class PPOConfig:
         return RolloutBufferConfig(
             num_envs=self.num_envs, obs_dim=gd.OBS_DIM, act_dim=gd.ACT_DIM,
             max_steps=steps,
-            max_candidates=self.buffer_candidates or steps * (self.top_k + 1),
+            max_candidates=self.buffer_candidates or steps * (self.top_k + self.candidate_extra + 1),
             max_trajectories=self.buffer_trajectories or self.num_envs * 2 * (self.rollout_steps // 8 + 2),
             carry_over=True)
 
@@ -789,7 +798,9 @@ class PPOTrainer(RolloutCollector):
         torch.manual_seed(config.seed)
         self.rng = np.random.default_rng(config.seed)
         policy_config = PolicyConfig(temperature=config.temperature, top_k=config.top_k,
-                                     chunk_size=config.candidate_chunk)
+                                     chunk_size=config.candidate_chunk,
+                                     candidate_mode=config.candidate_mode,
+                                     candidate_extra=config.candidate_extra)
         self.progress: dict[str, Any] = {
             "updates": 0, "optimizer_steps": 0, "decisions": 0, "learner_decisions": 0,
             "rounds": 0, "matches": 0, "learner_match_wins": 0, "samples": 0,
@@ -997,9 +1008,11 @@ class PPOTrainer(RolloutCollector):
         if warm.get("tribute_policy", "heuristic") != cfg.tribute_policy:
             raise ValueError("warm_start tribute_policy differs from the config")
         mine = self.policy.config
-        if (source.config.temperature, source.config.top_k) != (mine.temperature, mine.top_k):
+        if (source.config.temperature, source.config.top_k,
+                source.config.candidate_mode, source.config.candidate_extra) != (
+                mine.temperature, mine.top_k, mine.candidate_mode, mine.candidate_extra):
             if not cfg.warm_start_policy_override:
-                raise ValueError("warm_start temperature/top_k differ from the config; set "
+                raise ValueError("warm_start temperature/top_k/candidate support differ from the config; set "
                                  "warm_start_policy_override to allow it")
             if source.config.temperature != mine.temperature:
                 warnings.warn(f"warm_start was trained at temperature {source.config.temperature}"

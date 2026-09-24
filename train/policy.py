@@ -17,6 +17,7 @@ from __future__ import annotations
 import copy
 from dataclasses import asdict, dataclass
 import math
+from numbers import Integral
 from pathlib import Path
 from typing import Any
 
@@ -36,12 +37,20 @@ class PolicyConfig:
     temperature: float = 1.0
     top_k: int = 32
     chunk_size: int = 32768
+    candidate_mode: str = "top_k"
+    candidate_extra: int = 0
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.temperature) or self.temperature <= 0:
             raise ValueError("temperature must be positive and finite")
         if self.top_k <= 0 or self.chunk_size <= 0:
             raise ValueError("top_k and chunk_size must be positive")
+        if self.candidate_mode not in ("top_k", "union"):
+            raise ValueError("candidate_mode must be top_k or union")
+        if (not isinstance(self.candidate_extra, Integral) or isinstance(self.candidate_extra, bool)
+                or self.candidate_extra < 0 or
+                (self.candidate_mode == "top_k" and self.candidate_extra)):
+            raise ValueError("candidate_extra requires union mode and must be a nonnegative integer")
 
 
 @dataclass
@@ -74,7 +83,8 @@ def pass_mask(cand: Tensor) -> Tensor:
 
 def prune_candidates(ref_scores: Tensor, offsets: Tensor, top_k: int,
                      keep: Tensor | None = None, *,
-                     check_finite: bool = True) -> tuple[Tensor, Tensor]:
+                     check_finite: bool = True, extra: int = 0,
+                     generator: torch.Generator | None = None) -> tuple[Tensor, Tensor]:
     """Keep the `top_k` best reference scores per segment, plus every `keep`.
 
     Ties break toward the lower original index. Returns the kept flat indices in
@@ -85,6 +95,10 @@ def prune_candidates(ref_scores: Tensor, offsets: Tensor, top_k: int,
     """
     if top_k <= 0:
         raise ValueError("top_k must be positive")
+    if extra < 0:
+        raise ValueError("extra must be nonnegative")
+    if extra and generator is None:
+        raise ValueError("union support needs an explicit seeded generator")
     if check_finite and not torch.isfinite(ref_scores).all():
         raise ValueError("reference scores must be finite")
     n, total = len(offsets) - 1, len(ref_scores)
@@ -96,6 +110,21 @@ def prune_candidates(ref_scores: Tensor, offsets: Tensor, top_k: int,
     kept = rank < top_k
     if keep is not None:
         kept |= keep
+    if extra:
+        # Random ranks among the remainder give a uniform subset without
+        # replacement. One support is drawn before the policy action; the
+        # stored support is then held fixed for the entire PPO update.
+        random_order = torch.argsort(torch.rand(total, device=ref_scores.device,
+                                                 generator=generator), stable=True)
+        random_order = random_order[torch.argsort(rows[random_order], stable=True)]
+        remainder_order = random_order[~kept[random_order]]
+        remainder_rows = rows[remainder_order]
+        remainder_counts = offsets.new_zeros(n).index_add_(
+            0, remainder_rows, torch.ones_like(remainder_rows, dtype=offsets.dtype))
+        remainder_starts = torch.cumsum(remainder_counts, 0) - remainder_counts
+        remainder_rank = torch.arange(len(remainder_order), device=ref_scores.device) - \
+            remainder_starts[remainder_rows]
+        kept[remainder_order[remainder_rank < extra]] = True
     keep_index = torch.nonzero(kept).flatten()
     # A segment sum rather than bincount, which synchronises CUDA to size its output.
     counts = offsets.new_zeros(n).index_add_(0, rows, kept.to(offsets.dtype))
@@ -201,13 +230,15 @@ class StageBPolicy:
         return scores / self.config.temperature
 
     def prune(self, obs: Tensor, cand: Tensor, offsets: Tensor, phase: Tensor,
-              phase_code: int | None = None) -> tuple[Tensor, Tensor]:
+              phase_code: int | None = None, *,
+              generator: torch.Generator | None = None) -> tuple[Tensor, Tensor]:
         """Frozen-reference top-k plus pass. Returns (keep_index, pruned_offsets)."""
         with torch.no_grad():
             ref_scores = self.reference.score_candidates(
                 obs, cand, offsets, phase, chunk_size=self.config.chunk_size,
                 phase_code=phase_code)
-        return prune_candidates(ref_scores, offsets, self.config.top_k, pass_mask(cand))
+        return prune_candidates(ref_scores, offsets, self.config.top_k, pass_mask(cand),
+                                extra=self.config.candidate_extra, generator=generator)
 
     def act(self, obs: Tensor, cand: Tensor, offsets: Tensor, phase: Tensor, *,
             generator: torch.Generator | None = None, greedy: bool = False,
@@ -228,7 +259,8 @@ class StageBPolicy:
                     obs, cand, offsets, phase, chunk_size=self.config.chunk_size,
                     phase_code=phase_code)
         keep_index, pruned_offsets = prune_candidates(
-            ref_scores, offsets, self.config.top_k, pass_mask(cand), check_finite=sync_checks)
+            ref_scores, offsets, self.config.top_k, pass_mask(cand), check_finite=sync_checks,
+            extra=self.config.candidate_extra, generator=generator)
         pruned_cand = cand[keep_index]
         logits = self.logits(obs, pruned_cand, pruned_offsets, phase, phase_code)
         log_probs = segment_log_softmax(logits, pruned_offsets)
@@ -262,7 +294,8 @@ class StageBPolicy:
                     obs, cand, offsets, phase, chunk_size=self.config.chunk_size,
                     phase_code=phase_code)
         keep_index, pruned_offsets = prune_candidates(
-            ref_scores, offsets, self.config.top_k, pass_mask(cand), check_finite=False)
+            ref_scores, offsets, self.config.top_k, pass_mask(cand), check_finite=False,
+            extra=self.config.candidate_extra, generator=generator)
         logits = self.logits(obs, cand[keep_index], pruned_offsets, phase, phase_code)
         if greedy:
             local = select_actions(logits, pruned_offsets)

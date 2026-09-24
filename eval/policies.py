@@ -159,7 +159,12 @@ class PrunedPolicy(ModelPolicy):
             if whole:
                 keep, pruned_offsets = torch.arange(len(actions), device=self.device), offsets
             else:
-                keep, pruned_offsets = self.stage_b.prune(obs, cand, offsets, phase, code)
+                generator = None
+                if self.stage_b.config.candidate_extra:
+                    generator = torch.Generator(device=self.device)
+                    generator.manual_seed(rng.getrandbits(63))
+                keep, pruned_offsets = self.stage_b.prune(obs, cand, offsets, phase, code,
+                                                          generator=generator)
             logits = self.stage_b.logits(obs, cand[keep], pruned_offsets, phase, code)
             if not torch.isfinite(logits).all():
                 raise ValueError("policy must produce finite logits")
