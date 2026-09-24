@@ -204,6 +204,19 @@ class PPOConfig:
     # config opponent (frozen, frozen:<path>, greedy, league:<pool.json>);
     # the league's semantics across actors are in train/ppo_actors.py.
     actor_processes: int = 0
+    # The learner uploads the completed trajectories' uint8 features to the
+    # device once per update and gathers minibatches there (StagedSamples in
+    # train/rollout_buffer.py); False gathers and uploads every minibatch from
+    # the host. Same values either way.
+    learn_on_device: bool = True
+    # In the fast rollout, run the frozen reference only on rows it can prune
+    # (more than top_k candidates) once the KL coefficient has annealed to
+    # zero; rows it cannot prune keep every candidate in the engine's order
+    # regardless of its scores, so the sampled actions, log-probabilities and
+    # stored rows are the same. Their stored ref_logp is NaN and the kl_ref
+    # statistic then covers scored rows only. Rows the fused frozen opponent
+    # plays are always scored (its argmax needs them). False scores every row.
+    skip_unpruned_reference: bool = True
 
     def validate(self) -> None:
         positive = ("num_envs", "num_threads", "torch_threads", "rollout_steps", "epochs",
@@ -285,7 +298,8 @@ class PPOConfig:
 # Fields that may change on resume: runtime limits and resources only.
 MUTABLE_ON_RESUME = {"max_updates", "max_seconds", "checkpoint_seconds", "snapshot_updates",
                      "tensorboard", "torch_threads", "num_threads", "init_checkpoint", "critic_init",
-                     "fast_rollout", "actor_processes"}
+                     "fast_rollout", "actor_processes", "learn_on_device",
+                     "skip_unpruned_reference"}
 
 
 def assign_advantage_filter(buffers: Sequence[RolloutBuffer], quantile: float,
@@ -505,6 +519,54 @@ class RolloutCollector:
     `bound` and `should_stop()`.
     """
 
+    # Whether every learner row needs the reference's scores (the KL term
+    # uses its stored log-probabilities). The trainer sets it per update from
+    # the KL coefficient; True is the safe default.
+    learner_reference_all = True
+
+    def _reference_rows(self, counts: np.ndarray, n_learner: int, n_fused: int,
+                        shared: Sequence[tuple[Any, np.ndarray]]) -> np.ndarray | None:
+        """Mask of the `_fast_act` rows the reference forward must score, or
+        None when that is every row (`PPOConfig.skip_unpruned_reference`)."""
+        if not self.config.skip_unpruned_reference:
+            return None
+        scored = np.ones(counts.size, bool)
+        if not self.learner_reference_all:
+            scored[:n_learner] = counts[:n_learner] > self.policy.config.top_k
+        begin = n_fused
+        for model, group in shared:
+            end = begin + group.size
+            scored[begin:end] = counts[begin:end] > model.pruned.config.top_k
+            begin = end
+        return None if scored.all() else scored
+
+    def _partial_reference(self, obs: torch.Tensor, cand: torch.Tensor, local: np.ndarray,
+                           counts: np.ndarray, phase_t: torch.Tensor, scored: np.ndarray
+                           ) -> tuple[torch.Tensor, torch.Tensor]:
+        """The reference forward over the `scored` rows only, scattered into a
+        full-length score tensor whose unscored candidates are zero (their
+        rows keep every candidate whatever the scores). Returns the scores
+        and whether the computed ones are all finite."""
+        policy = self.policy
+        total = int(local[-1])
+        s_rows = np.flatnonzero(scored)
+        if not s_rows.size:
+            return obs.new_zeros(total), torch.ones((), dtype=torch.bool, device=obs.device)
+        s_counts = counts[s_rows]
+        s_local = np.zeros(s_rows.size + 1, np.int64)
+        np.cumsum(s_counts, out=s_local[1:])
+        s_src = _ragged_index(local[s_rows], s_counts, int(s_local[-1]))
+        index = self.upload("ref_index", np.concatenate((s_rows, s_src)), torch.int64, torch.long)
+        s_local_t = self.upload("ref_offsets", s_local, torch.int64, torch.long)
+        rows_t, src_t = index[:s_rows.size], index[s_rows.size:]
+        sub = policy.reference.score_candidates(
+            obs.index_select(0, rows_t), cand.index_select(0, src_t), s_local_t,
+            phase_t.index_select(0, rows_t), chunk_size=policy.config.chunk_size,
+            phase_code=self.phase_code)
+        ref = sub.new_zeros(total)
+        ref[src_t] = sub
+        return ref, torch.isfinite(sub).all()
+
     def _finish_rounds(self, results) -> None:
         ended, won = [], []
         for result in results:
@@ -630,12 +692,18 @@ class RolloutCollector:
             obs = obs_all.view(-1, gd.OBS_DIM).index_select(0, index[:rows.size])
             cand = cand_all.view(-1, gd.ACT_DIM).index_select(0, index[rows.size:])
         policy = self.policy
+        scored = self._reference_rows(counts, n_learner, n_fused, shared)
         with torch.inference_mode():
             with self._phase("reference forward"):
-                ref = policy.reference.score_candidates(
-                    obs, cand, local_t, phase_t, chunk_size=policy.config.chunk_size,
-                    phase_code=self.phase_code)
-            outputs = [torch.isfinite(ref).all()]
+                if scored is None:
+                    ref = policy.reference.score_candidates(
+                        obs, cand, local_t, phase_t, chunk_size=policy.config.chunk_size,
+                        phase_code=self.phase_code)
+                    finite = torch.isfinite(ref).all()
+                else:
+                    ref, finite = self._partial_reference(obs, cand, local, counts, phase_t,
+                                                          scored)
+            outputs = [finite]
             if n_learner:
                 with self._phase("prune + policy forward + sample"):
                     step = policy.act(obs[:n_learner], cand[:c_learner],
@@ -672,6 +740,15 @@ class RolloutCollector:
             return
         choice, pruned_choice, log_prob, keep, pruned_offsets, ref_logp = host[1:7]
         choices[learner_rows] = choice
+        if scored is not None:
+            # Unscored learner rows kept every candidate; their reference
+            # log-probabilities were never computed.
+            unscored = np.flatnonzero(~scored[:n_learner])
+            if unscored.size:
+                p_counts = pruned_offsets[unscored + 1] - pruned_offsets[unscored]
+                ref_logp = ref_logp.copy()
+                ref_logp[_ragged_index(pruned_offsets[unscored], p_counts,
+                                       int(p_counts.sum()))] = np.nan
         with self._phase("buffer add"):
             self.buffer.add_batch(
                 learner=np.ones(n_learner, bool), env_id=env_id[learner_rows],
@@ -1064,17 +1141,26 @@ class PPOTrainer(RolloutCollector):
     # ----------------------------------------------------------------- learner
     @torch.no_grad()
     def refresh_values(self) -> None:
-        """Critic values of every completed step, written into the buffer(s)."""
+        """Critic values of every completed step, written into the buffer(s).
+        With `learn_on_device` this is also where the update's rows are
+        uploaded (`RolloutBuffer.stage`), in the same chunks as before."""
         self.critic.eval()
         chunk = max(1, self.config.minibatch_size)
         for buffer in self.buffers:
-            steps = buffer.pending_value_steps()
+            staged = buffer.stage(self.device) if self.config.learn_on_device else None
+            steps = staged.steps if staged is not None else buffer.pending_value_steps()
             for begin in range(0, steps.size, chunk):
                 part = steps[begin:begin + chunk]
-                x = to_device(buffer.critic_input(part), self.device, torch.float32)
+                if staged is not None:
+                    x = staged.critic_input(begin, begin + chunk)
+                else:
+                    x = to_device(buffer.critic_input(part), self.device, torch.float32)
                 buffer.value[part] = self.critic(x).float().cpu().numpy()
 
     def collect(self) -> None:
+        # Learner rows need the reference's log-probabilities only while the
+        # KL term is on; this update's coefficient is what learn() will use.
+        self.learner_reference_all = self.kl_coef() > 0
         if self.actors is None:
             super().collect()
             return
@@ -1122,6 +1208,9 @@ class PPOTrainer(RolloutCollector):
             return stats
         stats.update(assign_advantage_filter(self.buffers, cfg.advantage_filter_quantile,
                                              cfg.advantage_filter_min_magnitude))
+        for buffer in self.buffers:
+            if buffer.staged is not None:
+                buffer.staged.refresh_scalars(buffer)
         returns = np.concatenate([b.returns[b.samples[:b.n_samples]] for b in self.buffers])
         values = np.concatenate([b.value[b.samples[:b.n_samples]] for b in self.buffers])
         variance = float(np.var(returns))
@@ -1130,6 +1219,9 @@ class PPOTrainer(RolloutCollector):
         stats["mean_return"] = float(returns.mean())
         stats["mean_value"] = float(values.mean())
         kl_coef = stats["kl_coef"]
+        # Once the KL term is off, the fast rollout scores only rows it can
+        # prune; the others' stored ref_logp is NaN and the statistic skips them.
+        reference_partial = cfg.fast_rollout and cfg.skip_unpruned_reference and kl_coef == 0
         # Statistics and finiteness stay on the device and are read once per
         # epoch, so a minibatch never waits for the device. A non-finite loss
         # or gradient raises at the end of its epoch instead of before its
@@ -1151,7 +1243,7 @@ class PPOTrainer(RolloutCollector):
                 if mb is None:
                     break
                 with self._phase("learner forward"):
-                    terms = self.minibatch_loss(mb, kl_coef)
+                    terms = self.minibatch_loss(mb, kl_coef, reference_partial)
                 with self._phase("learner backward + step"):
                     self.policy_optimizer.zero_grad(set_to_none=True)
                     self.critic_optimizer.zero_grad(set_to_none=True)
@@ -1185,7 +1277,12 @@ class PPOTrainer(RolloutCollector):
         self.progress["samples"] += samples
         return stats
 
-    def minibatch_loss(self, mb: dict[str, torch.Tensor], kl_coef: float) -> dict[str, torch.Tensor]:
+    def minibatch_loss(self, mb: dict[str, torch.Tensor], kl_coef: float,
+                       reference_partial: bool = False) -> dict[str, torch.Tensor]:
+        """Loss terms of one minibatch. `reference_partial` says rows may hold
+        NaN `ref_logp` (their reference forward was skipped at rollout, see
+        `PPOConfig.skip_unpruned_reference`): `kl_ref` then averages the
+        scored rows and is only a statistic, `kl_coef` being zero."""
         cfg = self.config
         # One state-tower pass feeds both the policy logits and the auxiliary
         # heads (B5 ran it twice; the gradient is the same sum either way).
@@ -1207,7 +1304,16 @@ class PPOTrainer(RolloutCollector):
             surrogate = -(clipped * keep).sum() / keep.sum().clamp_min(1)
         else:
             surrogate = -clipped.mean()
-        if cfg.fast_rollout:
+        if cfg.fast_rollout and reference_partial:
+            ref_logp = mb["ref_logp"]
+            # A row's candidates are all scored or all NaN; keep NaN out of
+            # the graph so the skipped rows contribute nothing, not NaN grads.
+            scored = torch.isfinite(ref_logp[mb["offsets"][:-1]])
+            rows = cached_reference_kl(
+                log_probs, torch.where(torch.isfinite(ref_logp), ref_logp,
+                                       ref_logp.new_zeros(())), mb["offsets"])
+            kl_ref = torch.where(scored, rows, rows.new_zeros(())).sum() / scored.sum().clamp_min(1)
+        elif cfg.fast_rollout:
             kl_ref = cached_reference_kl(log_probs, mb["ref_logp"], mb["offsets"]).mean()
         else:
             kl_ref = reference_kl(self.policy, log_probs, mb["obs"], mb["cand"], mb["offsets"],

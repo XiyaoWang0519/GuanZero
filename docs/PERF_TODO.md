@@ -35,7 +35,9 @@ for co-running arms.
    co-running arm, old and new code. Headline numbers with `--profile` off.
 4. `--num-envs 2048/4096 --rollout-steps 64/32`, and `--actors 0 2 4`, alone
    and co-running; probe NVIDIA MPS in a private pipe directory.
-5. Learner: host minibatch gather vs GPU step (CUDA events); `candidate_chunk`
+5. Learner: `--learn-on-device 0/1` and `--skip-unpruned-reference 0/1` in
+   `bench/ppo_throughput.py` (the September 24 learner pass, unmeasured on
+   CUDA); host minibatch gather vs GPU step (CUDA events); `candidate_chunk`
    32768 vs 262144; fused Adam.
 
 `.work/perf-scan-2026-09-23/gap-pod-host-variance/pod_calibrate.sh` covers 1-2.
@@ -46,7 +48,8 @@ The bench needs a `--league-steady` option and a per-spec timer for 3.
 | Item | Gain (estimate) | Effort | Semantics | Where / prototype |
 |---|---|---|---|---|
 | Build opponent features only for network rows (uint8 staging reuse and indexed obs are now implemented) | remaining gain needs measurement | S | bitwise | `train/ppo.py` |
-| Keep rollout data on the GPU for learn (upload once per update, gather on device); shrink `buffer_candidates` (2.74 GiB per arm, ~14x oversized) | learn −0.1 to −0.5 s/update | M | bitwise with 8,192-row refresh chunks | `rollout_buffer.py:357-450`, `ppo.py` |
+| Rollout data kept on the device for learn (`learn_on_device`, implemented in the [September 24 learner pass](reports/perf-learner-2026-09-24.md), bitwise) and the reference forward only on rows it can prune (`skip_unpruned_reference`, same report; rows, choices and weights bitwise, `kl_ref` statistic over scored rows) | CUDA effect unmeasured; measure with `bench/ppo_throughput.py --learn-on-device 0/1 --skip-unpruned-reference 0/1` on the next pod (add to "Measure first" item 5) | done | as stated | `train/rollout_buffer.py`, `train/ppo.py` |
+| Shrink `buffer_candidates` (2.74 GiB per arm, ~14x oversized) | memory only | S | bitwise | `train/ppo.py` |
 | League arms at `num_envs 4096 × rollout_steps 32` (same decisions per update), cap about 20 | 1.1-1.2x after the fusion work | S (config) | **changes results**: 2x staleness, slower league ramp | league configs |
 | Actor processes (W = 2-4, `num_threads // W`) on main/control/frozen arms, never the pinned exploiter | 1.0-1.35x, may be negative without MPS | S (config) | stat. equivalent | bench first (item 4 above) |
 | `candidate_chunk 262144`, `Adam(fused=True)` | 0.3-2% | S | float-level | `ppo.py` |

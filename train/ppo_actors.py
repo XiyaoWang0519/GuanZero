@@ -184,7 +184,7 @@ class ActorPool:
         league_state = (None if trainer.league is None
                         else trainer.league.state_dict(include_rng=False))
         for connection in self.connections:
-            connection.send(("collect", (steps, league_state)))
+            connection.send(("collect", (steps, league_state, trainer.learner_reference_all)))
         seconds, replies = [], []
         for buffer, connection in zip(self.buffers, self.connections):
             reply = self._receive(connection)
@@ -192,6 +192,7 @@ class ActorPool:
             buffer.n_steps, buffer.n_cand, buffer.n_traj = reply["counters"]
             buffer.n_samples = 0
             buffer.finalized = False
+            buffer.staged = None
             for key in PROGRESS_KEYS:
                 trainer.progress[key] += reply["progress"][key]
             for key, value in reply["window"].items():
@@ -331,8 +332,9 @@ class Actor:
         self.collector = collector
 
     def collect_once(self, argument: tuple, first: bool) -> dict:
-        steps, league_state = argument
+        steps, league_state, learner_reference_all = argument
         c = self.collector
+        c.learner_reference_all = learner_reference_all
         start = time.monotonic()
         if self.league is not None:
             self.league.load_state_dict(league_state)   # the learner's weights and snapshots

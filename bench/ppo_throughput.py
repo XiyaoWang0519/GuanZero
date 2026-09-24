@@ -111,6 +111,8 @@ def _measure(trainer: PPOTrainer, config: PPOConfig, warmup: int, updates: int, 
         "torch_threads": config.torch_threads, "rollout_steps": config.rollout_steps,
         "epochs": config.epochs, "minibatch_size": config.minibatch_size,
         "candidate_chunk": config.candidate_chunk, "opponent": config.opponent,
+        "learn_on_device": config.learn_on_device,
+        "skip_unpruned_reference": config.skip_unpruned_reference,
         "updates": done, "wall_seconds": wall,
         "decisions_per_second": decisions / wall,
         "updates_per_second": done / wall,
@@ -158,6 +160,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--compare", action="store_true",
                         help="measure the B5 path (fast_rollout=false) and the fast path")
     parser.add_argument("--legacy", action="store_true", help="measure only the B5 path")
+    parser.add_argument("--learn-on-device", type=int, choices=(0, 1),
+                        help="override PPOConfig.learn_on_device")
+    parser.add_argument("--skip-unpruned-reference", type=int, choices=(0, 1),
+                        help="override PPOConfig.skip_unpruned_reference")
     parser.add_argument("--profile", action="store_true", help="per-phase time breakdown")
     parser.add_argument("--tiny", action="store_true",
                         help="16-wide network: measures everything but model compute")
@@ -169,7 +175,10 @@ def main(argv: list[str] | None = None) -> int:
                  "torch_threads": args.torch_threads, "rollout_steps": args.rollout_steps,
                  "epochs": args.epochs, "minibatch_size": args.minibatch_size,
                  "candidate_chunk": args.candidate_chunk, "opponent": args.opponent,
-                 "league_snapshot_every": args.league_snapshot_every}
+                 "league_snapshot_every": args.league_snapshot_every,
+                 "learn_on_device": None if args.learn_on_device is None else bool(args.learn_on_device),
+                 "skip_unpruned_reference": (None if args.skip_unpruned_reference is None
+                                             else bool(args.skip_unpruned_reference))}
     config = replace(config, **{k: v for k, v in overrides.items() if v is not None},
                      tensorboard=False, max_updates=10**9, max_seconds=10**9,
                      checkpoint_seconds=600)

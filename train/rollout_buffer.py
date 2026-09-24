@@ -171,6 +171,7 @@ class RolloutBuffer:
         self.n_traj = 0
         self.n_samples = 0
         self.finalized = False
+        self.staged = None    # StagedSamples, see stage()
 
     # ------------------------------------------------------------------ rollout
     def add_batch(self, *, learner: np.ndarray, env_id: np.ndarray,
@@ -315,6 +316,14 @@ class RolloutBuffer:
         idx = np.flatnonzero(self.traj_complete[self.traj[:n]])
         return idx[np.argsort(self.traj[idx], kind="stable")]
 
+    def stage(self, device: torch.device | str) -> "StagedSamples":
+        """Upload the completed trajectories' features to `device` once for
+        this iteration (see `StagedSamples`). `critic_input`-shaped chunks and
+        `gather` then read from the device copy. Dropped by `next_iteration`
+        and `clear`."""
+        self.staged = StagedSamples(self, device)
+        return self.staged
+
     def finalize(self, gamma: float = 1.0, lam: float = 0.95) -> int:
         """GAE over completed trajectories using the stored `value` slots.
         Returns the number of trainable samples."""
@@ -323,6 +332,8 @@ class RolloutBuffer:
         self.samples[:m] = order
         self.n_samples = m
         self.finalized = True
+        if self.staged is not None:
+            self.staged.scalars = None    # re-uploaded by the first gather
         if m == 0:
             return 0
         traj = self.traj[order]
@@ -360,6 +371,12 @@ class RolloutBuffer:
             yield self.gather(order[begin:begin + batch_size], device)
 
     def gather(self, steps: np.ndarray, device: torch.device | str = "cpu") -> dict[str, torch.Tensor]:
+        staged = self.staged
+        if (staged is not None and self.finalized and staged.device == torch.device(device)
+                and staged.covers(steps)):
+            if staged.scalars is None:
+                staged.refresh_scalars(self)
+            return staged.gather(steps)
         counts = self.cand_count[steps]
         total = int(counts.sum())
         offsets = np.zeros(steps.size + 1, np.int64)
@@ -429,6 +446,7 @@ class RolloutBuffer:
             self.n_steps, self.n_cand, self.n_traj = k, total, open_ids.size
         self.n_samples = 0
         self.finalized = False
+        self.staged = None
 
     def clear(self) -> None:
         """Forget everything, including open and dropped rounds."""
@@ -436,11 +454,105 @@ class RolloutBuffer:
         self.dropped.fill(False)
         self.n_steps = self.n_cand = self.n_traj = self.n_samples = 0
         self.finalized = False
+        self.staged = None
 
     def storage(self) -> dict[str, np.ndarray]:
         """Every preallocated array, for capacity and reuse checks."""
         return {name: value for name, value in vars(self).items()
                 if isinstance(value, np.ndarray)}
+
+
+class StagedSamples:
+    """The completed trajectories' rows on the learner's device, uploaded once
+    per iteration instead of once per minibatch per epoch.
+
+    Rows are in `pending_value_steps()` order, which `finalize` reuses as the
+    samples order. Features stay uint8 on the device and are widened per
+    chunk or minibatch; `gather(steps)` selects rows and their ragged
+    candidates on the device from host-computed indices, so a minibatch
+    costs an index upload of a few hundred kilobytes rather than a host
+    gather and upload of tens of megabytes. Every tensor it returns holds
+    exactly the values `RolloutBuffer.gather` would, in the same order.
+    The per-sample scalars written by `finalize` and the advantage filter
+    (value, advantage, returns, policy_keep) are uploaded by
+    `refresh_scalars` once they exist."""
+
+    def __init__(self, buffer: RolloutBuffer, device: torch.device | str) -> None:
+        self.device = torch.device(device)
+        steps = buffer.pending_value_steps()
+        self.steps = steps
+        self.position = np.full(buffer.n_steps, -1, np.int64)
+        self.position[steps] = np.arange(steps.size)
+        counts = buffer.cand_count[steps]
+        self.cand_count = counts
+        self.cand_start = np.cumsum(counts) - counts
+        src = _ragged_index(buffer.cand_start[steps], counts, int(counts.sum()))
+        self.obs = to_device(buffer.obs[steps], self.device, torch.uint8)
+        self.hidden = to_device(buffer.hidden[steps], self.device, torch.uint8)
+        self.cand = to_device(buffer.cand[src], self.device, torch.uint8)
+        self.ref_logp = to_device(buffer.ref_logp[src], self.device, torch.float32)
+        self.scalars: dict[str, torch.Tensor] | None = None
+
+    def critic_input(self, begin: int, end: int) -> torch.Tensor:
+        """`[end - begin, obs_dim + 162]` float32 of rows `begin:end`."""
+        return torch.cat([self.obs[begin:end].to(torch.float32),
+                          self.hidden[begin:end].to(torch.float32)], dim=1)
+
+    def refresh_scalars(self, buffer: RolloutBuffer) -> None:
+        """Upload the per-sample scalars after `finalize` (and the advantage
+        filter). The finalized samples must be exactly the staged rows."""
+        steps = self.steps
+        if not buffer.finalized or not np.array_equal(buffer.samples[:buffer.n_samples], steps):
+            raise RuntimeError("staged rows do not match the finalized samples")
+
+        def t(array: np.ndarray, dtype: torch.dtype) -> torch.Tensor:
+            return to_device(array, self.device, dtype)
+
+        self.scalars = {
+            "finish": t(buffer.traj_finish[buffer.traj[steps], buffer.seat[steps]], torch.long),
+            "chosen": t(buffer.chosen[steps], torch.long),
+            "logp": t(buffer.logp[steps], torch.float32),
+            "value": t(buffer.value[steps], torch.float32),
+            "advantage": t(buffer.advantage[steps], torch.float32),
+            "policy_keep": t(buffer.policy_keep[steps], torch.bool),
+            "returns": t(buffer.returns[steps], torch.float32),
+            "phase": t(buffer.phase[steps], torch.long),
+            "seat": t(buffer.seat[steps], torch.long),
+        }
+
+    def covers(self, steps: np.ndarray) -> bool:
+        """Whether every requested step is a staged (completed) row."""
+        steps = np.asarray(steps)
+        return bool(steps.size and (steps < self.position.size).all()
+                    and (self.position[steps] >= 0).all())
+
+    def gather(self, steps: np.ndarray) -> dict[str, torch.Tensor]:
+        """`RolloutBuffer.gather(steps)` from the device copy."""
+        if self.scalars is None:
+            raise RuntimeError("refresh_scalars() must run before gather()")
+        if not self.covers(steps):
+            raise ValueError("a requested step is not a staged sample")
+        pos = self.position[steps]
+        counts = self.cand_count[pos]
+        total = int(counts.sum())
+        offsets = np.zeros(steps.size + 1, np.int64)
+        np.cumsum(counts, out=offsets[1:])
+        src = _ragged_index(self.cand_start[pos], counts, total)
+        pos_t = to_device(pos, self.device, torch.long)
+        src_t = to_device(src, self.device, torch.long)
+        obs = self.obs.index_select(0, pos_t).to(torch.float32)
+        hidden = self.hidden.index_select(0, pos_t).to(torch.float32)
+        result = {
+            "steps": to_device(steps, self.device, torch.long),
+            "obs": obs,
+            "critic_obs": torch.cat([obs, hidden], dim=1),
+            "cand": self.cand.index_select(0, src_t).to(torch.float32),
+            "ref_logp": self.ref_logp.index_select(0, src_t),
+            "offsets": to_device(offsets, self.device, torch.long),
+        }
+        for name, tensor in self.scalars.items():
+            result[name] = tensor.index_select(0, pos_t)
+        return result
 
 
 def to_device(array: np.ndarray, device: torch.device, dtype: torch.dtype) -> torch.Tensor:

@@ -645,6 +645,14 @@ export PYTHONPATH=python:.
 .venv/bin/python bench/ppo_throughput.py --config train/configs/b8-league.json --device cuda --actors 0 4 8
 ```
 
+Two exact speedups are on by default and may be toggled on resume:
+`learn_on_device` (the update's rows are uploaded once and minibatches are
+gathered on the device) and `skip_unpruned_reference` (once the KL term is
+zero, the frozen reference scores only rows with more than `top_k`
+candidates; the `kl_ref` metric then covers those rows only). Both leave
+rows, actions and weights bitwise unchanged, see
+[the learner report](reports/perf-learner-2026-09-24.md).
+
 On a pod, size `num_threads` and `torch_threads` with `infra/cpu_budget.py`,
 before exporting `OMP_NUM_THREADS`, and save the host facts into the run:
 

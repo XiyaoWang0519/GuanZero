@@ -210,3 +210,191 @@ def test_uploader_retains_current_narrow_host_features():
         assert staged.ctypes.data == upload.pinned["obs"].data_ptr()
         np.testing.assert_array_equal(staged, source)
         torch.testing.assert_close(value.cpu(), torch.from_numpy(source), rtol=0, atol=0)
+
+
+# ---------------------------------------------------------------------------
+# Learner-side device staging and the reference skip (September 24 pass).
+# Both must leave every stored row, every statistic that enters the loss and
+# every weight bitwise unchanged; see docs/reports/perf-learner-2026-09-24.md.
+
+def state(trainer) -> list[dict[str, torch.Tensor]]:
+    return [{k: v.detach().clone() for k, v in m.state_dict().items()}
+            for m in (trainer.net, trainer.critic)]
+
+
+def assert_same_state(a, b) -> None:
+    for left, right in zip(state(a), state(b)):
+        for key, value in left.items():
+            assert torch.equal(value, right[key]), key
+
+
+def rows_snapshot(trainer) -> list[dict[str, np.ndarray]]:
+    out = []
+    for buffer in trainer.buffers:
+        n, c = buffer.n_steps, buffer.n_cand
+        out.append({**{k: getattr(buffer, k)[:n].copy() for k in STORED},
+                    "logp": buffer.logp[:n].copy(), "cand": buffer.cand[:c].copy(),
+                    "ref_logp": buffer.ref_logp[:c].copy()})
+    return out
+
+
+def capture_rollouts(trainer, updates: int) -> list[list[dict[str, np.ndarray]]]:
+    """Run `updates` updates, returning the rows each one learned from."""
+    captured = []
+    learn = trainer.learn
+
+    def learn_and_capture():
+        captured.append(rows_snapshot(trainer))
+        return learn()
+
+    trainer.learn = learn_and_capture
+    for _ in range(updates):
+        trainer.update()
+    return captured
+
+
+@pytest.mark.parametrize("actors", [0, 2])
+def test_learn_on_device_reproduces_host_gathers_exactly(tmp_path, actors):
+    init = init_checkpoint(tmp_path / "init.pt")
+    host, device = [PPOTrainer(config(init, learn_on_device=on, skip_unpruned_reference=False,
+                                      actor_processes=actors, num_threads=1, rollout_steps=100),
+                               tmp_path / f"run-{on}") for on in (False, True)]
+    staged_used = []
+    learn = device.learn
+
+    def learn_and_check():
+        record = learn()
+        staged_used.append(all(b.staged is not None and b.staged.scalars is not None
+                               for b in device.buffers))
+        return record
+
+    device.learn = learn_and_check
+    try:
+        learned = 0
+        for _ in range(3):
+            left, right = host.update(), device.update()
+            assert left["update_samples"] == right["update_samples"]
+            if left["update_samples"]:
+                learned += 1
+                for key in ("policy_loss", "value_loss", "entropy", "kl_ref", "hidden_loss",
+                            "finish_loss", "approx_kl"):
+                    assert left[key] == right[key], key
+            assert_same_state(host, device)
+        assert learned >= 2 and staged_used == [True] * 3
+    finally:
+        host.close()
+        device.close()
+
+
+def test_staged_gather_equals_host_gather_for_any_subset(tmp_path):
+    init = init_checkpoint(tmp_path / "init.pt")
+    trainer = PPOTrainer(config(init, learn_on_device=False), tmp_path / "run")
+    trainer.collect()
+    trainer.refresh_values()
+    buffer = trainer.buffer
+    assert buffer.finalize(1.0, 0.95) > 0
+    rng = np.random.default_rng(3)
+    samples = buffer.samples[:buffer.n_samples]
+    subset = rng.choice(samples, size=min(40, samples.size), replace=False)
+    expected = buffer.gather(subset)
+    staged = buffer.stage("cpu")
+    assert staged.covers(subset) and not staged.covers(np.array([buffer.n_steps]))
+    actual = buffer.gather(subset)
+    assert set(actual) == set(expected)
+    for key, value in expected.items():
+        assert torch.equal(actual[key], value), key
+    # Rows that are not finalized samples fall back to the host gather.
+    unfinished = np.setdiff1d(np.arange(buffer.n_steps), samples)
+    if unfinished.size:
+        fallback = buffer.gather(unfinished[:5])
+        assert torch.equal(fallback["obs"], torch.from_numpy(buffer.obs[unfinished[:5]]).float())
+    buffer.next_iteration()
+    assert buffer.staged is None
+
+
+def test_reference_skip_changes_no_row_choice_or_weight(tmp_path):
+    init = init_checkpoint(tmp_path / "init.pt")
+    full, skip = [PPOTrainer(config(init, kl_coef=0.0, skip_unpruned_reference=on),
+                             tmp_path / f"run-{on}") for on in (False, True)]
+    top_k = full.config.top_k
+    # The skip run's act() receives zeros for the candidates it did not score:
+    # exactly the rows with at most top_k candidates, which prune whole.
+    act, calls = skip.policy.act, []
+
+    def act_and_record(obs, cand, offsets, phase, **kw):
+        ref = kw["ref_scores"]
+        raw = (offsets[1:] - offsets[:-1]).numpy()
+        unscored = (ref[offsets[:-1]] == 0).numpy()
+        calls.append((raw, unscored))
+        return act(obs, cand, offsets, phase, **kw)
+
+    skip.policy.act = act_and_record
+    seen_skipped = seen_scored = False
+    for a, b in zip(capture_rollouts(full, 3), capture_rollouts(skip, 3)):
+        for x, y in zip(a, b):
+            for key in STORED + ("logp", "cand"):
+                assert np.array_equal(x[key], y[key]), key
+            assert np.isfinite(x["ref_logp"]).all()
+            # A stored row's candidates are all NaN (skipped) or all finite
+            # (scored). The stored count is the pruned one: a skipped row kept
+            # all of its at most top_k candidates, a scored row kept at least
+            # top_k (top_k plus pass when the pass ranked below).
+            for row in range(y["cand_count"].size):
+                s, c = y["cand_start"][row], y["cand_count"][row]
+                nan = np.isnan(y["ref_logp"][s:s + c])
+                assert nan.all() or not nan.any()
+                assert c <= top_k if nan.all() else c >= top_k
+                seen_skipped |= bool(nan.all())
+                seen_scored |= not nan.any()
+    assert seen_skipped and seen_scored
+    assert calls and all(np.array_equal(unscored, raw <= top_k) for raw, unscored in calls)
+    assert any((raw > top_k).any() for raw, _ in calls)
+    assert_same_state(full, skip)
+    counters = {k: v for k, v in full.progress.items() if k != "elapsed_seconds"}
+    assert counters == {k: v for k, v in skip.progress.items() if k != "elapsed_seconds"}
+
+
+def test_reference_skip_waits_for_the_kl_term_to_reach_zero(tmp_path):
+    init = init_checkpoint(tmp_path / "init.pt")
+    trainer = PPOTrainer(config(init, kl_coef=0.1, kl_anneal_updates=2), tmp_path / "run")
+    trainer.collect()
+    assert trainer.kl_coef() > 0 and trainer.learner_reference_all
+    assert np.isfinite(trainer.buffer.ref_logp[:trainer.buffer.n_cand]).all()
+    trainer.buffer.next_iteration()
+    trainer.progress["updates"] = 2
+    assert trainer.kl_coef() == 0
+    trainer.collect()
+    assert not trainer.learner_reference_all
+    b = trainer.buffer
+    first = b.ref_logp[b.cand_start[:b.n_steps]]
+    assert np.isnan(first).any() and np.isfinite(first).any()
+    assert (b.cand_count[:b.n_steps][np.isnan(first)] <= trainer.config.top_k).all()
+    record = trainer.learn()
+    assert np.isfinite(record["kl_ref"]) and np.isfinite(record["policy_loss"])
+
+
+def test_partial_reference_loss_and_gradient_ignore_skipped_rows(tmp_path):
+    init = init_checkpoint(tmp_path / "init.pt")
+    trainer = PPOTrainer(config(init, kl_coef=0.0), tmp_path / "run")
+    trainer.collect()
+    trainer.refresh_values()
+    assert trainer.buffer.finalize(1.0, 0.95) > 0
+    mb = next(trainer.buffer.minibatches(10**6, np.random.default_rng(0)))
+    assert torch.isnan(mb["ref_logp"]).any() and torch.isfinite(mb["ref_logp"]).any()
+    zeroed = {**mb, "ref_logp": torch.where(torch.isfinite(mb["ref_logp"]), mb["ref_logp"],
+                                             torch.zeros(()))}
+    grads = []
+    for batch, partial in ((mb, True), (zeroed, False)):
+        trainer.net.zero_grad(set_to_none=True)
+        terms = trainer.minibatch_loss(batch, 0.0, partial)
+        assert torch.isfinite(terms["kl_ref"])
+        terms["policy_total"].backward()
+        grads.append({"terms": terms,
+                      "grads": [p.grad.clone() for p in trainer.net.parameters()
+                                if p.grad is not None]})
+    a, b = grads
+    for key in ("policy_total", "policy_loss", "entropy", "hidden_loss", "finish_loss",
+                "value_loss", "approx_kl"):
+        assert torch.equal(a["terms"][key], b["terms"][key]), key
+    for x, y in zip(a["grads"], b["grads"]):
+        assert torch.equal(x, y)
