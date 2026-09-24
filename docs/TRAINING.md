@@ -605,6 +605,69 @@ The external Rule One--Four/DanZero/SDMC/GS2 ladder is unavailable as recorded
 in M0. M2/M3 gates must be revised against an agreed reference before those
 stages; local greedy wins cannot be reported as those published benchmark wins.
 
+## Stage B: critic, PPO, league and exploiters
+
+Every Stage B run starts from the trained M1 final
+(`.work/runpod/artifacts/pilot/final.pt`), which is also the frozen pruning
+reference. The tracker is `STAGE_B_TODO.md`, and there is one report per gate
+in `docs/reports/stage-b-*.md`. GPU runs used a kit under `.work/runpod-b<n>/`
+(pod manifest, local guard, setup, launch, finish). The configs write paths
+as `artifacts/<name>.pt`, relative to the repo root as the kit lays it out.
+Locally, symlink or override them.
+
+Critic (B1, B2, gate G1):
+
+```sh
+.venv/bin/python -m eval.collect_critic --output .work/critic-m1 --workers 8
+.venv/bin/python -m train.critic fit --data .work/critic-m1 --output .work/critic-fit/perfect
+.venv/bin/python -m train.critic report --critic perfect=.work/critic-fit/perfect/best.pt \
+  --output docs/reports/stage-b-critic.json
+```
+
+PPO (B5, B6) and league PPO (B8, B11). `--resume <run>/latest.pt` continues
+a run; only the fields in `MUTABLE_ON_RESUME` may change.
+
+```sh
+export PYTHONPATH=python:.
+.venv/bin/python -m train.ppo --config train/configs/ppo-smoke.json --run-dir .work/ppo-smoke
+.venv/bin/python -m train.ppo --config train/configs/b8-league.json --run-dir runs/league/run --device cuda
+.venv/bin/python bench/ppo_throughput.py --config train/configs/b8-league.json --device cuda --actors 0 4 8
+```
+
+On a pod, size `num_threads` and `torch_threads` from `nproc --all`. GNU
+`nproc` honours `OMP_NUM_THREADS`, and B11 lost most of its host that way.
+Keep the league's `max_active_models` above the pool's number of network
+entries. With thousands of environments a lower cap means new snapshots and
+imports are almost never drawn (B11 report). After each new entry appears,
+check `league/<name>/games` in `metrics.jsonl`.
+
+Exploiter test (B9, gate G4): train one PPO arm per frozen target from the M1
+final with an equal update budget, then score them on the same deals:
+
+```sh
+.venv/bin/python -m train.ppo --config train/configs/b9-exploit-league.json --run-dir runs/exploit-league/run --device cuda
+.venv/bin/python -m eval.exploiter --start .work/runpod/artifacts/pilot/final.pt \
+  --arm m1 <m1.pt> <exploit-m1/latest.pt> --arm league <league.pt> <exploit-league/latest.pt> \
+  --deals 4000 --matches 1000 --workers 10 --out docs/reports/stage-b-exploiter.json
+```
+
+Live exploiter (B11, gate G5): the main and exploiter runs share a host and a
+directory. Start both from the repo root. The exploiter follows
+`runs/main/run/league` and publishes to `runs/exploits`, which main imports.
+
+```sh
+.venv/bin/python -m train.ppo --config train/configs/b11-main.json --run-dir runs/main/run --device cuda &
+.venv/bin/python -m train.ppo --config train/configs/b11-exploiter.json --run-dir runs/exploiter/run --device cuda &
+.venv/bin/python -m train.ppo --config train/configs/b11-control.json --run-dir runs/control/run --device cuda &
+```
+
+The exploiter's `learner_match_win_rate` is main's live exploitability, and
+main's `league/import:*/learner_win_rate` shows how it copes with each import.
+
+Evaluation beyond the arena: `eval/stage_b_baseline.py` (M1 final against the
+fixed suite), `eval/crossplay.py --model <ckpt>` (partner compatibility), and
+the revised G3 held-out suite in `docs/reports/stage-b-g3-suite.json`.
+
 ## DanLM external baseline (Stage C row C0)
 
 DanLM plays in its own engine, which ships as CPython 3.12 macOS binaries.

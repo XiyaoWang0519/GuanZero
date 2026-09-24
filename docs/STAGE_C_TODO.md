@@ -10,11 +10,13 @@ before new rule behaviour) for the `botzone` profile.
 
 ## Decisions carried in
 
-- **Start point** for every training arm is the B8 league final,
-  `.work/runpod-b8/results/runs/league/run/latest.pt`, with the B8 pool
-  (`train/configs/league-b8.json`) plus the B9 exploiters, unless B11
-  produces a stronger final first. Then B11's main is the start point and
-  the tracker says so.
+- **Start point** for every training arm is B11's main final,
+  `.work/runpod-b11/results/runs/main/run/latest.pt` (updated September 23:
+  it beats the B8 league final by +0.075 [+0.038, +0.115] levels/round and
+  is level with its control, `stage-b-live-exploiter.md`). Its pool is
+  `train/configs/league-b11.json` (the B8 pool, active-model cap 16) plus the
+  B9 exploiters. Keep the cap above the pool's network entries: at B8's cap
+  of 4, new entries were almost never drawn.
 - **Equal-compute rule** as in Stage B: every strength claim compares
   arms given the same wall clock on the same host from the same start.
   Arms sharing a GPU are run in sequence or with fixed resource splits.

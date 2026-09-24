@@ -503,19 +503,31 @@ observation-semantics correction are recorded in `reports/M2-A2.md`.
 1. Policy: softmax over fusion logits, initialized from Stage A as `Q / temperature`. Candidates are pruned to the top `k` by the frozen Stage A network, with `k` around 32, plus pass.
 2. Critic: a separate network that sees all four hands and outputs the expected round return. Used only during training.
 3. Advantage: GAE with discount 1. Entropy bonus, plus a KL penalty toward the Stage A policy that is annealed away.
-4. League: the learner controls both seats of one team. The other team is drawn from a pool: the latest checkpoint, older checkpoints, heuristic bots and, if v3 is pursued, stylized opponents that keep one style for a whole match (section 7.3). Opponents that beat the learner more often are sampled more. Only learner seats produce samples. At most four distinct opponent models are active at a time so that inference still batches well.
+4. League: the learner controls both seats of one team. The other team is drawn from a pool: the latest checkpoint, older checkpoints, heuristic bots and, if v3 is pursued, stylized opponents that keep one style for a whole match (section 7.3). Opponents that beat the learner more often are sampled more. Only learner seats produce samples. The number of distinct opponent models active at a time is capped so that inference still batches well; the cap must exceed the pool's network entries (B11: at four, new entries were starved).
 5. Auxiliary losses stay on.
 6. Tribute and back-tribute decisions are ordinary steps of the trajectory from here on. Their heads start from Stage A2 and train with the same advantage estimates as the play head.
 
 **As built, Sept. 23** (`STAGE_B_TODO.md`, `train/ppo.py`, `train/critic.py`,
-`train/league.py`): the critic takes the actor observation plus the three
-hidden-count rows and outputs V; GAE with λ 0.95 and γ 1; candidates are the
-frozen M1 top 32 plus pass; temperature 0.02; the league draws one opponent
-per match with win-rate-proportional weights, at most four network opponents
-active, snapshots of the learner at two temperatures; B11 adds a live
-exploiter whose checkpoints are imported into the pool. The tribute heads
-stayed on the heuristic (Stage A2 decision). Gates G1 to G4 passed; the B8
-league final is the strongest checkpoint.
+`train/league.py`, `train/opponents.py`): the critic takes the actor
+observation plus the three hidden-count rows and outputs V. Advantages use
+GAE with λ 0.95 and γ 1. Candidates are the frozen M1 top 32 plus pass, and
+the policy samples at temperature 0.02. The league draws one opponent per
+match with win-rate-proportional weights and adds learner snapshots at two
+temperatures. B8 ran it with at most four network opponents active, which
+(found in B11) starved new snapshots; B11 raised the cap to 16. An exploiter
+is a PPO run against one frozen checkpoint (`frozen:<path>`, any
+`load_policy` checkpoint). A live exploiter (`follow:<dir>`) pins the
+league learner's newest snapshot for a cycle, publishes itself, and is
+imported into the learner's pool. The tribute heads stayed on the heuristic
+(Stage A2 decision).
+
+Gate results: G1 and G2 passed. G3 passed as revised by the owner. G4 passed,
+though the secondary gain clause only at the margin: a 3,000-update exploiter
+gains about one level per round against the B8 league as against M1. G5, the
+live exploiter, was not passed: a 3-hour run showed no measurable drop in
+exploitability, and no loss of strength either. The strongest checkpoint is
+B11's main arm, +0.075 levels/round over the B8 league final and level with
+its control. Reports: `docs/reports/stage-b-*.md`.
 
 **Stage B2: learning signal, planned** (`STAGE_C_TODO.md`, rows C1 and C2).
 Each item is one `PPOConfig` field and one equal-wall-clock arm from the B8
@@ -709,7 +721,7 @@ Gates, not dates. Each milestone ends with a short written report in `docs/repor
 |---|---|---|
 | M0 | Engine, oracle cross-checks, fuzzing, vectorized env, benchmarks, OpenGuanDan parity, feature encoder | Section 1.2, row M0 |
 | M1 | v1 model, DMC training end to end, arena, Elo, behavior probes, belief probe on the self-play logs | Row M1 |
-| M2 | v2 Transformer if the belief probe supports it, confirmed at equal compute. Learned tribute heads with their measured payoff. PPO with critic and league. Exploiter test. **Status Sept. 23:** probe did not support v2; tribute heads did not beat the heuristic; critic, PPO, league and exploiter done with gates G1 to G4 passed (`STAGE_B_TODO.md`). | Row M2, external opponents unavailable; DanLM calibration replaces it (Stage C row C0) |
+| M2 | v2 Transformer if the belief probe supports it, confirmed at equal compute. Learned tribute heads with their measured payoff. PPO with critic and league. Exploiter test. **Status Sept. 23:** probe did not support v2; tribute heads did not beat the heuristic; critic, PPO, league and exploiter done: G1 to G4 passed (G3 as revised; G4's secondary clause at the margin), and G5, the live exploiter, was not passed (`STAGE_B_TODO.md`). Strongest checkpoint: B11 main. | Row M2, external opponents unavailable; DanLM calibration replaces it (Stage C row C0) |
 | M3 | In the order of `STAGE_C_TODO.md`: DanLM external baseline and `botzone` profile; candidate pruning audit; learning-signal arms (Q-critic with expected SARSA, advantage filtering, EMA, match-level value, scale); endgame search over sampled hidden hands with the budget curve; joint belief sampler; history tower with NTP only if the baseline shows a gap; human play UI. v3 match memory retest after these. | Row M3 read as: beats DanLM under the `botzone` profile with intervals clear of even, and the stretch goal |
 
 ### 12.1 M0 task list
