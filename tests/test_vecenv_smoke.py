@@ -57,6 +57,34 @@ def test_vecenv_is_deterministic():
     assert run(5) != run(6)
 
 
+def test_forced_passes_never_reach_a_decision():
+    """VecEnv resolves forced passes itself, logged or not, and logging never
+    changes the trajectory."""
+    import hashlib
+
+    def run(log):
+        env = gd.VecEnv(num_envs=32, num_threads=2, seed=7, log_public_actions=log)
+        env.reset()
+        rng = np.random.default_rng(1)
+        digest = hashlib.sha256()
+        forced = 0
+        for _ in range(400):
+            b = env.pending()
+            widths = np.diff(b.offsets)
+            for row in np.flatnonzero(widths == 1):
+                assert not env.row_actions(int(row))[0].is_pass
+            for field in (b.obs, b.cand, b.offsets, b.env_id, b.greedy_choice):
+                digest.update(np.ascontiguousarray(field).tobytes())
+            env.step((rng.random(b.rows) * widths).astype(np.int32))
+            forced += sum(e.forced for e in env.drain_public_actions())
+        return digest.hexdigest(), forced
+
+    quiet, _ = run(False)
+    logged, forced = run(True)
+    assert forced > 0
+    assert quiet == logged
+
+
 def test_fork_copies_a_decision_point():
     env = gd.VecEnv(num_envs=4, num_threads=1, seed=99)
     env.reset()

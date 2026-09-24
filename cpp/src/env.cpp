@@ -128,7 +128,10 @@ struct VecEnv::Impl {
     for (int i = 0; i < num_envs; ++i) style_rng_base[i] = splitmix64(root) | 1ULL;
     finished_shards.resize(std::max(1, pool.size()));
     events.resize(num_envs);
-    if (cfg.log_public_actions) engine.set_auto_pass(false);
+    // advance() resolves forced passes from the candidate list it generates
+    // anyway. With auto-pass on, Engine::apply would generate the next seat's
+    // moves once more only to detect them.
+    engine.set_auto_pass(false);
   }
 
   // Styled-bot choice of pending row `r` under the current style rows. Needs
@@ -205,7 +208,7 @@ struct VecEnv::Impl {
       }
       cands[i].clear();
       engine.legal_actions(m, cands[i]);
-      if (cfg.log_public_actions && cands[i].size() == 1 && cands[i][0].is_pass()) {
+      if (cands[i].size() == 1 && cands[i][0].is_pass()) {
         apply(i, cands[i][0], true);
         continue;
       }
@@ -289,8 +292,9 @@ DecisionBatch VecEnv::pending() {
   s.styled_choice.resize(rows);
   s.hidden_counts.resize(size_t(rows) * 3 * kNumCardIds);
   if (s.cfg.encode) {
-    s.obs.assign(size_t(rows) * kObsDim, 0.0f);
-    s.cand.assign(size_t(s.offsets.back()) * kActDim, 0.0f);
+    // No zero fill: the encoders below write every element of their rows.
+    s.obs.resize(size_t(rows) * kObsDim);
+    s.cand.resize(size_t(s.offsets.back()) * kActDim);
   } else {
     s.obs.clear();
     s.cand.clear();
