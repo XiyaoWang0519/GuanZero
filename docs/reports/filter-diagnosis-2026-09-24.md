@@ -4,7 +4,7 @@
 
 这是对本地归档配置、`metrics.jsonl`、固定开发集评估以及 `train/ppo.py` / `train/rollout_buffer.py` 的只读审查；没有重训或新评估。对照与过滤配置逐字段比较，仅 `advantage_filter_quantile`（0→0.8）和 `advantage_filter_min_magnitude`（0→0.05）不同。两臂相同随机种子、warm start、对手池、PPO 学习率与训练时限。控制臂完成 1,153 次更新，过滤臂完成 1,137 次；以下训练指标在共同的第 1–1,137 次更新上比较。
 
-固定开发集是 DanLM duplicate，1000 deals、seed `2026092401`、tribute fraction 0.5。共同起点 B11 为 −2.1101 levels/round（999 scored，95% bootstrap CI [−2.1727, −2.0475]）；控制终点为 −2.0395（999 scored，CI [−2.1026, −1.9780]）；过滤过程与终点分别为 −2.2540（1000 scored）和 −2.2795（1000 scored，CI [−2.3370, −2.2245]）。开发集重复查看过，且这不是两臂逐 deal 的配对差值置信区间；它提示过滤臂退化，最终判断应以已冻结模型的独立同牌 heldout 比较为准。
+固定开发集是 DanLM duplicate，1000 deals、seed `2026092401`、tribute fraction 0.5。共同起点 B11 为 −2.1101 levels/round（999 scored，95% bootstrap CI [−2.1727, −2.0475]）；控制终点为 −2.0395（999 scored，CI [−2.1026, −1.9780]）；过滤的两个中间检查点分别为 −2.2540（1000 scored）和 −2.2795（1000 scored，CI [−2.3370, −2.2245]）。开发集重复查看过，且这不是两臂逐 deal 的配对差值置信区间；它提示过滤臂退化，最终判断应以已冻结模型的独立同牌 heldout 比较为准。
 
 ## 实际过滤量与训练动态
 
@@ -45,3 +45,23 @@
 3. **筛选与归一化的口径不同。** 筛选用 update 级原始 `|GAE|`，但 minibatch 的均值/标准差由**所有**样本计算后才施加 mask。因而未保留样本仍影响保留样本的标准化值，少数保留样本的符号甚至可能相对原始 GAE 翻转。代码行为确实如此；本轮没有原始 GAE 分布，无法量化翻转频率或归因退化。最小诊断测试是在合成 minibatch 中令被滤样本改变均值，断言当前 kept surrogate 随之改变；若想修改，应先明确目标是全样本基线还是保留样本基线，再做单独消融。
 
 数据来源：`../experiments-results/cfg/{control,filter}.json`、`../experiments-results/runs/{control,filter}/run/metrics.jsonl`、`../evals/{control,filter}/*/development.json`（均为主 checkout 下 `.work/overnight-20260924/` 的归档）；实现来源为本 worktree 的 `train/ppo.py`、`train/rollout_buffer.py` 与 `tests/test_ppo.py`。本报告没有修改它们。
+
+
+## 主代理补充：独立终点评估
+
+过滤臂最终检查点已确认完成 4,501.02 秒、1,137 次更新；对照臂为
+4,500.98 秒、1,153 次更新。过滤臂真正终点的开发集结果为 −2.3033；
+上文的 −2.2795 是中间快照，不能称为训练终点。
+
+冻结两臂后，以未参与挑选的 seed `2026092477` 评估 4,000 组 DanLM
+同牌对照。过滤臂单独可计分 3,997 组，对照 3,998 组；只保留双方
+共同有效的 3,995 组，过滤减对照为 **−0.24894 levels/round**，
+整组重采样 5,000 次的 95% 区间为 **[−0.28761, −0.21164]**。
+配对局胜率下降 **3.529 个百分点**，95% 区间为
+[−4.355, −2.728] 个百分点。原始腿和排除项保存在主 checkout 的
+`.work/overnight-20260924/final/filter-final.raw.json.gz`、
+`control-best.raw.json.gz` 和 `filter-v-control-paired.json`。
+
+该独立结果确认这组强度过滤参数劣于同预算对照。当前默认仍为关闭，
+不将这次过滤权重推荐为更强模型，也不追加训练经费。机制解释仍是
+上文列出的待检验假设，不能将本次失败推广成所有优势加权方法无效。
