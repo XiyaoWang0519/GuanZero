@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 import torch
 from torch import Tensor, nn
+from torch.nn import functional as F
 
 
 @dataclass(frozen=True)
@@ -70,6 +71,24 @@ class GuandanModel(nn.Module):
         return {"q": self._fuse(state, self.action_tower(action), phase, phase_code),
                 **self.auxiliary(state)}
 
+    def _score_static_candidates(self, state: Tensor, cand: Tensor, rows: Tensor,
+                                 chunk_size: int, phase_code: int) -> Tensor:
+        """Apply the state half of the first fusion layer once per row."""
+        head = self.phase_heads[str(phase_code)]
+        fusion = head[0]
+        first = fusion[0]
+        state_width = self.config.state_width
+        state_term = F.linear(state, first.weight[:, :state_width], first.bias)
+        action_weight = first.weight[:, state_width:]
+        remaining = fusion[1:]
+        scores = []
+        for start in range(0, len(cand), chunk_size):
+            stop = start + chunk_size
+            action_term = F.linear(self.action_tower(cand[start:stop]), action_weight)
+            scores.append(head[1](remaining(state_term[rows[start:stop]] + action_term))
+                          .squeeze(-1))
+        return torch.cat(scores)
+
     def score_candidates(self, obs: Tensor, cand: Tensor, offsets: Tensor,
                          phase: Tensor, chunk_size: int = 32768,
                          phase_code: int | None = None, state: Tensor | None = None) -> Tensor:
@@ -85,6 +104,15 @@ class GuandanModel(nn.Module):
                                        output_size=len(cand))
         if not len(cand):
             return obs.new_empty(0)
+        # Small or sparse batches spend more on the extra projection than they
+        # save by reusing the state half. PPO's pruned learner rows are sparse;
+        # unpruned rollout/evaluation rows are denser.
+        # Autocast rounds each half before addition, which can change BF16
+        # scores enough to reorder actions; retain the original fused matmul.
+        if (phase_code is not None and len(cand) >= 64
+                and len(cand) >= 12 * len(obs)
+                and not torch.is_autocast_enabled(state.device.type)):
+            return self._score_static_candidates(state, cand, rows, chunk_size, phase_code)
         return torch.cat([
             self._fuse(state[rows[start:start + chunk_size]],
                        self.action_tower(cand[start:start + chunk_size]),

@@ -322,9 +322,6 @@ def run(directory: Path, output: Path, *, seeds=(41, 42, 43), split_seed=2026092
     write_json(output / "report.json", report)
     cells = memory_cells(late_from)
 
-    def collate_fn(items, target):
-        return memory_collate(items, target, memory_rounds)
-
     try:
         torch.set_num_threads(threads)
         rounds, provenance, fingerprint = load_dataset(
@@ -357,6 +354,14 @@ def run(directory: Path, output: Path, *, seeds=(41, 42, 43), split_seed=2026092
                                            tolerance=parameter_tolerance)
             result = {"seed": seed, "models": {}}
             for name, model in models.items():
+                # Both arms ignore current-round history; the masked control
+                # also ignores all completed-round streams. Do not construct
+                # or upload those tensors just to discard them in forward().
+                def collate_fn(items, target):
+                    return memory_collate(items, target, memory_rounds,
+                                          include_history=False,
+                                          include_memory=not model.memory_masked)
+
                 model.to(device)
                 optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
                 sampler = random.Random(seed)  # identical sampled batches for both models

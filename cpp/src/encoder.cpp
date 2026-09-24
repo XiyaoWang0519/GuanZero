@@ -130,12 +130,14 @@ void encode_observation(const MatchState& m, int seat, std::span<float> dst) {
   put_cards(own, dst, kObsOwnHand);
 
   // Unseen: two copies of every card minus our hand minus everything played.
+  // Bitwise: `seen` holds at most two copies of any id (there are only two in
+  // the deck), so one unseen copy is left where seen < 2, two where seen == 0.
+  Hand seen = own;
+  for (int s = 0; s < 4; ++s) seen.add_all(r.played[s]);
+  constexpr uint64_t kAll = (uint64_t{1} << kNumCardIds) - 1;
   Hand unseen;
-  for (int c = 0; c < kNumCardIds; ++c) {
-    int n = 2 - own.count(static_cast<CardId>(c));
-    for (int s = 0; s < 4; ++s) n -= r.played[s].count(static_cast<CardId>(c));
-    for (int k = 0; k < n; ++k) unseen.add(static_cast<CardId>(c));
-  }
+  unseen.has1 = ~seen.has2 & kAll;
+  unseen.has2 = ~seen.has1 & kAll;
   put_cards(unseen, dst, kObsUnseen);
 
   for (int rel = 1; rel <= 3; ++rel)
@@ -210,6 +212,9 @@ void encode_observation(const MatchState& m, int seat, std::span<float> dst) {
   // incoming card removes that guarantee, even if an unobserved second copy
   // actually remains. Process transfers in order: an outgoing unknown copy
   // must not cancel a copy received later. All tribute precedes public plays.
+  // Only ids that appear in a transfer can have known > 0, so only those are
+  // checked (no tribute this round: nothing to do).
+  if (r.num_tribute_moves == 0) return;
   for (int rel = 1; rel <= 3; ++rel) {
     const int s = seat_at(seat, rel);
     std::array<int, kNumCardIds> known{};
@@ -218,8 +223,9 @@ void encode_observation(const MatchState& m, int seat, std::span<float> dst) {
       if (t.payer == s) known[t.card] = std::max(0, known[t.card] - 1);
       if (t.receiver == s) ++known[t.card];
     }
-    for (int c = 0; c < kNumCardIds; ++c) {
-      if (known[c] > r.played[s].count(static_cast<CardId>(c)))
+    for (int i = 0; i < r.num_tribute_moves; ++i) {
+      const CardId c = r.tribute_moves[i].card;
+      if (known[c] > r.played[s].count(c))
         dst[kObsKnownHoldings + (rel - 1) * 54 + c] = 1.0f;
     }
   }

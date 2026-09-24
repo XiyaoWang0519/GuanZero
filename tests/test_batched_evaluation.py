@@ -61,6 +61,36 @@ def test_stochastic_policies_replay_with_fixed_batch_config(kind):
     assert len(first) == 13
 
 
+def test_scripted_policies_skip_encoding_with_identical_results(monkeypatch):
+    real_vec_env = gd.VecEnv
+    calls = []
+    force_encoding = True
+
+    def make_env(*args, **kwargs):
+        if force_encoding:
+            kwargs["encode"] = True
+        calls.append(kwargs.get("encode"))
+        return real_vec_env(*args, **kwargs)
+
+    monkeypatch.setattr(gd, "VecEnv", make_env)
+    team = (load_policy('styled:high-lead'), RandomPolicy())
+    opponents = (GreedyPolicy(), load_policy('styled:bomb-happy'))
+    deals = generate_deals(7, 63) + generate_tribute_deals(3, 63)
+    config = EvalConfig(batch_size=4)
+    expected = play_duplicate_batch(deals, team, opponents, 17, config)
+    expected_matches = play_matches_batch(team[0], opponents[0], range(3), 17, config=config)
+
+    calls.clear()
+    force_encoding = False
+    assert play_duplicate_batch(deals, team, opponents, 17, config) == expected
+    assert play_matches_batch(team[0], opponents[0], range(3), 17, config=config) == expected_matches
+    assert calls and all(call is False for call in calls)
+
+    calls.clear()
+    play_duplicate_batch(generate_deals(1, 17), (model_policy(), team[0]), opponents, 17, config)
+    assert calls == [True]
+
+
 def test_bounds_and_unsupported_policy_fail_explicitly():
     with pytest.raises(ValueError):
         EvalConfig(batch_size=0)

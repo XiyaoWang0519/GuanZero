@@ -146,21 +146,21 @@ Hand Hand::from_string(const std::string& s) { return from_vector(cards_from_str
 std::string Hand::to_string() const { return cards_to_string(to_vector()); }
 
 HandView make_view(const Hand& h, int level) {
+  // Walk occupied card ids instead of scanning all 54 possible ids.
   HandView v{};
   const CardId wid = wild_id(level);
-  for (int c = 0; c < kNumCardIds; ++c) {
-    const int n = h.count(static_cast<CardId>(c));
-    v.card_count[c] = static_cast<uint8_t>(n);
-    if (n == 0) continue;
-    if (static_cast<CardId>(c) == wid) {
-      v.wilds += n;
-    } else {
-      v.rank_count[rank_of(static_cast<CardId>(c))] += static_cast<uint8_t>(n);
-    }
-    if (c < 52) {
-      v.suit_rank_mask[suit_of(static_cast<CardId>(c))] |=
-          static_cast<uint16_t>(1u << rank_of(static_cast<CardId>(c)));
-    }
+  for (uint64_t b = h.has1; b; b &= b - 1) {
+    const CardId c = static_cast<CardId>(std::countr_zero(b));
+    v.card_count[c] = 1;
+    if (c == wid) ++v.wilds;
+    else ++v.rank_count[rank_of(c)];
+    if (c < 52) v.suit_rank_mask[suit_of(c)] |= static_cast<uint16_t>(1u << rank_of(c));
+  }
+  for (uint64_t b = h.has2; b; b &= b - 1) {
+    const CardId c = static_cast<CardId>(std::countr_zero(b));
+    v.card_count[c] = 2;
+    if (c == wid) ++v.wilds;
+    else ++v.rank_count[rank_of(c)];
   }
   v.size = h.size();
   return v;

@@ -105,11 +105,15 @@ def examples(rounds: list[dict]) -> list[tuple[dict, int]]:
     return [(record, i) for record in rounds for i in range(len(record["obs"]))]
 
 
-def collate(items: list[tuple[dict, int]], device: str) -> dict[str, torch.Tensor]:
-    lengths = np.asarray([int(record["prefix"][i]) for record, i in items])
+def collate(items: list[tuple[dict, int]], device: str, *,
+            include_history: bool = True) -> dict[str, torch.Tensor]:
+    """Build only the inputs an arm uses; omitted history has an empty prefix."""
+    lengths = (np.asarray([int(record["prefix"][i]) for record, i in items], np.int64)
+               if include_history else np.zeros(len(items), np.int64))
     tokens = np.zeros((len(items), int(lengths.max(initial=0)), TOKEN_DIM), np.float32)
-    for row, ((record, _), length) in enumerate(zip(items, lengths)):
-        tokens[row, :length] = record["tokens"][:length]
+    if include_history:
+        for row, ((record, _), length) in enumerate(zip(items, lengths)):
+            tokens[row, :length] = record["tokens"][:length]
     return {
         "obs": torch.tensor(np.stack([r["obs"][i] for r, i in items]), device=device, dtype=torch.float32),
         "hidden": torch.tensor(np.stack([r["hidden"][i] for r, i in items]), device=device, dtype=torch.long),

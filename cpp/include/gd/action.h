@@ -69,7 +69,30 @@ constexpr Strength strength(const Action& a) {
 
 // True if `cand` may be played over `top`. A pass-typed `top` means leading.
 bool beats(const Action& cand, const Action& top);
-bool beats_reading(Type ct, int ckey, int cbomb, Type tt, int tkey, int tbomb);
+// Inline so move generation can reject impossible type/key combinations
+// without a function call for each candidate reading.
+constexpr bool beats_reading(Type ct, int ckey, int cbomb, Type tt, int tkey, int tbomb) {
+  if (tt == Type::Pass) return ct != Type::Pass;  // leading: any non-pass is legal
+  if (ct == Type::Pass) return true;              // pass is always legal when following
+  const bool cb = is_bomb_class(ct);
+  const bool tb = is_bomb_class(tt);
+  if (cb) {
+    if (tb) {
+      Action ca;
+      ca.type = ct;
+      ca.key = static_cast<int8_t>(ckey);
+      ca.bomb_size = static_cast<int8_t>(cbomb);
+      Action ta;
+      ta.type = tt;
+      ta.key = static_cast<int8_t>(tkey);
+      ta.bomb_size = static_cast<int8_t>(tbomb);
+      return strength(ta) < strength(ca);
+    }
+    return true;
+  }
+  if (tb) return false;
+  return ct == tt && ckey > tkey;
+}
 
 // ---- abstract actions (RULES.md 11.1) ------------------------------------
 // 393 ids laid out in this order:

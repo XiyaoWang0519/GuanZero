@@ -16,6 +16,13 @@ constexpr int rank_of_power(int p, int level) {
   return p < level ? p : p + 1;
 }
 
+// Card-id bitmask of every real card (id < 52) of one suit.
+constexpr std::array<uint64_t, kNumSuits> kSuitCards = [] {
+  std::array<uint64_t, kNumSuits> m{};
+  for (int c = 0; c < 52; ++c) m[c % 4] |= uint64_t{1} << c;
+  return m;
+}();
+
 // The distinct card ids that can serve one rank, split into the ids that must
 // stay distinct and a pool of interchangeable ones (the suit_dedup reduction).
 struct RankCands {
@@ -42,13 +49,42 @@ struct Gen {
   size_t first = 0;                             // where our output starts
   std::array<uint16_t, kNumSuits> nat_mask{};   // natural cards, wild excluded
   std::array<uint16_t, kNumSuits> sf_mask{};
+  std::array<RankCands, kNumPowers> any_suit{}; // candidates(rank, -1), cached
 
   bool want(Type t, int key, int bomb_size) const {
     return beats_reading(t, key, bomb_size, top.type, top.key, top.bomb_size);
   }
 
-  // `suit` restricts to one suit (straight flushes); -1 means any suit.
+  int max_same = 0;          // largest same-rank group any non-joker rank can form
+  uint16_t present = 0;      // bit r: at least one natural card of rank r (r < 13)
+  std::array<uint16_t, kNumStraightWindows> win_mask{};
+
+  void cache_candidates() {
+    for (int r = 0; r < kNumPowers; ++r) any_suit[r] = candidates_raw(r, -1);
+    int most = 0;
+    for (int r = 0; r < 13; ++r) {
+      most = std::max<int>(most, v.rank_count[r]);
+      if (v.rank_count[r]) present |= static_cast<uint16_t>(1u << r);
+    }
+    max_same = most + v.wilds;
+    static const std::array<uint16_t, kNumStraightWindows> kWin = [] {
+      std::array<uint16_t, kNumStraightWindows> m{};
+      for (int w = 0; w < kNumStraightWindows; ++w) m[w] = straight_window_mask(w);
+      return m;
+    }();
+    win_mask = kWin;
+  }
   RankCands candidates(int rank, int suit) const {
+    if (suit < 0) return any_suit[rank];
+    return candidates_raw(rank, suit);
+  }
+  // Natural cards available for `rank` (suit -1: any suit), wild excluded.
+  int natural(int rank, int suit) const {
+    if (suit < 0) return v.rank_count[rank];
+    return ((nat_mask[suit] >> rank) & 1u) ? v.card_count[card_of(rank, suit)] : 0;
+  }
+  // `suit` restricts to one suit (straight flushes); -1 means any suit.
+  RankCands candidates_raw(int rank, int suit) const {
     RankCands c;
     if (rank >= kRankBJ) {
       const CardId id = rank == kRankBJ ? kBJ : kRJ;
@@ -125,6 +161,19 @@ struct Gen {
 
   struct Req { int rank; int need; };
 
+  // A necessary condition for expand(): wild cards can cover the total
+  // shortfall across required ranks, and cannot fill any joker slot.
+  bool feasible_reqs(const Req* reqs, int nreq, int suit) const {
+    int short_by = 0;
+    for (int i = 0; i < nreq; ++i) {
+      const int have = natural(reqs[i].rank, suit);
+      if (have >= reqs[i].need) continue;
+      if (reqs[i].rank >= kRankBJ) return false;
+      short_by += reqs[i].need - have;
+    }
+    return short_by <= v.wilds;
+  }
+
   // Walks the required ranks, filling shortfalls with wild cards.
   template <typename F>
   void expand(const Req* reqs, int nreq, int idx, int wilds_left, int wilds_used,
@@ -174,6 +223,7 @@ struct Gen {
     for (int p = 0; p < kNumPowers; ++p) {
       if (!want(Type::Single, p, 0)) continue;
       const Req req{rank_of_power(p, level), 1};
+      if (!feasible_reqs(&req, 1, -1)) continue;
       Hand acc;
       expand(&req, 1, 0, v.wilds, 0, -1, acc,
              [&](const Hand& cards, int w) { add(Type::Single, p, 0, -1, cards, w); });
@@ -181,12 +231,15 @@ struct Gen {
   }
 
   void same_rank(Type t, int size) {
+    // No non-joker rank can reach `size`: every expand() below emits nothing.
+    if (t != Type::Pair && size > max_same) return;
     const int max_p = (t == Type::Pair) ? kNumPowers : 13;
     for (int p = 0; p < max_p; ++p) {
       if (!want(t, p, t == Type::Bomb ? size : 0)) continue;
       const int rank = rank_of_power(p, level);
       if (t != Type::Pair && rank >= kRankBJ) continue;   // jokers make no triple or bomb
       const Req req{rank, size};
+      if (!feasible_reqs(&req, 1, -1)) continue;
       Hand acc;
       expand(&req, 1, 0, v.wilds, 0, -1, acc, [&](const Hand& cards, int w) {
         add(t, p, t == Type::Bomb ? size : 0, -1, cards, w);
@@ -207,12 +260,15 @@ struct Gen {
     for (int tp = 0; tp < 13; ++tp) {
       if (!want(Type::FullHouse, tp, 0)) continue;
       const int rt = rank_of_power(tp, level);
+      const Req triple{rt, 3};
+      if (!feasible_reqs(&triple, 1, -1)) continue;
       for (int pp = 0; pp < kNumPowers; ++pp) {
         if (pp == tp) continue;
         const int rp = rank_of_power(pp, level);
         if (rp == rt) continue;
         if (rp >= kRankBJ && !rules.full_house_joker_pair) continue;
         const Req reqs[2] = {{rt, 3}, {rp, 2}};
+        if (!feasible_reqs(reqs, 2, -1)) continue;
         Hand acc;
         expand(reqs, 2, 0, v.wilds, 0, -1, acc, [&](const Hand& cards, int w) {
           add(Type::FullHouse, tp, 0, pp, cards, w);
@@ -239,18 +295,17 @@ struct Gen {
       Req reqs[5];
       for (int i = 0; i < 5; ++i) reqs[i] = Req{ranks[i], 1};
 
-      if (take_straight) {
+      // Same test as feasible_reqs(reqs, 5, suit), on rank bitmasks.
+      const uint16_t win = win_mask[w];
+      if (take_straight && std::popcount(static_cast<unsigned>(win & ~present)) <= v.wilds) {
         Hand acc;
         expand(reqs, 5, 0, v.wilds, 0, -1, acc, [&](const Hand& cards, int wl) {
           // One suit across every natural card makes it a straight flush; with
           // a wild card in play it reads as either.
-          int suit = -2;
-          bool one_suit = true;
-          for (int c = 0; c < 52 && one_suit; ++c) {
-            if (c == wid || !cards.count(static_cast<CardId>(c))) continue;
-            if (suit == -2) suit = suit_of(static_cast<CardId>(c));
-            else if (suit != suit_of(static_cast<CardId>(c))) one_suit = false;
-          }
+          const uint64_t nat = cards.has1 & ~(uint64_t{1} << wid);
+          bool one_suit = nat == 0;
+          for (int s = 0; s < kNumSuits && !one_suit; ++s)
+            one_suit = (nat & ~kSuitCards[s]) == 0;
           if (!one_suit || wl > 0) add(Type::Straight, w, 0, -1, cards, wl);
           if (one_suit && take_sf) add(Type::StraightFlush, w, 0, -1, cards, wl);
         });
@@ -260,6 +315,7 @@ struct Gen {
       // wrong suit and lose the flush entirely.
       if (take_sf) {
         for (int s = 0; s < kNumSuits; ++s) {
+          if (std::popcount(static_cast<unsigned>(win & ~nat_mask[s])) > v.wilds) continue;
           Hand acc;
           expand(reqs, 5, 0, v.wilds, 0, s, acc, [&](const Hand& cards, int wl) {
             add(Type::StraightFlush, w, 0, -1, cards, wl);
@@ -277,6 +333,7 @@ struct Gen {
       int n = 0;
       if (t == Type::Tube) for (int r : tube_window(w)) reqs[n++] = Req{r, per_rank};
       else for (int r : plate_window(w)) reqs[n++] = Req{r, per_rank};
+      if (!feasible_reqs(reqs, n, -1)) continue;
       Hand acc;
       expand(reqs, n, 0, v.wilds, 0, -1, acc, [&](const Hand& cards, int wl) {
         add(t, w, 0, -1, cards, wl);
@@ -301,8 +358,6 @@ struct Gen {
 // compare by strength, not by the raw key.
 void prune_dominated(std::vector<Action>& out, size_t first) {
   if (out.size() - first < 2) return;
-  std::vector<Action> kept;
-  kept.reserve(out.size() - first);
   std::sort(out.begin() + first, out.end(), [](const Action& a, const Action& b) {
     if (a.cards.has1 != b.cards.has1) return a.cards.has1 < b.cards.has1;
     if (a.cards.has2 != b.cards.has2) return a.cards.has2 < b.cards.has2;
@@ -311,16 +366,15 @@ void prune_dominated(std::vector<Action>& out, size_t first) {
     if (is_bomb_class(a.type)) return sb < sa;    // strongest first
     return a.key > b.key;
   });
-  for (size_t i = first; i < out.size(); ++i) {
-    if (i > first) {
-      const Action& p = out[i - 1];
-      const Action& c = out[i];
-      if (p.cards == c.cards && p.type == c.type) continue;   // dominated
-    }
-    kept.push_back(out[i]);
+  // In place: the first of each (cards, type) run is kept. No allocation.
+  size_t w = first + 1;
+  for (size_t i = first + 1; i < out.size(); ++i) {
+    const Action& p = out[w - 1];
+    const Action& c = out[i];
+    if (p.cards == c.cards && p.type == c.type) continue;   // dominated
+    out[w++] = out[i];
   }
-  out.resize(first);
-  out.insert(out.end(), kept.begin(), kept.end());
+  out.resize(w);
 }
 
 // Drops exact duplicates, which the enumeration can produce when the same
@@ -346,19 +400,22 @@ void drop_duplicates(std::vector<Action>& out, size_t first) {
 std::array<uint16_t, kNumSuits> sf_relevant_mask(const HandView& v) {
   // A card of rank r and suit s is relevant when some straight window through r
   // can still be completed in suit s from this hand plus its wild cards.
-  std::array<uint16_t, kNumSuits> nat{};
-  for (int c = 0; c < 52; ++c)
-    if (v.card_count[c]) nat[suit_of(static_cast<CardId>(c))] |=
-        static_cast<uint16_t>(1u << rank_of(static_cast<CardId>(c)));
+  // suit_rank_mask is exactly the per-suit rank mask of every held card id
+  // below 52 (the wild card included), which is what this loop used to build.
+  static const std::array<uint16_t, kNumStraightWindows> kWin = [] {
+    std::array<uint16_t, kNumStraightWindows> m{};
+    for (int w = 0; w < kNumStraightWindows; ++w) m[w] = straight_window_mask(w);
+    return m;
+  }();
   std::array<uint16_t, kNumSuits> out{};
   for (int s = 0; s < kNumSuits; ++s) {
+    const uint16_t nat = v.suit_rank_mask[s];
+    uint16_t acc = 0;
     for (int w = 0; w < kNumStraightWindows; ++w) {
-      int missing = 0;
-      for (int r : straight_window(w)) missing += ((nat[s] >> r) & 1u) ? 0 : 1;
-      if (missing > v.wilds) continue;
-      for (int r : straight_window(w)) out[s] |= static_cast<uint16_t>(1u << r);
+      const int missing = 5 - std::popcount(static_cast<unsigned>(nat & kWin[w]));
+      if (missing <= v.wilds) acc |= kWin[w];
     }
-    out[s] = static_cast<uint16_t>(out[s] & nat[s]);
+    out[s] = static_cast<uint16_t>(acc & nat);
   }
   return out;
 }
@@ -372,11 +429,10 @@ void generate_moves(const Hand& hand, int level, const Action& top,
 
   const HandView v = make_view(hand, level);
   Gen g{hand, v, level, wild_id(level), acfg, rules, top, leading, out, out.size()};
-  for (int c = 0; c < 52; ++c)
-    if (v.card_count[c] && static_cast<CardId>(c) != g.wid)
-      g.nat_mask[suit_of(static_cast<CardId>(c))] |=
-          static_cast<uint16_t>(1u << rank_of(static_cast<CardId>(c)));
+  g.nat_mask = v.suit_rank_mask;
+  g.nat_mask[kHearts] &= static_cast<uint16_t>(~(1u << level));
   g.sf_mask = sf_relevant_mask(v);
+  g.cache_candidates();
   g.run();
 
   const size_t body = first + (leading ? 0 : 1);

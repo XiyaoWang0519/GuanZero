@@ -18,6 +18,17 @@ python3 -m venv .venv
 ./scripts/preflight.sh cpu .work/preflight
 ```
 
+`check.sh` runs the complete Python suite on four pytest workers with one
+BLAS/OpenMP thread each; set `PYTEST_WORKERS=2` for a smaller host or
+`PYTEST_WORKERS=0` for serial debugging. CI uses two workers. The bounded
+[work-stealing scheduler](https://pytest-xdist.readthedocs.io/en/stable/distribution.html)
+keeps workers busy without using every visible CPU. Install the updated dev
+requirements first. No tests or fuzz rounds are omitted.
+
+The Python extension defaults to no link-time optimization to keep engine
+edits quick; `-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON` explicitly enables it.
+The engine still uses the normal Release optimization flags.
+
 Preflight performs actual optimizer updates, writes `latest.pt`, resumes it,
 and writes another checkpoint. Its small CPU configuration verifies plumbing;
 it does not estimate GPU throughput or playing strength. Use a new preflight

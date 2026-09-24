@@ -385,11 +385,17 @@ class Uploader:
     def __init__(self, device: torch.device) -> None:
         self.device = device
         self.pinned: dict[str, torch.Tensor] = {}
+        # The current host source for each upload. Rollout storage can gather
+        # from the already narrowed CUDA copy instead of recopying float32
+        # engine features. These views last only until that name is uploaded
+        # again (and CPU views only until the engine advances).
+        self.host_arrays: dict[str, np.ndarray] = {}
 
     def __call__(self, name: str, array: np.ndarray, wire: torch.dtype,
                  dtype: torch.dtype) -> torch.Tensor:
         source = _host_view(np.ascontiguousarray(array))
         if self.device.type != "cuda":
+            self.host_arrays[name] = array
             return source if source.dtype == dtype else source.to(dtype)
         size = source.numel()
         buffer = self.pinned.get(name)
@@ -399,6 +405,7 @@ class Uploader:
             self.pinned[name] = buffer
         staged = buffer[:size].view(source.shape)
         staged.copy_(source)
+        self.host_arrays[name] = staged.numpy()
         return staged.to(self.device, non_blocking=True).to(dtype)
 
 
@@ -608,9 +615,9 @@ class RolloutCollector:
                 match_id=match_id[learner_rows],
                 round_index=np.asarray(batch.round_index)[learner_rows],
                 seat=seat[learner_rows], phase=phase[learner_rows],
-                obs=np.asarray(batch.obs)[learner_rows],
+                obs=self.upload.host_arrays["obs"], obs_index=learner_rows,
                 hidden_counts=np.asarray(batch.hidden_counts)[learner_rows],
-                cand=np.asarray(batch.cand), cand_index=src[keep],
+                cand=self.upload.host_arrays["cand"], cand_index=src[keep],
                 offsets=pruned_offsets, chosen=pruned_choice, logp=log_prob, ref_logp=ref_logp)
         self.progress["learner_decisions"] += n_learner
 

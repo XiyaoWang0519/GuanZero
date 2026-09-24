@@ -211,6 +211,42 @@ def test_round_mismatch_is_rejected():
         buf.add_batch(**fake_batch(rng, [0], [0], [1]))
 
 
+@pytest.mark.parametrize("dtype", [np.float32, np.uint8])
+def test_indexed_features_preserve_filtering_and_drop_state(dtype):
+    rng = np.random.default_rng(9)
+    ordinary = make_buffer(carry_over=False)
+    indexed = make_buffer(carry_over=False)
+    # env 0 is still open when the iteration ends: its later rows must be
+    # dropped before either feature index is applied.
+    opening = fake_batch(rng, [0], [0], [0])
+    for buffer in (ordinary, indexed):
+        buffer.add_batch(**opening)
+        buffer.finalize()
+        buffer.next_iteration()
+    batch = fake_batch(rng, [0, 1, 2, 3], [0, 2, 0, 2], [0, 0, 0, 0],
+                       learner=[True, True, False, True])
+    obs_index = np.array([3, 0, 4, 1])
+    obs_pool = np.zeros((6, OBS), dtype=dtype)
+    obs_pool[obs_index] = batch["obs"]
+    cand_index = rng.permutation(len(batch["cand"]))
+    cand_pool = np.empty_like(batch["cand"], dtype=dtype)
+    cand_pool[cand_index] = batch["cand"]
+    batch["ref_logp"] = rng.normal(size=len(batch["cand"])).astype(np.float32)
+    assert ordinary.add_batch(**batch) == 2
+    assert indexed.add_batch(**dict(batch, obs=obs_pool, obs_index=obs_index,
+                                    cand=cand_pool, cand_index=cand_index)) == 2
+    for buffer in (ordinary, indexed):
+        for env in (0, 1, 3):
+            buffer.finish_round(env, 0, 0, [2, -2, 2, -2], [2, 0, 1, 3])
+        buffer.finalize()
+    for name, expected in ordinary.storage().items():
+        np.testing.assert_array_equal(indexed.storage()[name], expected, err_msg=name)
+    expected = ordinary.gather(ordinary.samples[:ordinary.n_samples])
+    actual = indexed.gather(indexed.samples[:indexed.n_samples])
+    for name in expected:
+        torch.testing.assert_close(actual[name], expected[name], rtol=0, atol=0)
+
+
 def test_storage_is_reused_without_growth():
     rng = np.random.default_rng(8)
     for carry in (True, False):

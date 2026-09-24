@@ -25,7 +25,11 @@ jobs:
       - name: Oracle
         run: python oracle/test_gd_reference.py
       - name: Python suites
-        run: python -m pytest -q tests
+        env:
+          OMP_NUM_THREADS: 1
+          MKL_NUM_THREADS: 1
+          OPENBLAS_NUM_THREADS: 1
+        run: python -m pytest -q tests -n 2 --dist=worksteal
       - name: Training smoke and resume
         run: PY=python ./scripts/preflight.sh cpu .work/ci-preflight
       - name: Fuzzer

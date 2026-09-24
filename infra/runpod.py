@@ -323,11 +323,13 @@ def create(client: Client, path: Path, *, gpu_id: str, public_key: str,
                "env": {"PUBLIC_KEY": public_key.strip(), "SSH_PUBLIC_KEY": public_key.strip()}}
     try:
         pod = client.request("POST", REST + "/pods", payload)
-    except RunPodError:
+    except RunPodError as exc:
         manifest["state"] = "creation_uncertain"
         write_manifest(path, manifest)
         # An ambiguous POST must be reconciled by its unique name, never retried.
-        raise RunPodError("creation not confirmed; inspect pods for manifest name before retrying") from None
+        status_note = f" (HTTP {exc.status})" if isinstance(exc, ProviderError) and exc.status else ""
+        raise RunPodError("creation not confirmed" + status_note
+                          + "; inspect pods for manifest name before retrying") from None
     if not isinstance(pod, dict):
         raise RunPodError("create response invalid; reconcile unique manifest name")
     validate_id(pod.get("id"))

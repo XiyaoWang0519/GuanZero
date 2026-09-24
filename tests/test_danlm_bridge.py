@@ -63,6 +63,50 @@ def test_play_index_finds_exact_then_reading_then_missing():
     assert index.find(b.NormalizedPlay("Single", (0,), 0)) == (None, "missing")
 
 
+def test_play_index_is_lazy_and_memo_is_level_sensitive(monkeypatch):
+    level = 2
+    plays = [b.NormalizedPlay("Single", (0,), 0),
+             b.NormalizedPlay("Pair", (4, 4), 1),
+             b.NormalizedPlay("Pass", (), None)]
+    rows = np.stack([b.encode_play(play, level) for play in plays])
+    decode = b.decode_play
+    calls = []
+
+    def record(row, level):
+        calls.append(level)
+        return decode(row, level)
+
+    monkeypatch.setattr(b, "decode_play", record)
+    cache = {}
+    index = b.PlayIndex(rows, level, cache=cache)
+    assert len(index) == 3 and not calls
+    assert index.play(1) == plays[1]
+    assert calls == [level]
+    assert index.play(1) == plays[1] and len(calls) == 1
+    # Another decision can reuse decoded rows even when their order changes.
+    again = b.PlayIndex(rows[::-1], level, cache=cache)
+    assert again.play(1) == plays[1] and len(calls) == 1
+    assert index.plays == plays and len(calls) == 3
+    assert again.plays == plays[::-1] and len(calls) == 3
+    # Power keys depend on level, including a single card promoted to level.
+    other = b.PlayIndex(rows, 0, cache=cache)
+    assert other.play(0) == decode(rows[0], 0)
+    assert calls == [level, level, level, 0]
+
+
+def test_play_index_keeps_first_duplicate_and_reading_rows():
+    first = b.NormalizedPlay("Pair", (4, 4), 1)
+    second = b.NormalizedPlay("Pair", (4, 4), 2)
+    rows = np.stack([b.encode_play(p, 3) for p in [first, second, first]])
+    index = b.PlayIndex(rows, 3, cache={})
+    # Decode out of order before materializing the reverse lookup.
+    assert index.play(2) == first
+    assert index.find(first) == (0, "exact")
+    assert index.find(second) == (1, "exact")
+    assert index.find(b.NormalizedPlay("Pair", (4, 4), 4)) == (0, "reading")
+    assert index.by_cards[("Pair", (4, 4))] == [0, 1, 2]
+
+
 def test_arena_module_imports_without_danlm():
     from eval.danlm import arena
 

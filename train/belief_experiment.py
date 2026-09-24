@@ -50,7 +50,7 @@ import torch
 from torch.nn import functional as F
 
 from train.belief_model import matched_models
-from train.belief_probe import collate, count_parameters, examples
+from train.belief_probe import FlatBelief, collate, count_parameters, examples
 from train.logs import TOKEN_DIM
 from train.tribute_data import engine_source_digest
 
@@ -264,7 +264,10 @@ def evaluate(model, items: list, device: str, batch_size: int,
     for start in range(0, len(items), batch_size):
         check_time(deadline)
         part = items[start:start + batch_size]
-        batch = (collate if collate_fn is None else collate_fn)(part, device)
+        batch = (collate(part, device,
+                         include_history=not (isinstance(model, FlatBelief)
+                                              or getattr(model, "no_history", False)))
+                 if collate_fn is None else collate_fn(part, device))
         logits = (model(batch["obs"], batch["tokens"], batch["lengths"], batch["seat"])
                   if forward_fn is None else forward_fn(model, batch))
         losses = F.cross_entropy(logits.reshape(-1, 3), batch["hidden"].reshape(-1),
@@ -424,7 +427,8 @@ def run(directory: Path, output: Path, *, seeds=(31, 32, 33), split_seed=2026092
                     check_time(deadline)
                     update_started = time.monotonic()
                     model.train()
-                    batch = collate(sampler.choices(data["train"], k=batch_size), device)
+                    batch = collate(sampler.choices(data["train"], k=batch_size), device,
+                                    include_history=name == "v2")
                     logits = model(batch["obs"], batch["tokens"], batch["lengths"], batch["seat"])
                     loss = F.cross_entropy(logits.reshape(-1, 3), batch["hidden"].reshape(-1))
                     optimizer.zero_grad(set_to_none=True)

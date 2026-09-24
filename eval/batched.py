@@ -200,8 +200,10 @@ def play_duplicate_batch(deals: Iterable[gd.DealSpec], team: tuple[Policy, Polic
     if max_decisions < 1:
         raise ValueError("max_decisions must be positive")
     scores = []
+    # Scripted policies use choices and offsets, so the engine can skip features.
+    encode = any(isinstance(policy, ModelPolicy) for policy in (*team, *opponents))
     for wave in _waves(deals, config.batch_size):
-        env = gd.VecEnv(2 * len(wave), config.engine_threads, seed % (1 << 64))
+        env = gd.VecEnv(2 * len(wave), config.engine_threads, seed % (1 << 64), encode=encode)
         env.reset([deal for deal in wave for _ in range(2)])
         seats = [(team[0], opponents[0], team[1], opponents[1]),
                  (opponents[0], team[0], opponents[1], team[1])] * len(wave)
@@ -219,8 +221,10 @@ def play_matches_batch(agent: Policy, opponent: Policy, indices: Iterable[int], 
         raise ValueError("match round bound must be positive")
     totals = dict.fromkeys(MATCH_COUNTERS, 0)
     totals["records"] = []
+    # Keep observation/action encoding when either side runs a network.
+    encode = isinstance(agent, ModelPolicy) or isinstance(opponent, ModelPolicy)
     for wave in _waves(indices, config.batch_size):
-        env = gd.VecEnv(len(wave), config.engine_threads, seed % (1 << 64))
+        env = gd.VecEnv(len(wave), config.engine_threads, seed % (1 << 64), encode=encode)
         env.reset(match_seeds=[seed + m for m in wave])
         seats = [(agent, opponent, agent, opponent) if m % 2 == 0 else
                  (opponent, agent, opponent, agent) for m in wave]

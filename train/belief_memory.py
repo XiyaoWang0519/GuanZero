@@ -162,14 +162,17 @@ def attach_memory(rounds: list[dict], memory_rounds: int = 8) -> dict[str, list[
 
 
 def memory_collate(items: list[tuple[dict, int]], device: str, memory_rounds: int = 8,
-                   max_tokens: int = 0) -> dict[str, torch.Tensor]:
+                   max_tokens: int = 0, *, include_history: bool = True,
+                   include_memory: bool = True) -> dict[str, torch.Tensor]:
     """Collate decisions plus the earlier-round streams their memory needs.
 
     Earlier rounds shared by several decisions of the batch are encoded once:
     `index` points into the deduplicated `tokens`/`lengths` tables and is -1
     for an unused slot, and `distance` is the round-index gap, at least one.
     """
-    batch = collate(items, device)
+    batch = collate(items, device, include_history=include_history)
+    if not include_memory:
+        return batch
     unique: dict[int, int] = {}
     order: list[dict] = []
     slots: list[list[tuple[int, int]]] = []

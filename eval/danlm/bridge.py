@@ -164,15 +164,61 @@ class PlayIndex:
     same cards, which the caller reports as a divergence.
     """
 
-    def __init__(self, legal_plays: np.ndarray, level: int) -> None:
-        self.exact: dict[NormalizedPlay, int] = {}
-        self.by_cards: dict[tuple[str, tuple[int, ...]], list[int]] = {}
-        self.plays: list[NormalizedPlay] = []
-        for index, row in enumerate(np.asarray(legal_plays)):
-            play = decode_play(row, level)
-            self.plays.append(play)
-            self.exact.setdefault(play, index)
-            self.by_cards.setdefault((play.type, play.cards), []).append(index)
+    def __init__(self, legal_plays: np.ndarray, level: int, *,
+                 cache: dict[tuple[int, str, bytes], NormalizedPlay] | None = None) -> None:
+        # A DanLM seat only needs the play it chose. Delay decoding the full
+        # legal set until our policy needs the reverse lookup (or diff mode
+        # explicitly compares both sets). The optional cache belongs to a
+        # single round, so repeated plays after passes cost only a lookup.
+        self._rows = np.asarray(legal_plays)
+        self._level = level
+        self._cache = cache
+        self._decoded: dict[int, NormalizedPlay] = {}
+        self._exact: dict[NormalizedPlay, int] | None = None
+        self._by_cards: dict[tuple[str, tuple[int, ...]], list[int]] = {}
+        self._plays: list[NormalizedPlay] | None = None
+
+    def __len__(self) -> int:
+        return len(self._rows)
+
+    def play(self, index: int) -> NormalizedPlay:
+        """Decode one chosen row without building the reverse lookup."""
+        if index not in self._decoded:
+            row = self._rows[index]
+            if self._cache is None:
+                play = decode_play(row, self._level)
+            else:
+                key = (self._level, row.dtype.str, row.tobytes())
+                play = self._cache.get(key)
+                if play is None:
+                    play = decode_play(row, self._level)
+                    self._cache[key] = play
+            self._decoded[index] = play
+        return self._decoded[index]
+
+    def _build(self) -> None:
+        if self._exact is not None:
+            return
+        self._exact = {}
+        self._plays = [self.play(index) for index in range(len(self))]
+        for index, play in enumerate(self._plays):
+            self._exact.setdefault(play, index)
+            self._by_cards.setdefault((play.type, play.cards), []).append(index)
+
+    @property
+    def plays(self) -> list[NormalizedPlay]:
+        self._build()
+        return self._plays
+
+    @property
+    def exact(self) -> dict[NormalizedPlay, int]:
+        self._build()
+        return self._exact
+
+    @property
+    def by_cards(self) -> dict[tuple[str, tuple[int, ...]], list[int]]:
+        self._build()
+        return self._by_cards
 
     def find(self, play: NormalizedPlay) -> tuple[int | None, str]:
         """(row, how): how is 'exact', 'reading' (same cards, other key) or 'missing'."""

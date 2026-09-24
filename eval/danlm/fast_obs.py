@@ -21,6 +21,29 @@ def _modules():
     return actions, game
 
 
+def _hand_plays(rnd, actions, hand, player: int, level_index: int) -> np.ndarray:
+    """Reuse a seat's decomposition until its hand or level changes.
+
+    A pass changes the trick but leaves the hand unchanged. Keep only the
+    latest hand per seat, attached to the round rather than a global cache:
+    memory stays bounded and a new round cannot inherit stale state. The
+    lead-dependent filtering still runs for every observation.
+    """
+    cache = getattr(rnd, "_gd_hand_plays", None)
+    if cache is None:
+        cache = rnd._gd_hand_plays = {}
+    array = np.asarray(hand)
+    key = (level_index, array.dtype.str, array.shape, array.tobytes())
+    previous = cache.get(player)
+    if previous is not None and previous[0] == key:
+        return previous[1]
+    # Own the array rather than retaining a possible compiled scratch view.
+    plays = np.array(actions.hand_calculator_v2(hand, level_index), copy=True)
+    plays.setflags(write=False)
+    cache[player] = key, plays
+    return plays
+
+
 def fast_get_observation(self):
     """Same fields as DanLM's ``GuanDanRound.get_observation``."""
     actions, game = _modules()
@@ -32,7 +55,7 @@ def fast_get_observation(self):
     # The original builds the list with hand_calculator_v2 and filter_valid_plays
     # (row order verified 1,500/1,500); get_legal_actions orders rows differently.
     level_index = self.level - 2
-    plays = np.asarray(actions.hand_calculator_v2(hand, level_index))
+    plays = _hand_plays(self, actions, hand, player, level_index)
     if is_leading:
         plays = plays[plays[:, 54] < 0.5]          # drop the PASS row (type one-hot 0)
     else:

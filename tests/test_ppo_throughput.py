@@ -157,5 +157,56 @@ def test_uploader_is_zero_copy_on_cpu_and_widens():
     source.setflags(write=False)
     view = upload("x", source, torch.uint8, torch.float32)
     assert view.data_ptr() == source.__array_interface__["data"][0]
+    assert upload.host_arrays["x"] is source
     widened = upload("y", np.arange(3, dtype=np.int32), torch.int64, torch.long)
     assert widened.dtype == torch.long and widened.tolist() == [0, 1, 2]
+
+
+def test_narrow_host_staging_preserves_learning_and_rng(tmp_path):
+    class NarrowHostUploader(Uploader):
+        """Exercise the uint8 storage source on a host without CUDA."""
+
+        def __call__(self, name, array, wire, dtype):
+            result = super().__call__(name, array, wire, dtype)
+            if wire == torch.uint8:
+                self.host_arrays[name] = np.asarray(array, dtype=np.uint8)
+            return result
+
+    init = init_checkpoint(tmp_path / "init.pt")
+    old, new = [PPOTrainer(config(init, rollout_steps=100), tmp_path / name)
+                for name in ("wide", "narrow")]
+    new.upload = NarrowHostUploader(new.device)
+    for _ in range(2):
+        old.collect()
+        new.collect()
+        assert old.learn() == new.learn()
+        for name, expected in old.buffer.storage().items():
+            np.testing.assert_array_equal(new.buffer.storage()[name], expected, err_msg=name)
+        for a, b in ((old.net, new.net), (old.critic, new.critic)):
+            for key, value in a.state_dict().items():
+                torch.testing.assert_close(value, b.state_dict()[key], rtol=0, atol=0)
+        for a, b in ((old.policy_optimizer, new.policy_optimizer),
+                     (old.critic_optimizer, new.critic_optimizer)):
+            left, right = a.state_dict(), b.state_dict()
+            assert left["param_groups"] == right["param_groups"]
+            for parameter, state in left["state"].items():
+                for key, value in state.items():
+                    torch.testing.assert_close(value, right["state"][parameter][key], rtol=0, atol=0)
+        assert old.rng.bit_generator.state == new.rng.bit_generator.state
+        assert torch.equal(old.generator.get_state(), new.generator.get_state())
+        old.buffer.next_iteration()
+        new.buffer.next_iteration()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
+def test_uploader_retains_current_narrow_host_features():
+    upload = Uploader(torch.device("cuda"))
+    for shape in ((3, 4), (2, 4), (8, 4)):
+        source = (np.arange(np.prod(shape)).reshape(shape) % 2).astype(np.float32)
+        value = upload("obs", source, torch.uint8, torch.float32)
+        torch.cuda.synchronize()
+        staged = upload.host_arrays["obs"]
+        assert staged.dtype == np.uint8 and staged.shape == source.shape
+        assert staged.ctypes.data == upload.pinned["obs"].data_ptr()
+        np.testing.assert_array_equal(staged, source)
+        torch.testing.assert_close(value.cpu(), torch.from_numpy(source), rtol=0, atol=0)

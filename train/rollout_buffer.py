@@ -178,7 +178,8 @@ class RolloutBuffer:
                   cand: np.ndarray, offsets: np.ndarray, chosen: np.ndarray,
                   logp: np.ndarray, value: np.ndarray | None = None,
                   ref_logp: np.ndarray | None = None,
-                  cand_index: np.ndarray | None = None) -> int:
+                  cand_index: np.ndarray | None = None,
+                  obs_index: np.ndarray | None = None) -> int:
         """Store rows where `learner` is true. Arrays are batch-shaped like
         `VecEnv.pending()`; `cand`/`offsets` are the batch's ragged candidates
         and `chosen` is the index within each row's candidate slice.
@@ -187,6 +188,8 @@ class RolloutBuffer:
         `cand_index`, when given, maps each ragged candidate to its row of
         `cand`, so a caller can store a subset of a larger candidate array
         without materialising it first; otherwise candidate `j` is `cand[j]`.
+        `obs_index` similarly maps each batch row to its row of `obs`, avoiding
+        an intermediate observation gather before learner/drop filtering.
         Returns the number of stored steps."""
         rows = np.flatnonzero(np.asarray(learner, bool))
         if rows.size == 0:
@@ -246,7 +249,8 @@ class RolloutBuffer:
         self.cand[pool] = np.asarray(cand)[src if cand_index is None
                                            else np.asarray(cand_index)[src]]
         self.ref_logp[pool] = 0.0 if ref_logp is None else np.asarray(ref_logp, np.float32)[src]
-        self.obs[steps] = np.asarray(obs)[rows]
+        self.obs[steps] = np.asarray(obs)[rows if obs_index is None
+                                        else np.asarray(obs_index)[rows]]
         self.hidden[steps] = np.asarray(hidden_counts).reshape(len(offsets) - 1, HIDDEN_DIM)[rows]
         self.cand_start[steps] = starts
         self.cand_count[steps] = counts

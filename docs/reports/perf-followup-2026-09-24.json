@@ -1,0 +1,314 @@
+{
+  "baseline_commit": "4154ba4",
+  "environment": {
+    "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+    "python": "3.14.4",
+    "torch": "2.14.0",
+    "cuda_available": false
+  },
+  "ppo_tiny_cpu": {
+    "scope": "end-to-end rollout plus learner, tiny 16-wide model; overhead benchmark, not production model",
+    "before": {
+      "fast_rollout": true,
+      "fused_opponent": true,
+      "league_fused": false,
+      "actor_processes": 0,
+      "device": "cpu",
+      "gpu": null,
+      "num_envs": 256,
+      "num_threads": 1,
+      "torch_threads": 1,
+      "rollout_steps": 64,
+      "epochs": 1,
+      "minibatch_size": 1024,
+      "candidate_chunk": 32768,
+      "opponent": "frozen",
+      "updates": 24,
+      "wall_seconds": 5.036216416978277,
+      "decisions_per_second": 78077.66137181393,
+      "updates_per_second": 4.765482261463252,
+      "learner_decisions_per_second": 36347.3260169847,
+      "samples_per_second": 36651.919758196556,
+      "optimizer_steps": 193,
+      "collect_seconds": 3.3168475808924995,
+      "learn_seconds": 1.712355042109266,
+      "collect_decisions_per_second": 118551.12133135559,
+      "tiny": true
+    },
+    "after": {
+      "fast_rollout": true,
+      "fused_opponent": true,
+      "league_fused": false,
+      "actor_processes": 0,
+      "device": "cpu",
+      "gpu": null,
+      "num_envs": 256,
+      "num_threads": 1,
+      "torch_threads": 1,
+      "rollout_steps": 64,
+      "epochs": 1,
+      "minibatch_size": 1024,
+      "candidate_chunk": 32768,
+      "opponent": "frozen",
+      "updates": 24,
+      "wall_seconds": 4.174122000054922,
+      "decisions_per_second": 94203.28394685785,
+      "updates_per_second": 5.749712154959585,
+      "learner_decisions_per_second": 43854.25246257571,
+      "samples_per_second": 44221.75489781354,
+      "optimizer_steps": 193,
+      "collect_seconds": 2.307605087175034,
+      "learn_seconds": 1.859325502300635,
+      "collect_decisions_per_second": 170400.0403645211,
+      "tiny": true
+    },
+    "speedup": 1.2065331144877922
+  },
+  "engine": {
+    "scope": "CPU, fixed greedy workloads; paired repetitions",
+    "movegen_us": {
+      "before": [
+        2.459,
+        2.462
+      ],
+      "after": [
+        0.903,
+        0.911
+      ]
+    },
+    "observation_us": {
+      "before": [
+        0.797
+      ],
+      "after": [
+        0.326,
+        0.333
+      ]
+    },
+    "vecenv_2048_step_ms": {
+      "threads_1": {
+        "before": [
+          9.1,
+          9.35
+        ],
+        "after": [
+          3.9,
+          3.96
+        ]
+      },
+      "threads_4": {
+        "before": [
+          2.64,
+          2.65
+        ],
+        "after": [
+          1.15,
+          1.23
+        ]
+      }
+    },
+    "matched_movegen_calls": 78000,
+    "matched_ordered_actions": 2046379,
+    "matched_vecenv_scenarios": 8
+  },
+  "ppo_host_storage": {
+    "config": {
+      "num_envs": 2048,
+      "batches": 16,
+      "repeats": 8,
+      "top_k": 32
+    },
+    "scope": "host buffer storage only; CUDA staging simulated",
+    "equivalence": "all buffer arrays identical",
+    "median_ms": {
+      "legacy_float32": 1.565958489663899,
+      "indexed_float32": 1.4016244967933744,
+      "indexed_uint8": 0.32314599957317114
+    },
+    "speedup": {
+      "indexed_float32": 1.117245377236547,
+      "indexed_uint8": 4.8459782628666375
+    },
+    "mean_learner_rows": 948.4375,
+    "mean_kept_candidates": 8534.9375
+  },
+  "belief_collation": {
+    "config": {
+      "batch_size": 128,
+      "repeats": 12
+    },
+    "scope": "CPU collation only; synthetic binary data",
+    "median_ms": {
+      "previous_all_inputs": 2.2207915026228875,
+      "memory": 1.4716460136696696,
+      "memory_masked": 0.12929103104397655
+    },
+    "tensor_bytes": {
+      "memory_masked": 1114624,
+      "memory": 14464384,
+      "previous_all_inputs": 27796864
+    },
+    "speedup": {
+      "memory": 1.5090527762754322,
+      "memory_masked": 17.176686462245907
+    }
+  },
+  "danlm_memos": {
+    "deals": 20,
+    "seed": 20260925,
+    "diff": false,
+    "repeats": 2,
+    "seconds": {
+      "uncached": [
+        6.539835416013375,
+        6.688755000010133
+      ],
+      "cached": [
+        6.089881208026782,
+        6.084088124975096
+      ]
+    },
+    "speedup": 1.0866291884079833,
+    "identical_round_records": 40,
+    "decisions": 3296,
+    "records_sha256": "548dfa6eb3656518f59341d5f409a9f866a67461cff991bfabe82bc8b9959071"
+  },
+  "limitations": [
+    "No CUDA execution or GPU rental.",
+    "Do not multiply independent component speedups.",
+    "DanLM measurements use the preexisting Python 3.12 engine module; isolate memoization changes.",
+    "Belief collation benchmark uses synthetic binary inputs and excludes model execution."
+  ],
+  "ppo_full_cpu": {
+    "scope": "full pretrained M1 policy and B2 critic; one CPU thread,64envs,8updates; ABBA order",
+    "before": [
+      {
+        "fast_rollout": true,
+        "fused_opponent": true,
+        "league_fused": false,
+        "actor_processes": 0,
+        "device": "cpu",
+        "gpu": null,
+        "num_envs": 64,
+        "num_threads": 1,
+        "torch_threads": 1,
+        "rollout_steps": 64,
+        "epochs": 1,
+        "minibatch_size": 1024,
+        "candidate_chunk": 32768,
+        "opponent": "frozen",
+        "updates": 8,
+        "wall_seconds": 2.034923291997984,
+        "decisions_per_second": 16102.818287477965,
+        "updates_per_second": 3.9313521209663,
+        "learner_decisions_per_second": 7612.0805442209985,
+        "samples_per_second": 7598.812230812737,
+        "optimizer_steps": 17,
+        "collect_seconds": 1.380170582968276,
+        "learn_seconds": 0.6524822079809383,
+        "collect_decisions_per_second": 23741.992768406362,
+        "tiny": false
+      },
+      {
+        "fast_rollout": true,
+        "fused_opponent": true,
+        "league_fused": false,
+        "actor_processes": 0,
+        "device": "cpu",
+        "gpu": null,
+        "num_envs": 64,
+        "num_threads": 1,
+        "torch_threads": 1,
+        "rollout_steps": 64,
+        "epochs": 1,
+        "minibatch_size": 1024,
+        "candidate_chunk": 32768,
+        "opponent": "frozen",
+        "updates": 8,
+        "wall_seconds": 1.9590393750113435,
+        "decisions_per_second": 16726.56528397254,
+        "updates_per_second": 4.083634102532359,
+        "learner_decisions_per_second": 7906.936531028279,
+        "samples_per_second": 7893.154265932232,
+        "optimizer_steps": 17,
+        "collect_seconds": 1.3313615419901907,
+        "learn_seconds": 0.6254813749110326,
+        "collect_decisions_per_second": 24612.39788481244,
+        "tiny": false
+      }
+    ],
+    "after": [
+      {
+        "fast_rollout": true,
+        "fused_opponent": true,
+        "league_fused": false,
+        "actor_processes": 0,
+        "device": "cpu",
+        "gpu": null,
+        "num_envs": 64,
+        "num_threads": 1,
+        "torch_threads": 1,
+        "rollout_steps": 64,
+        "epochs": 1,
+        "minibatch_size": 1024,
+        "candidate_chunk": 32768,
+        "opponent": "frozen",
+        "updates": 8,
+        "wall_seconds": 1.8481580409570597,
+        "decisions_per_second": 17730.085454721855,
+        "updates_per_second": 4.328634144219203,
+        "learner_decisions_per_second": 8381.31786174443,
+        "samples_per_second": 8366.708721507692,
+        "optimizer_steps": 17,
+        "collect_seconds": 1.213792416965589,
+        "learn_seconds": 0.6321604179684073,
+        "collect_decisions_per_second": 26996.378904654975,
+        "tiny": false
+      },
+      {
+        "fast_rollout": true,
+        "fused_opponent": true,
+        "league_fused": false,
+        "actor_processes": 0,
+        "device": "cpu",
+        "gpu": null,
+        "num_envs": 64,
+        "num_threads": 1,
+        "torch_threads": 1,
+        "rollout_steps": 64,
+        "epochs": 1,
+        "minibatch_size": 1024,
+        "candidate_chunk": 32768,
+        "opponent": "frozen",
+        "updates": 8,
+        "wall_seconds": 1.8414187079761177,
+        "decisions_per_second": 17794.97506898631,
+        "updates_per_second": 4.344476335201736,
+        "learner_decisions_per_second": 8411.992304034362,
+        "samples_per_second": 8397.329696403056,
+        "optimizer_steps": 17,
+        "collect_seconds": 1.210725498967804,
+        "learn_seconds": 0.6283709169365466,
+        "collect_decisions_per_second": 27064.764083961345,
+        "tiny": false
+      }
+    ],
+    "speedup": 1.0824988714936372
+  },
+  "validation": {
+    "python_passed": 562,
+    "python_skipped": 2,
+    "cpp_cases": 76,
+    "oracle_groups": 14,
+    "deep_fuzz_rounds": 60000,
+    "fuzz_failures": 0,
+    "ubsan_cpp_cases": 76,
+    "ubsan_full_mode_fuzz_rounds": 2000,
+    "ubsan_failures": 0,
+    "dmc_checkpoint_resume": "passed",
+    "ppo_checkpoint_resume": "passed",
+    "cuda_tested": false,
+    "full_check_seconds": 41.52,
+    "parallel_pytest_seconds": 28.92
+  }
+}

@@ -161,6 +161,7 @@ class LockstepRound:
         self.div = Divergences()
         self.decisions = 0
         self.tribute_kind = "none"
+        self._play_cache: dict[tuple[int, str, bytes], NormalizedPlay] = {}
 
     # -- helpers ---------------------------------------------------------
 
@@ -313,8 +314,8 @@ class LockstepRound:
                 status = "mirror_failed"
                 break
             player = int(obs.player)
-            index = PlayIndex(obs.legal_plays, self.level)
-            theirs_only_pass = len(index.plays) == 1 and index.plays[0].is_pass
+            index = PlayIndex(obs.legal_plays, self.level, cache=self._play_cache)
+            theirs_only_pass = len(index) == 1 and index.play(0).is_pass
             if self.state.phase != gd.Phase.Play:
                 self.note("round_end_mismatch", f"gd ended first, theirs at {player}")
                 status = "mirror_failed"
@@ -323,7 +324,7 @@ class LockstepRound:
             if player != int(self.state.to_move):
                 ours_only_pass = len(ours_actions) == 1 and ours_actions[0].is_pass
                 if theirs_only_pass:
-                    obs = self.step_theirs(rnd, obs, index.plays.index(next(p for p in index.plays if p.is_pass)))
+                    obs = self.step_theirs(rnd, obs, 0)
                     continue
                 if ours_only_pass:
                     self.apply_ours(ours_actions[0])
@@ -335,7 +336,7 @@ class LockstepRound:
                 self.compare_legal_sets(index, ours_actions)
             if self.seat_kind[player] != "ours":
                 choice = int(self.their_agent(player).select_play(obs, rnd))
-                play = index.plays[choice]
+                play = index.play(choice)
                 action = self.match_theirs(play, ours_actions)
                 if action is None:
                     status = "mirror_failed"
@@ -358,7 +359,7 @@ class LockstepRound:
                 pick = self.our_policy.select(self.engine_canon, self.state, usable, self.rng)
                 choice, how = rows[pick]
                 if how == "reading":
-                    self.note("our_choice_reading", f"{usable[pick]} -> {index.plays[choice]}")
+                    self.note("our_choice_reading", f"{usable[pick]} -> {index.play(choice)}")
                 self.apply_ours(usable[pick])
             self.decisions += 1
             obs = self.step_theirs(rnd, obs, choice)

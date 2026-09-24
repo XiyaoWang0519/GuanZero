@@ -204,23 +204,6 @@ std::vector<Reading> best_readings(const Hand& cards, int level, const RuleConfi
 // ---------------------------------------------------------------------------
 // beats()
 
-bool beats_reading(Type ct, int ckey, int cbomb, Type tt, int tkey, int tbomb) {
-  if (tt == Type::Pass) return ct != Type::Pass;  // leading: any non-pass is legal
-  if (ct == Type::Pass) return true;              // pass is always legal when following
-  const bool cb = is_bomb_class(ct);
-  const bool tb = is_bomb_class(tt);
-  if (cb) {
-    if (tb) {
-      Action ca; ca.type = ct; ca.key = static_cast<int8_t>(ckey); ca.bomb_size = static_cast<int8_t>(cbomb);
-      Action ta; ta.type = tt; ta.key = static_cast<int8_t>(tkey); ta.bomb_size = static_cast<int8_t>(tbomb);
-      return strength(ta) < strength(ca);
-    }
-    return true;
-  }
-  if (tb) return false;
-  return ct == tt && ckey > tkey;
-}
-
 bool beats(const Action& cand, const Action& top) {
   return beats_reading(cand.type, cand.key, cand.bomb_size, top.type, top.key, top.bomb_size);
 }
