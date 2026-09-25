@@ -105,7 +105,6 @@ def _measure(trainer: PPOTrainer, config: PPOConfig, warmup: int, updates: int, 
         "fast_rollout": config.fast_rollout, "fused_opponent": trainer.fused_opponent,
         "league_fused": trainer.league_fused,
         "actor_processes": config.actor_processes,
-        "rollout_pipeline": config.rollout_pipeline,
         "device": str(trainer.device),
         "gpu": torch.cuda.get_device_name(trainer.device) if trainer.device.type == "cuda" else None,
         "num_envs": config.num_envs, "num_threads": config.num_threads,
@@ -155,11 +154,6 @@ def main(argv: list[str] | None = None) -> int:
                         "pool that already holds learner snapshots)")
     parser.add_argument("--actors", type=int, nargs="+",
                         help="actor_processes values to measure (fast path), e.g. 0 4 8")
-    parser.add_argument("--pipeline", type=int, nargs="+",
-                        help="rollout_pipeline values to measure (fast path, no actors), "
-                        "e.g. 0 2 4; measured after any --actors values. Every shard keeps "
-                        "--num-threads (shards alternate), whereas actors should get "
-                        "num_threads // W: compare the two in separate invocations")
     parser.add_argument("--warmup", type=int, default=2, help="unmeasured updates first")
     parser.add_argument("--updates", type=int, default=6, help="measured updates")
     parser.add_argument("--seconds", type=float, default=600, help="measurement time cap")
@@ -175,10 +169,6 @@ def main(argv: list[str] | None = None) -> int:
                         help="16-wide network: measures everything but model compute")
     parser.add_argument("--out", help="also write the results as a JSON list")
     args = parser.parse_args(argv)
-    if args.profile and any(args.pipeline or ()):
-        # The phase timers synchronise the whole device on every phase, which
-        # removes exactly the overlap the pipeline exists for.
-        parser.error("--profile cannot measure --pipeline > 0 (its device syncs remove the overlap)")
     config = load_config(ROOT / args.config if not Path(args.config).is_absolute()
                          else args.config)
     overrides = {"num_envs": args.num_envs, "num_threads": args.num_threads,
@@ -192,22 +182,18 @@ def main(argv: list[str] | None = None) -> int:
     config = replace(config, **{k: v for k, v in overrides.items() if v is not None},
                      tensorboard=False, max_updates=10**9, max_seconds=10**9,
                      checkpoint_seconds=600)
-    # (fast_rollout, actor_processes, rollout_pipeline)
-    variants = [(False, 0, 0), (True, 0, 0)] if args.compare else [(not args.legacy, 0, 0)]
-    if args.actors or args.pipeline:
-        variants = (([(False, 0, 0)] if args.compare else [])
-                    + [(True, w, 0) for w in args.actors or ()]
-                    + [(True, 0, p) for p in args.pipeline or ()])
+    variants = [(False, 0), (True, 0)] if args.compare else [(not args.legacy, 0)]
+    if args.actors:
+        variants = ([(False, 0)] if args.compare else []) + [(True, w) for w in args.actors]
     results = []
     with tempfile.TemporaryDirectory(prefix="ppo-bench-") as scratch:
         scratch = Path(scratch)
         if args.tiny:
             config = replace(config, **tiny_overrides(scratch))
-        for fast, actors, pipeline in variants:
-            result = measure(replace(config, fast_rollout=fast, actor_processes=actors,
-                                     rollout_pipeline=pipeline),
+        for fast, actors in variants:
+            result = measure(replace(config, fast_rollout=fast, actor_processes=actors),
                              args.device, args.warmup, args.updates, args.seconds, args.profile,
-                             scratch / f"run-{int(fast)}-{actors}-{pipeline}")
+                             scratch / f"run-{int(fast)}-{actors}")
             result["tiny"] = args.tiny
             print(json.dumps(result), flush=True)
             results.append(result)
@@ -215,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
         base = results[0]["decisions_per_second"]
         print(json.dumps({"speedup_vs_first": [
             {"fast_rollout": r["fast_rollout"], "actor_processes": r["actor_processes"],
-             "rollout_pipeline": r["rollout_pipeline"], "speedup": r["decisions_per_second"] / base} for r in results[1:]]}))
+             "speedup": r["decisions_per_second"] / base} for r in results[1:]]}))
     if args.out:
         Path(args.out).write_text(json.dumps(results, indent=2) + "\n")
     return 0

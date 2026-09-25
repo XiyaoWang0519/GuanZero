@@ -204,17 +204,6 @@ class PPOConfig:
     # config opponent (frozen, frozen:<path>, greedy, league:<pool.json>);
     # the league's semantics across actors are in train/ppo_actors.py.
     actor_processes: int = 0
-    # 0 rolls out as one shard. W >= 2 splits num_envs into W shards inside
-    # this process, built exactly like actor-process shards (own VecEnv seed,
-    # opponent, buffer and sampling generator, league results merged at the
-    # boundary; see train/ppo_actors.py) and stepped in turn: while one
-    # shard's forwards run on the device, the next shard's engine and host
-    # work runs, each shard on its own CUDA stream. Same data distribution
-    # as actor processes without the extra Python processes, so it suits
-    # hosts with a small CPU quota. Each shard's VecEnv uses num_threads
-    # engine threads; they never step at the same time. Excludes
-    # actor_processes.
-    rollout_pipeline: int = 0
     # The learner uploads the completed trajectories' uint8 features to the
     # device once per update and gathers minibatches there (StagedSamples in
     # train/rollout_buffer.py); False gathers and uploads every minibatch from
@@ -243,7 +232,6 @@ class PPOConfig:
         nonnegative = ("policy_lr", "critic_lr", "entropy_coef", "kl_coef", "target_kl",
                        "value_coef", "hidden_weight", "finish_weight", "buffer_steps",
                        "buffer_candidates", "buffer_trajectories", "actor_processes",
-                       "rollout_pipeline",
                        "league_snapshot_every", "exploiter_win_rate", "candidate_extra",
                        "advantage_filter_quantile", "advantage_filter_min_magnitude")
         for name in nonnegative:
@@ -284,7 +272,7 @@ class PPOConfig:
             raise ValueError("league_import_dir needs a league:<pool.json> opponent")
         if self.exploiter_win_rate > 1:
             raise ValueError("exploiter_win_rate must be at most 1")
-        if self.exploiter_pin_target and (self.rollout_shards or not self.exploiter_publish_dir):
+        if self.exploiter_pin_target and (self.actor_processes or not self.exploiter_publish_dir):
             raise ValueError("exploiter_pin_target needs exploiter mode and in-process rollout")
         if not self.init_checkpoint:
             raise ValueError("init_checkpoint is required")
@@ -294,18 +282,6 @@ class PPOConfig:
         if self.actor_processes and (self.num_envs % self.actor_processes
                                      or self.num_envs // self.actor_processes < 2):
             raise ValueError("num_envs must split into actor_processes shards of at least 2")
-        if self.rollout_pipeline == 1:
-            raise ValueError("rollout_pipeline is 0 (off) or at least 2 shards")
-        if self.rollout_pipeline and self.actor_processes:
-            raise ValueError("rollout_pipeline and actor_processes exclude each other")
-        if self.rollout_pipeline and (self.num_envs % self.rollout_pipeline
-                                      or self.num_envs // self.rollout_pipeline < 2):
-            raise ValueError("num_envs must split into rollout_pipeline shards of at least 2")
-
-    @property
-    def rollout_shards(self) -> int:
-        """Shards stepped by `train/ppo_actors.py` (processes or in-process), 0 if none."""
-        return self.actor_processes or self.rollout_pipeline
 
     def buffer_config(self) -> RolloutBufferConfig:
         # About half of all rows are learner rows; a round in progress at the
@@ -322,7 +298,7 @@ class PPOConfig:
 # Fields that may change on resume: runtime limits and resources only.
 MUTABLE_ON_RESUME = {"max_updates", "max_seconds", "checkpoint_seconds", "snapshot_updates",
                      "tensorboard", "torch_threads", "num_threads", "init_checkpoint", "critic_init",
-                     "fast_rollout", "actor_processes", "rollout_pipeline", "learn_on_device",
+                     "fast_rollout", "actor_processes", "learn_on_device",
                      "skip_unpruned_reference"}
 
 
@@ -722,7 +698,7 @@ class RolloutCollector:
     def _fast_act(self, batch, learner_rows: np.ndarray, opponent_rows: np.ndarray,
                   offsets: np.ndarray, env_id: np.ndarray, seat: np.ndarray,
                   phase: np.ndarray, match_id: np.ndarray, choices: np.ndarray,
-                  shared: Sequence[tuple[Any, np.ndarray]] = ()) -> Iterator[None]:
+                  shared: Sequence[tuple[Any, np.ndarray]] = ()) -> None:
         """Learner sampling, the fused frozen opponent's play-row argmax
         (`opponent_rows`) and the play rows of every `shared` (model, rows)
         opponent group (see `_shares_reference`), from ONE reference forward
@@ -731,14 +707,9 @@ class RolloutCollector:
         Rows are laid out learner first, then the argmax rows, then each shared
         group, so each part is a contiguous slice of the scored candidates and
         nothing on the device needs a data-dependent shape except the pruning.
-        Results come back in one copy.
-
-        A generator: it yields once, after every device launch and before that
-        copy, so `collect_steps` can hand the host to another shard while this
-        one's work runs on the device (`PPOConfig.rollout_pipeline`)."""
+        Results come back in one copy."""
         rows = np.concatenate((learner_rows, opponent_rows, *(g for _, g in shared)))
         if not rows.size:
-            yield
             return
         counts = offsets[rows + 1] - offsets[rows]
         local = np.zeros(rows.size + 1, np.int64)
@@ -793,11 +764,8 @@ class RolloutCollector:
                         ref_scores=ref[c0:c1])
                 outputs.append(choice)
                 begin = end
-        # Outside inference_mode: that mode is thread state, and another
-        # shard's step runs before this generator resumes.
-        yield
-        with self._phase("device to host"):
-            host = to_host(self.device, *outputs)
+            with self._phase("device to host"):
+                host = to_host(self.device, *outputs)
         if not bool(host[0]):
             raise FloatingPointError("non-finite reference scores")
         for (_, group), choice in zip(shared, host[len(host) - len(shared):]):
@@ -848,14 +816,6 @@ class RolloutCollector:
             self.timers[name] = self.timers.get(name, 0.0) + time.perf_counter() - start
 
     def collect(self) -> None:
-        for _ in self.collect_steps():
-            pass
-
-    def collect_steps(self) -> Iterator[None]:
-        """`rollout_steps` vector steps, yielding once per step while that step's
-        device work is in flight (see `_fast_act`); paths without a fused
-        forward yield after their own synchronous work. `collect` runs it
-        straight through; `train/ppo_actors.py` interleaves shards with it."""
         self.net.eval()
         heuristic = self.config.tribute_policy == "heuristic"
         for _ in range(self.config.rollout_steps):
@@ -883,8 +843,8 @@ class RolloutCollector:
             if self.fused_opponent:
                 # Tribute rows keep greedy_choice, as FrozenModelOpponent.act does.
                 opponent_play = opponent_rows[phase[opponent_rows] == PLAY]
-                yield from self._fast_act(batch, learner_rows, opponent_play, offsets, env_id,
-                                          seat, phase, match_id, choices)
+                self._fast_act(batch, learner_rows, opponent_play, offsets, env_id, seat,
+                               phase, match_id, choices)
             else:
                 fused_rows = opponent_rows[:0]
                 if self.league_fused and opponent_rows.size:
@@ -914,15 +874,14 @@ class RolloutCollector:
                     if picked.shape != opponent_rows.shape:
                         raise ValueError("opponent returned the wrong number of choices")
                     choices[opponent_rows] = picked
-                if (learner_rows.size or fused_rows.size or shared) and self.config.fast_rollout:
-                    yield from self._fast_act(batch, learner_rows, fused_rows, offsets, env_id,
-                                              seat, phase, match_id, choices, shared)
-                else:
-                    if learner_rows.size:
+                if learner_rows.size or fused_rows.size or shared:
+                    if self.config.fast_rollout:
+                        self._fast_act(batch, learner_rows, fused_rows, offsets, env_id,
+                                       seat, phase, match_id, choices, shared)
+                    else:
                         with self._phase("learner act (B5 path)"):
                             self._learner_act(batch, learner_rows, offsets, env_id, seat,
                                               phase, match_id, choices)
-                    yield
             counts = offsets[1:] - offsets[:-1]
             if ((choices < 0) | (choices >= counts)).any():
                 raise ValueError("a choice lies outside its candidate list")
@@ -1074,15 +1033,13 @@ class PPOTrainer(RolloutCollector):
             self.league_external = self._fused_league_specs(self.league_entries)
             self.league_fused = bool(self.league_external)
             league_state = payload.get("league_state") if payload is not None else None
-        if config.rollout_shards:
-            # Environments, opponents and shard buffers live in shards
-            # (train/ppo_actors.py): actor processes, whose buffers are shared
-            # memory read here, or the in-process pipeline.
+        if config.actor_processes:
+            # Environments, opponents and shard buffers live in actor processes
+            # (train/ppo_actors.py); the buffers are shared memory read here.
             if opponent is not None:
-                raise ValueError("actor_processes and rollout_pipeline build opponents from "
-                                 "config.opponent; an OpponentSource object needs the "
-                                 "single-shard rollout")
-            from train.ppo_actors import ActorPool, LocalPool, shard_sizes
+                raise ValueError("actor_processes builds opponents from config.opponent; "
+                                 "an OpponentSource object needs the in-process rollout")
+            from train.ppo_actors import ActorPool, shard_sizes
             self.env = self.buffer = self.opponent = None
             self.fused_opponent = False
             actor_rng = None
@@ -1091,11 +1048,10 @@ class PPOTrainer(RolloutCollector):
                 if league_state is not None:
                     self.league.load_state_dict(league_state)
                 saved = payload.get("league_actor_rng") if payload is not None else None
-                if saved is not None and len(saved) == config.rollout_shards:
+                if saved is not None and len(saved) == config.actor_processes:
                     actor_rng = saved
-            pool = ActorPool if config.actor_processes else LocalPool
-            self.actors = pool(self, shard_sizes(config.num_envs, config.rollout_shards),
-                               league_rng=actor_rng)
+            self.actors = ActorPool(self, shard_sizes(config.num_envs, config.actor_processes),
+                                    league_rng=actor_rng)
             self.buffers = self.actors.buffers
         else:
             self.env = gd.VecEnv(config.num_envs, num_threads=config.num_threads,
@@ -1244,7 +1200,7 @@ class PPOTrainer(RolloutCollector):
         if self.actors is None:
             super().collect()
             return
-        with self._phase("shard collect"):
+        with self._phase("actor processes collect"):
             self.actor_stats = self.actors.collect(self, self.config.rollout_steps)
 
     def minibatches(self) -> Iterator[dict[str, torch.Tensor]]:
