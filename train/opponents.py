@@ -45,9 +45,15 @@ class OpponentRows:
 
     Arrays are numpy views or copies; `cand` rows for row `i` are
     `cand[offsets[i]:offsets[i + 1]]`, and `offsets[0] == 0`.
+
+    In PPO rollouts `obs` and `cand` are `train.ppo.RowGather` views that
+    gather from the engine's batch on use. Index them with 1-D integer
+    arrays or take `np.asarray` of them, inside `act`: they are valid only
+    until the environment advances, so an opponent that keeps features
+    across steps must copy what it keeps.
     """
-    obs: np.ndarray            # [rows, OBS_DIM] float32
-    cand: np.ndarray           # [offsets[-1], ACT_DIM] float32
+    obs: np.ndarray            # [rows, OBS_DIM] float32 (or a RowGather)
+    cand: np.ndarray           # [offsets[-1], ACT_DIM] float32 (or a RowGather)
     offsets: np.ndarray        # [rows + 1] int32
     env_id: np.ndarray         # [rows] int32
     seat: np.ndarray           # [rows] int32

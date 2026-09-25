@@ -16,6 +16,10 @@ PPO uint8 staging reuse and indexed observations, exact DanLM hand/play memos
 with lazy decode, arm-specific belief collation, and bounded parallel tests.
 The follow-up separates measured component gains from unmeasured CUDA gains.
 
+The [evening RTX 4090 profile](reports/perf-gpu-2026-09-24b.md) measured
+the learner pass on CUDA, profiled steady collect and learn steps, and
+added lazy opponent features (league collect 15% faster, bitwise).
+
 The [RTX 4090 validation](reports/perf-gpu-2026-09-24.md) measured the local
 pass on CUDA, added a density-gated first-fusion split, skipped encoding for
 scripted batched evaluation, and added an RTX 4090 preset for the single frozen
@@ -35,10 +39,16 @@ for co-running arms.
    co-running arm, old and new code. Headline numbers with `--profile` off.
 4. `--num-envs 2048/4096 --rollout-steps 64/32`, and `--actors 0 2 4`, alone
    and co-running; probe NVIDIA MPS in a private pipe directory.
-5. Learner: `--learn-on-device 0/1` and `--skip-unpruned-reference 0/1` in
-   `bench/ppo_throughput.py` (the September 24 learner pass, unmeasured on
-   CUDA); host minibatch gather vs GPU step (CUDA events); `candidate_chunk`
+5. Learner: measured on September 24 (`learn_on_device` best step 19 vs
+   28 ms frozen, 29.6 vs 33.7 ms league; the reference skip has no GPU
+   effect). Left: `candidate_chunk`
    32768 vs 262144; fused Adam.
+6. Repeat item 4 as alternating pairs on one pod: the evening pod saw
+   actors W=4 at 1.15–1.3× end to end on the frozen arm from single runs.
+
+Profile with `.work/runpod-gpuopt-2026-09-24/payload/profile_collect.py`
+(four warm-up updates first; an earlier, shorter warm-up gave misleading
+first-round numbers). Compare code only on one pod with alternating runs.
 
 `.work/perf-scan-2026-09-23/gap-pod-host-variance/pod_calibrate.sh` covers 1-2.
 The bench needs a `--league-steady` option and a per-spec timer for 3.
@@ -47,8 +57,8 @@ The bench needs a `--league-steady` option and a per-spec timer for 3.
 
 | Item | Gain (estimate) | Effort | Semantics | Where / prototype |
 |---|---|---|---|---|
-| Build opponent features only for network rows (uint8 staging reuse and indexed obs are now implemented) | remaining gain needs measurement | S | bitwise | `train/ppo.py` |
-| Rollout data kept on the device for learn (`learn_on_device`, implemented in the [September 24 learner pass](reports/perf-learner-2026-09-24.md), bitwise) and the reference forward only on rows it can prune (`skip_unpruned_reference`, same report; rows, choices and weights bitwise, `kl_ref` statistic over scored rows) | CUDA effect unmeasured; measure with `bench/ppo_throughput.py --learn-on-device 0/1 --skip-unpruned-reference 0/1` on the next pod (add to "Measure first" item 5) | done | as stated | `train/rollout_buffer.py`, `train/ppo.py` |
+| Build opponent features only for network rows | done ([evening 4090 profile](reports/perf-gpu-2026-09-24b.md)): league collect −15%, +9% end to end | done | bitwise | `train/ppo.py` (`RowGather`) |
+| Rollout data kept on the device for learn (`learn_on_device`) and the reference forward only on rows it can prune (`skip_unpruned_reference`), [September 24 learner pass](reports/perf-learner-2026-09-24.md) | measured on CUDA ([evening profile](reports/perf-gpu-2026-09-24b.md)): best learner step 19 vs 28 ms frozen, 29.6 vs 33.7 ms league (of three runs); skip has no GPU effect | done | as stated | `train/rollout_buffer.py`, `train/ppo.py` |
 | Shrink `buffer_candidates` (2.74 GiB per arm, ~14x oversized) | memory only | S | bitwise | `train/ppo.py` |
 | League arms at `num_envs 4096 × rollout_steps 32` (same decisions per update), cap about 20 | 1.1-1.2x after the fusion work | S (config) | **changes results**: 2x staleness, slower league ramp | league configs |
 | Actor processes (W = 2-4, `num_threads // W`) on main/control/frozen arms, never the pinned exploiter | 1.0-1.35x, may be negative without MPS | S (config) | stat. equivalent | bench first (item 4 above) |
@@ -65,6 +75,9 @@ The bench needs a `--league-steady` option and a per-spec timer for 3.
 
 Rejected: `-march=native` (FMA contraction changes `styled_bot` results; use
 x86-64-v2 if anything), contiguous env sharding, a C++ uint8 feature dtype.
+Also rejected on the evening 4090 pods: a reused pinned buffer in
+`RolloutBuffer.stage` (exact, but slower frozen learn in 3 of 4 pairs) and
+glibc malloc tuning (mixed); see the [report](reports/perf-gpu-2026-09-24b.md).
 
 ## Evaluation
 

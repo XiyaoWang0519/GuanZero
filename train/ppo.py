@@ -507,6 +507,36 @@ def to_host(device: torch.device, *values: torch.Tensor) -> list[np.ndarray]:
     return [value.numpy() for value in host]
 
 
+class RowGather:
+    """`source[index]`, gathered on use: indexing it gathers only the rows
+    asked for (`gather[k] == source[index[k]]`), and `np.asarray` gathers all
+    of them. The values are exactly those of the eager `source[index]`.
+    `source` is an engine batch buffer, so a RowGather is valid only until
+    the environment advances (see `OpponentRows`)."""
+
+    def __init__(self, source: np.ndarray, index: np.ndarray) -> None:
+        self.source = source
+        self.index = index
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return (len(self.index), *self.source.shape[1:])
+
+    @property
+    def dtype(self) -> np.dtype:
+        return self.source.dtype
+
+    def __len__(self) -> int:
+        return len(self.index)
+
+    def __getitem__(self, key: np.ndarray | slice | int) -> np.ndarray:
+        return self.source[self.index[key]]
+
+    def __array__(self, dtype: np.dtype | None = None, copy: bool | None = None) -> np.ndarray:
+        array = self.source[self.index]
+        return array if dtype is None else array.astype(dtype, copy=False)
+
+
 class RolloutCollector:
     """The rollout half of the trainer: vector steps into the round buffer.
 
@@ -616,11 +646,17 @@ class RolloutCollector:
     def _opponent_rows(self, batch, rows: np.ndarray, offsets: np.ndarray,
                        env_id: np.ndarray, seat: np.ndarray, phase: np.ndarray,
                        match_id: np.ndarray) -> OpponentRows:
-        cand, local = self._ragged_rows(batch, rows, offsets)
+        counts = offsets[rows + 1] - offsets[rows]
+        local = np.zeros(rows.size + 1, np.int64)
+        np.cumsum(counts, out=local[1:])
+        src = _ragged_index(offsets[rows], counts, int(local[-1]))
+        # Features are gathered only for the rows an opponent reads them from
+        # (its network rows); scripted and styled rows never touch them.
         # styled_choice is read only now, after on_match_start (set_styles may
         # have recomputed it for rows already pending).
         return OpponentRows(
-            obs=np.asarray(batch.obs)[rows], cand=cand, offsets=local.astype(np.int32),
+            obs=RowGather(np.asarray(batch.obs), rows),
+            cand=RowGather(np.asarray(batch.cand), src), offsets=local.astype(np.int32),
             env_id=env_id[rows], seat=seat[rows], phase=phase[rows], match_id=match_id[rows],
             greedy_choice=np.asarray(batch.greedy_choice)[rows],
             styled_choice=np.asarray(batch.styled_choice)[rows])

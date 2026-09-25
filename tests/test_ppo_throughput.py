@@ -10,7 +10,7 @@ torch = pytest.importorskip("torch")
 from train.ckpt import save_checkpoint  # noqa: E402
 from train.model import GuandanModel, ModelConfig  # noqa: E402
 from train.policy import segment_log_softmax  # noqa: E402
-from train.ppo import (PPOConfig, PPOTrainer, Uploader, cached_reference_kl,  # noqa: E402
+from train.ppo import (PPOConfig, PPOTrainer, RowGather, Uploader, cached_reference_kl,  # noqa: E402
                        policy_terms, reference_kl)
 
 SMALL = ModelConfig(obs_dim=gd.OBS_DIM, act_dim=gd.ACT_DIM, state_width=32, state_layers=2,
@@ -310,6 +310,30 @@ def test_staged_gather_equals_host_gather_for_any_subset(tmp_path):
         assert torch.equal(fallback["obs"], torch.from_numpy(buffer.obs[unfinished[:5]]).float())
     buffer.next_iteration()
     assert buffer.staged is None
+
+
+def test_opponent_rows_gather_features_lazily_with_eager_values(tmp_path):
+    init = init_checkpoint(tmp_path / "init.pt")
+    trainer = PPOTrainer(config(init), tmp_path / "run")
+    try:
+        trainer.collect()    # a mid-round batch: ragged, varied candidate counts
+        batch = trainer.env.pending()
+        offsets = np.asarray(batch.offsets, np.int64)
+        rows = np.arange(0, batch.rows, 3)
+        ids = [np.asarray(getattr(batch, k), np.int64) for k in ("env_id", "seat", "phase", "match_id")]
+        lazy = trainer._opponent_rows(batch, rows, offsets, *ids)
+        eager_cand, local = trainer._ragged_rows(batch, rows, offsets)
+        eager_obs = np.asarray(batch.obs)[rows]
+        assert isinstance(lazy.obs, RowGather) and isinstance(lazy.cand, RowGather)
+        assert lazy.obs.shape == eager_obs.shape and lazy.cand.shape == eager_cand.shape
+        np.testing.assert_array_equal(lazy.offsets, local)
+        for gathered, eager in ((lazy.obs, eager_obs), (lazy.cand, eager_cand)):
+            assert np.asarray(gathered).dtype == eager.dtype
+            np.testing.assert_array_equal(np.asarray(gathered), eager)
+            subset = np.arange(0, len(eager), 5)
+            np.testing.assert_array_equal(gathered[subset], eager[subset])
+    finally:
+        trainer.close()
 
 
 def test_reference_skip_changes_no_row_choice_or_weight(tmp_path):
