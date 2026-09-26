@@ -33,6 +33,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Sequence
+import time
 
 import gd
 import numpy as np
@@ -432,6 +433,8 @@ class CollectStats:
     gain: float = 0.0           # sum of RoundResult.gain (levels won) over finished rounds
     prefix_sum: int = 0
     prefix_max: int = 0
+    phase_seconds: dict[str, float] = field(default_factory=dict)
+    policy_batches: int = 0
 
     @property
     def mean_prefix(self) -> float:
@@ -445,14 +448,17 @@ class HistoryCollector:
     ``log_env_limit`` covering every environment; ``reset()`` is called once,
     lazily, on the first step. ``seat_policy(env_id, match_id)`` records the
     policy identity of each seat when a match starts; only rows of the
-    ``LEARNER`` identity are stored. This first version has no other policy to
-    play the remaining seats, so any other identity raises.
+    ``LEARNER`` identity are stored. ``resolve_policy`` supplies frozen history
+    actors for the other identities; missing identities fail explicitly.
     """
 
     def __init__(self, env: Any, actor: HistoryActor, store: MatchEventStore,
                  buffer: SequenceRolloutBuffer, generator: torch.Generator | None = None,
                  device: str | torch.device = "cpu", seat_policy: SeatPolicy = all_learner,
-                 record_choices: bool = False) -> None:
+                 record_choices: bool = False,
+                 resolve_policy: Callable[[int], HistoryActor] | None = None,
+                 assignment_log: Callable[[dict], None] | None = None,
+                 kv_cache: bool = False, profile: bool = False) -> None:
         self.env = env
         self.actor = actor
         self.store = store
@@ -460,11 +466,41 @@ class HistoryCollector:
         self.generator = generator
         self.device = torch.device(device)
         self.seat_policy = seat_policy
+        self.resolve_policy = resolve_policy
+        self.assignment_log = assignment_log
+        if kv_cache and actor.config.window:
+            raise ValueError("rollout KV cache requires full history")
+        self.kv_cache = kv_cache
+        self.profile = profile
+        self.caches = {}
+        self.policy_decisions: dict[int, int] = {}
         self.assignments: dict[tuple[int, int], np.ndarray] = {}
         self.results: list[Any] = []            # RoundResults drained by the last collect()
         self.choice_log: list[np.ndarray] | None = [] if record_choices else None
         self.started = False
         self.version = 0
+
+    def cache_metrics(self) -> dict:
+        return dict(bytes=sum(c.bytes for c in self.caches.values()),
+                    entries=sum(len(c.entries) for c in self.caches.values()),
+                    encoded_tokens=sum(c.encoded_tokens for c in self.caches.values()),
+                    rebuilds=sum(c.rebuilds for c in self.caches.values()))
+
+    def invalidate_learner_cache(self) -> None:
+        # Release before PPO allocates activations; rebuild with updated weights.
+        if LEARNER in self.caches:
+            self.caches[LEARNER].clear()
+
+    def _prune_caches(self) -> None:
+        active = {}
+        for key, seats in self.assignments.items():
+            for identity in set(seats.tolist()):
+                active.setdefault(identity, set()).add(key)
+        for identity in list(self.caches):
+            if identity not in active:
+                del self.caches[identity]
+            else:
+                self.caches[identity].prune(active[identity])
 
     def assignment(self, env_id: int, match_id: int) -> np.ndarray:
         key = (int(env_id), int(match_id))
@@ -473,9 +509,18 @@ class HistoryCollector:
             seats = np.asarray(list(self.seat_policy(*key)), np.int64)
             if seats.shape != (NUM_SEATS,):
                 raise ValueError("a seat assignment names four policies")
-            if (seats != LEARNER).any():
-                raise NotImplementedError("only current-policy copies can fill seats yet")
+            if (seats < 0).any():
+                raise ValueError("negative policy identity")
+            if (seats != LEARNER).any() and self.resolve_policy is None:
+                raise NotImplementedError("snapshot seats require a policy resolver")
+            for identity in set(seats.tolist()) - {LEARNER}:
+                if not isinstance(self.resolve_policy(identity), HistoryActor):
+                    raise TypeError("training seats require a HistoryActor")
+            seats.setflags(write=False)
             self.assignments[key] = seats
+            if self.assignment_log is not None:
+                self.assignment_log(dict(event="assignment", env=key[0], match=key[1],
+                                         version=self.version, seats=seats.tolist()))
             stale = [k for k in self.assignments if k[0] == key[0] and k[1] < key[1]]
             for k in stale:
                 del self.assignments[k]
@@ -484,11 +529,21 @@ class HistoryCollector:
     def step(self, stats: CollectStats | None = None) -> int:
         """One vector step. Returns the number of pending rows stepped."""
         stats = stats if stats is not None else CollectStats()
+        stamp = time.perf_counter() if self.profile else 0.0
+        def mark(name):
+            nonlocal stamp
+            if self.profile:
+                if self.device.type == "cuda":
+                    torch.cuda.synchronize(self.device)
+                now = time.perf_counter()
+                stats.phase_seconds[name] = stats.phase_seconds.get(name, 0.0) + now - stamp
+                stamp = now
         env = self.env
         if not self.started:
             env.reset()
             self.started = True
         batch = env.pending()
+        mark("env_pending")
         # Contract order: events, ended rounds, then this batch's rows.
         self.store.ingest(env.drain_public_actions())
         results = env.drain_finished_rounds()
@@ -499,6 +554,7 @@ class HistoryCollector:
             stats.matches += int(r.match_winner >= 0)
             stats.team0_return += float(r.seat_return[0])
             stats.gain += float(r.gain)
+        mark("events_and_rounds")
         n = int(batch.rows)
         if not n:
             raise RuntimeError("environment produced no pending decisions")
@@ -516,21 +572,38 @@ class HistoryCollector:
         logp = np.zeros(n, np.float32)
         prefix = np.zeros(n, np.int64)
         learner = np.zeros(n, bool)
+        identities = np.zeros(n, np.int64)
         for i in range(n):
             seats = self.assignment(env_id[i], match_id[i])
-            learner[i] = seats[seat[i]] == LEARNER
+            identities[i] = seats[seat[i]]
+            learner[i] = identities[i] == LEARNER
             prefix[i] = self.store.stream(env_id[i], match_id[i]).prefix
         acting = learner & (phase == PLAY_PHASE)
-        rows = np.flatnonzero(acting)
-        if rows.size:
+        if self.kv_cache:
+            self._prune_caches()
+        mark("metadata_and_assignment")
+        for identity in np.unique(identities[phase == PLAY_PHASE]):
+            rows = np.flatnonzero((identities == identity) & (phase == PLAY_PHASE))
+            actor = self.actor if identity == LEARNER else self.resolve_policy(int(identity))
             keys = list(zip(env_id[rows].tolist(), match_id[rows].tolist()))
             unique = list(dict.fromkeys(keys))
             index = {key: i for i, key in enumerate(unique)}
             src = ragged_index(offsets[rows], counts[rows])
             local = np.concatenate(([0], np.cumsum(counts[rows])))
+            streams = [self.store.stream(*k) for k in unique]
+            mark("input_indexing")
+            encoded = None
+            if self.kv_cache:
+                from train.history_inference import BatchedHistoryCache
+                cache = self.caches.get(int(identity))
+                if cache is None or cache.actor is not actor:
+                    cache = self.caches[int(identity)] = BatchedHistoryCache(actor)
+                stream_batch, encoded = cache.encode(unique, streams)
+            else:
+                stream_batch = StreamBatch.from_streams(streams, self.device)
+            mark("public_cache_or_collation")
             inputs = DecisionInputs(
-                streams=StreamBatch.from_streams([self.store.stream(*k) for k in unique],
-                                                 self.device),
+                streams=stream_batch,
                 match_index=torch.as_tensor([index[k] for k in keys], dtype=torch.long,
                                             device=self.device),
                 prefix=torch.as_tensor(prefix[rows], dtype=torch.long, device=self.device),
@@ -538,9 +611,18 @@ class HistoryCollector:
                 seat=torch.as_tensor(seat[rows], dtype=torch.long, device=self.device),
                 cand=torch.as_tensor(cand[src].astype(np.uint8), device=self.device),
                 offsets=torch.as_tensor(local, dtype=torch.long, device=self.device))
-            choice, chosen_logp = self.actor.act(inputs, self.generator)
+            mark("decision_upload")
+            choice, chosen_logp = actor.act(inputs, self.generator, encoded=encoded,
+                                           max_candidates=int(counts[rows].max()))
+            mark("actor_and_sampling")
+            picked_logp = chosen_logp.float().cpu().numpy()
+            if not np.isfinite(picked_logp).all():
+                raise FloatingPointError("non-finite behaviour probability")
             choices[rows] = choice.cpu().numpy().astype(np.int32)
-            logp[rows] = chosen_logp.float().cpu().numpy()
+            logp[rows] = picked_logp
+            self.policy_decisions[int(identity)] = self.policy_decisions.get(int(identity), 0) + len(rows)
+            stats.policy_batches += 1
+            mark("decision_download")
         if ((choices < 0) | (choices >= counts)).any():
             raise ValueError("a choice lies outside its candidate list")
         stored = self.buffer.add_step(
@@ -548,12 +630,15 @@ class HistoryCollector:
             phase=phase, obs=obs, hidden=hidden, cand=cand, offsets=offsets, chosen=choices,
             logp=logp, prefix=prefix, version=self.version)
         if stored:
+            rows = np.flatnonzero(acting)
             stats.learner_rows += stored
             stats.prefix_sum += int(prefix[rows].sum())
             stats.prefix_max = max(stats.prefix_max, int(prefix[rows].max()))
         if self.choice_log is not None:
             self.choice_log.append(choices.copy())
+        mark("buffer_and_counters")
         env.step(choices)
+        mark("env_step")
         stats.steps += 1
         stats.decisions += n
         return n

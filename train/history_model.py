@@ -86,15 +86,17 @@ class PublicStream:
     candidates, hidden counts or the forced flag.
     """
 
-    __slots__ = ("tokens", "rounds", "phases", "match_id")
+    __slots__ = ("tokens", "rounds", "phases", "match_id", "generation")
 
     def __init__(self, match_id: int = -1) -> None:
         self.tokens: list[np.ndarray] = []
         self.rounds: list[int] = []
         self.phases: list[int] = []
         self.match_id = int(match_id)
+        self.generation = 0
 
     def reset(self, match_id: int = -1) -> None:
+        self.generation += 1
         self.tokens.clear()
         self.rounds.clear()
         self.phases.clear()
@@ -188,7 +190,7 @@ class DecisionInputs:
     @property
     def rows(self) -> Tensor:
         return torch.repeat_interleave(torch.arange(self.decisions, device=self.obs.device),
-                                       self.counts)
+                                       self.counts, output_size=len(self.cand))
 
 
 # ---- actor --------------------------------------------------------------------
@@ -223,6 +225,8 @@ class HistoryActor(nn.Module):
     def __init__(self, config: HistoryPolicyConfig = HistoryPolicyConfig()) -> None:
         super().__init__()
         self.config = config
+        # Runtime backend only: checkpoint weights/architecture stay identical.
+        self.causal_sdpa = False
         width = config.width
         self.public = nn.Linear(TOKEN_DIM, width)
         self.round_embedding = nn.Embedding(config.max_rounds, width)
@@ -261,6 +265,9 @@ class HistoryActor(nn.Module):
         stream = torch.cat((self.bos.expand(len(tokens), -1, -1), embedded), dim=1)
         length = stream.shape[1]
         stream = stream + sinusoidal(length, self.config.width, stream.device, stream.dtype)
+        if self.causal_sdpa:
+            from train.history_attention import causal_encode
+            return self.stream_norm(causal_encode(self.stream, stream))
         padding = torch.arange(length, device=stream.device)[None] > lengths[:, None]
         causal = torch.ones(length, length, device=stream.device, dtype=torch.bool).triu(1)
         return self.stream_norm(self.stream(stream, mask=causal, src_key_padding_mask=padding))
@@ -344,7 +351,8 @@ class HistoryActor(nn.Module):
     def candidate_logits(self, state: Tensor, cand: Tensor, offsets: Tensor) -> Tensor:
         """One logit per concrete candidate of the full canonical set, [sum_k]."""
         counts = offsets[1:] - offsets[:-1]
-        rows = torch.repeat_interleave(torch.arange(len(state), device=state.device), counts)
+        rows = torch.repeat_interleave(torch.arange(len(state), device=state.device), counts,
+                                       output_size=len(cand))
         fused = torch.cat((state[rows], self.action_tower(cand.float())), dim=-1)
         return self.fusion(fused).squeeze(-1)
 
@@ -360,7 +368,8 @@ class HistoryActor(nn.Module):
 
     @torch.no_grad()
     def act(self, inputs: DecisionInputs, generator: torch.Generator | None = None,
-            greedy: bool = False) -> tuple[Tensor, Tensor]:
+            greedy: bool = False, *, encoded: Tensor | None = None,
+            max_candidates: int | None = None) -> tuple[Tensor, Tensor]:
         """Sample (or take the argmax of) one candidate per decision.
 
         Returns ``(choice, log_prob)``: ``choice[i]`` is relative to the
@@ -368,10 +377,10 @@ class HistoryActor(nn.Module):
         ``choice[i]``; ``log_prob[i]`` is the behaviour log-probability under
         this actor, which PPO stores.
         """
-        log_probs = self.candidate_log_probs(inputs)
+        log_probs = self.candidate_log_probs(inputs, encoded=encoded)
         counts = inputs.counts
         offsets = inputs.offsets
-        longest = int(counts.max()) if len(counts) else 0
+        longest = max_candidates if max_candidates is not None else (int(counts.max()) if len(counts) else 0)
         table = torch.full((inputs.decisions, max(longest, 1)), float("-inf"),
                            device=log_probs.device, dtype=log_probs.dtype)
         local = torch.arange(len(log_probs), device=log_probs.device) - offsets[:-1][inputs.rows]

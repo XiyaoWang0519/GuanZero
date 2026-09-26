@@ -33,6 +33,7 @@ import argparse
 from dataclasses import asdict, dataclass, fields
 import json
 import math
+import signal
 from pathlib import Path
 import sys
 import time
@@ -43,12 +44,14 @@ import gd
 import numpy as np
 import torch
 from torch.nn import functional as F
+from infra.history_artifacts import engine_digest, source_identity, sha256
 
 from train.ckpt import restore_rng, rng_state
 from train.history_model import (STAGE, TOKEN_SCHEMA_VERSION,
                                  HistoryPolicyConfig, checkpoint_payload, count_parameters,
                                  fresh_player, load_history_checkpoint, save_history_checkpoint)
 from train.history_rollout import (HistoryCollector, MatchEventStore, SequenceRolloutBuffer)
+from train.history_population import HistoryPopulation
 from train.logs import TOKEN_DIM
 
 REWARD_SEMANTICS = {
@@ -77,6 +80,9 @@ class HistoryPPOConfig:
     num_threads: int = 1
     steps_per_update: int = 64
     seed: int = 0
+    causal_sdpa: bool = False           # opt-in until same-device CUDA A/B acceptance
+    rollout_kv_cache: bool = False      # public-only, invalidated across learner updates
+    profile_collection: bool = False   # synchronized phase timings; diagnostic only
     # learner
     lr: float = 3e-4
     critic_lr: float | None = None       # None: same as lr
@@ -93,6 +99,9 @@ class HistoryPPOConfig:
     updates: int = 1
     checkpoint_updates: int = 1
     torch_threads: int = 0               # 0 leaves torch's default
+    snapshot_updates: int = 2           # 0 disables for isolated throughput sweeps
+    population_recent: int = 4
+    snapshot_probability: float = 0.5
 
     def __post_init__(self) -> None:
         if min(self.num_envs, self.steps_per_update, self.epochs, self.minibatch_matches,
@@ -103,6 +112,11 @@ class HistoryPPOConfig:
             raise ValueError("gamma must be in (0, 1] and gae_lambda in [0, 1]")
         if self.lr <= 0 or self.clip <= 0 or self.entropy < 0:
             raise ValueError("lr and clip must be positive; entropy must not be negative")
+        if (self.snapshot_updates < 0 or self.population_recent < 1
+                or not 0 <= self.snapshot_probability <= 1):
+            raise ValueError("invalid population schedule")
+        if self.rollout_kv_cache and self.window:
+            raise ValueError("rollout KV cache requires full history")
 
     def policy_config(self) -> HistoryPolicyConfig:
         return HistoryPolicyConfig(width=self.width, layers=self.layers, heads=self.heads,
@@ -142,6 +156,8 @@ class HistoryTrainer:
         self.output = Path(output)
         self.output.mkdir(parents=True, exist_ok=True)
         self.device = torch.device(device)
+        if self.device.type == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError("CUDA was requested but is unavailable")
         if config.torch_threads:
             torch.set_num_threads(config.torch_threads)
         payload: dict[str, Any] | None = None
@@ -153,25 +169,40 @@ class HistoryTrainer:
             actor, critic = fresh_player(config.policy_config(), config.seed)
             self.lineage = f"{STAGE}-{config.seed}-{uuid.uuid4().hex[:8]}"
         self.config = config
+        self.run_identity = dict(engine_digest=engine_digest(), source=source_identity(),
+                                 token_schema=TOKEN_SCHEMA_VERSION)
+        if payload is not None and payload.get("run_identity") != self.run_identity:
+            raise ValueError("resume source/engine/token identity mismatch")
         # Dropout is zero, so train mode is the same policy as eval mode; staying
         # in train mode keeps the encoder on one kernel path for both the
         # behaviour log-probabilities and the learner's recomputation.
         self.actor = actor.to(self.device).train()
+        self.actor.causal_sdpa = config.causal_sdpa
         self.critic = critic.to(self.device).train()
         critic_lr = config.critic_lr if config.critic_lr is not None else config.lr
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=config.lr)
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=critic_lr)
         self.rng = np.random.default_rng(config.seed)
-        self.generator = torch.Generator(device="cpu")
+        self.generator = torch.Generator(device=self.device)
         self.generator.manual_seed(config.seed)
         self.progress: dict[str, Any] = {"updates": 0, "decisions": 0, "rounds": 0,
                                          "matches": 0, "samples": 0, "learner_rows": 0,
                                          "elapsed_seconds": 0.0}
+        self.population = HistoryPopulation(self.actor, self.lineage, config.seed + 17,
+                                            config.population_recent,
+                                            config.snapshot_probability)
         if payload is not None:
             self.actor_optimizer.load_state_dict(payload["optimizer"]["actor"])
             self.critic_optimizer.load_state_dict(payload["optimizer"]["critic"])
             self.progress.update(payload["progress"])
             rng = payload["rng"]
+            if rng.get("sampler_device", "cpu") != self.device.type:
+                raise ValueError("resume requires the same sampler device type")
+            if "population" in payload:
+                self.population.load_state_dict(payload["population"])
+                self.population.prune({})  # resumed environments discard old assignments
+            elif config.snapshot_updates:
+                raise ValueError("population-enabled resume requires saved population state")
             restore_rng(rng, self.rng)
             self.generator.set_state(rng["sampler"].cpu())
         self.env = gd.VecEnv(num_envs=config.num_envs, num_threads=config.num_threads,
@@ -180,25 +211,53 @@ class HistoryTrainer:
         self.store = MatchEventStore()
         self.buffer = SequenceRolloutBuffer()
         self.collector = HistoryCollector(self.env, self.actor, self.store, self.buffer,
-                                          self.generator, self.device)
+                                          self.generator, self.device,
+                                          seat_policy=self.population.assignment,
+                                          resolve_policy=self.population.resolve,
+                                          assignment_log=self.population_event,
+                                          kv_cache=config.rollout_kv_cache,
+                                          profile=config.profile_collection)
         self.prior_elapsed = float(self.progress["elapsed_seconds"])
         self.started = time.monotonic()
         self.metrics_path = self.output / "metrics.jsonl"
+        self.stop_requested = False
+        self.resume_count = int(payload.get("resume_count", 0)) + 1 if payload else 0
+        self.population_event(dict(event="resume" if payload else "start",
+                                   resume_count=self.resume_count,
+                                   discarded_partial_trajectories=bool(payload),
+                                   cache="ephemeral; rebuilt from raw public histories" if config.rollout_kv_cache
+                                         else "none; raw public histories restart with environments"))
         self.write_manifest()
+
+    def population_event(self, event: dict) -> None:
+        with (self.output / "population.jsonl").open("a") as stream:
+            stream.write(json.dumps({"lineage": self.lineage,
+                                     "rollout_session": getattr(self, "resume_count", 0),
+                                     **event}) + "\n")
 
     # -- manifest ---------------------------------------------------------------
 
     def write_manifest(self) -> None:
-        from train.tribute_data import engine_source_digest   # imports eval helpers; keep lazy
         manifest = {
             "stage": STAGE, "lineage": self.lineage, "init": "random", "teacher": None,
             "config": asdict(self.config), "model_config": asdict(self.actor.config),
-            "engine_digest": engine_source_digest(),
+            "engine_digest": self.run_identity["engine_digest"],
+            "source": self.run_identity["source"],
+            "engine_binary_sha256": sha256(Path(gd._gd_core.__file__)),
             "token_schema": {"version": TOKEN_SCHEMA_VERSION, "dim": int(TOKEN_DIM),
                              "forced_bit": False, "private_tribute_flags": False},
             "reward": REWARD_SEMANTICS,
             "candidates": "full canonical set in engine order; every candidate selectable",
-            "seats": "current-policy copies in all four seats",
+            "seats": "match-pinned current/own-lineage snapshot seats; learner rows only",
+            "population": {"snapshot_updates": self.config.snapshot_updates,
+                           "recent": self.config.population_recent,
+                           "snapshot_probability": self.config.snapshot_probability,
+                           "guaranteed_learner_seats": 1},
+            "inference": {"causal_sdpa": self.config.causal_sdpa,
+                          "rollout_kv_cache": self.config.rollout_kv_cache,
+                          "cache_boundary": "public-only; separate policy/env/match; learner invalidated before learn"},
+            "resume": "restore optimizer/RNG/population; discard partial rounds and assignments; "
+                      "restart environments and public histories; no persistent cache",
             "parameters": {"actor": count_parameters(self.actor),
                            "critic": count_parameters(self.critic)},
             "torch": torch.__version__, "device": str(self.device),
@@ -209,6 +268,7 @@ class HistoryTrainer:
     # -- one iteration ----------------------------------------------------------
 
     def collect(self):
+        self.collector.policy_decisions.clear()
         return self.collector.collect(self.config.steps_per_update,
                                       version=self.progress["updates"])
 
@@ -265,6 +325,7 @@ class HistoryTrainer:
 
     def learn(self) -> dict[str, Any]:
         cfg = self.config
+        self.collector.invalidate_learner_cache()
         values = self.refresh_values()
         samples = self.buffer.finalize(values, cfg.gamma, cfg.gae_lambda)
         stats: dict[str, Any] = {"update_samples": samples, "minibatches": 0}
@@ -279,6 +340,9 @@ class HistoryTrainer:
         stats["explained_variance"] = (1.0 - float(np.var(returns - values[rows])) / variance
                                        if variance > 0 else 0.0)
         stats["mean_return"] = float(returns.mean())
+        prefixes = self.buffer.compact()["prefix"][rows]
+        stats["learn_mean_prefix"] = float(prefixes.mean())
+        stats["learn_max_prefix"] = int(prefixes.max())
         terminal = self.buffer.done[rows]
         rewards = self.buffer.reward[rows][terminal]
         # All four seats are the learner, so the signed mean is zero-sum noise;
@@ -318,14 +382,28 @@ class HistoryTrainer:
 
     def update(self) -> dict[str, Any]:
         """Collect, learn, log one metrics line and advance the counters."""
+        if self.device.type == "cuda":
+            torch.cuda.synchronize(self.device)
+            torch.cuda.reset_peak_memory_stats(self.device)
         t0 = time.perf_counter()
         collected = self.collect()
+        if self.device.type == "cuda":
+            torch.cuda.synchronize(self.device)
         t1 = time.perf_counter()
+        collection_cache = self.collector.cache_metrics()
         stats = self.learn()
+        if self.device.type == "cuda":
+            torch.cuda.synchronize(self.device)
         t2 = time.perf_counter()
         cited = self.buffer.next_iteration()
         pruned = self.store.prune(cited)
         self.progress["updates"] += 1
+        self.population.decisions.update(self.collector.policy_decisions)
+        if (stats["minibatches"] and self.config.snapshot_updates
+                and self.progress["updates"] % self.config.snapshot_updates == 0):
+            identity = self.population.snapshot(self.progress["updates"])
+            self.population_event(dict(event="snapshot", **self.population.metadata[identity]))
+        self.population.prune(self.collector.assignments)
         self.progress["decisions"] += collected.decisions
         self.progress["learner_rows"] += collected.learner_rows
         self.progress["rounds"] += collected.rounds
@@ -340,10 +418,27 @@ class HistoryTrainer:
             "round_gain": collected.gain / collected.rounds if collected.rounds else None,
             "decisions_per_sec": collected.decisions / max(t1 - t0, 1e-9),
             "collect_seconds": t1 - t0, "learn_seconds": t2 - t1,
+            "learn_decisions_per_sec": stats["update_samples"] / max(t2 - t1, 1e-9),
+            "learn_exposures_per_sec": stats["update_samples"] * self.config.epochs / max(t2 - t1, 1e-9),
+            "learner_collect_decisions_per_sec": collected.learner_rows / max(t1 - t0, 1e-9),
             "mean_prefix": collected.mean_prefix, "max_prefix": collected.prefix_max,
             "store_matches": len(self.store), "store_tokens": self.store.tokens,
             "pruned_matches": pruned, "carried_rows": len(self.buffer),
             "elapsed_seconds": self.progress["elapsed_seconds"],
+            "population": self.population.metrics(),
+            "policy_version_min": int(self.buffer.compact()["version"].min()) if len(self.buffer) else None,
+            "cuda_peak_allocated_bytes": torch.cuda.max_memory_allocated(self.device) if self.device.type == "cuda" else 0,
+            "cuda_peak_reserved_bytes": torch.cuda.max_memory_reserved(self.device) if self.device.type == "cuda" else 0,
+            "cache_bytes": self.collector.cache_metrics()["bytes"],
+            "cache": self.collector.cache_metrics(),
+            "collection_cache": collection_cache,
+            "collection_phase_seconds": collected.phase_seconds,
+            "collection_profile_synchronized": self.config.profile_collection,
+            "collection_policy_batches": collected.policy_batches,
+            "cuda_allocated_bytes": torch.cuda.memory_allocated(self.device) if self.device.type == "cuda" else 0,
+            "cuda_reserved_bytes": torch.cuda.memory_reserved(self.device) if self.device.type == "cuda" else 0,
+            "cuda_inactive_split_peak_bytes": torch.cuda.memory_stats(self.device).get("inactive_split_bytes.all.peak", 0) if self.device.type == "cuda" else 0,
+            "cuda_allocation_retries": torch.cuda.memory_stats(self.device).get("num_alloc_retries", 0) if self.device.type == "cuda" else 0,
         }
         line.update(stats)
         with self.metrics_path.open("a") as stream:
@@ -357,11 +452,15 @@ class HistoryTrainer:
                                             - self.started)
         rng = rng_state(self.rng)
         rng["sampler"] = self.generator.get_state()
-        return checkpoint_payload(
+        rng["sampler_device"] = self.device.type
+        payload = checkpoint_payload(
             self.actor, self.critic, lineage=self.lineage, seed=self.config.seed,
             optimizer={"actor": self.actor_optimizer.state_dict(),
                        "critic": self.critic_optimizer.state_dict()},
             config=asdict(self.config), progress=dict(self.progress), rng=rng)
+        payload.update(population=self.population.state_dict(), run_identity=self.run_identity,
+                       resume_count=self.resume_count)
+        return payload
 
     def save(self, path: str | Path | None = None) -> Path:
         path = Path(path) if path is not None else self.output / "latest.pt"
@@ -369,7 +468,7 @@ class HistoryTrainer:
         return path
 
     def run(self) -> None:
-        while self.progress["updates"] < self.config.updates:
+        while self.progress["updates"] < self.config.updates and not self.stop_requested:
             line = self.update()
             print(json.dumps({k: line[k] for k in ("update", "decisions", "rounds",
                                                     "update_samples", "policy_loss",
@@ -378,6 +477,7 @@ class HistoryTrainer:
                   flush=True)
             if self.progress["updates"] % self.config.checkpoint_updates == 0:
                 self.save()
+                self.save(self.output / f"update-{self.progress['updates']:06d}.pt")
         self.save()
 
 
@@ -408,6 +508,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--grad-clip", type=float, default=10.0)
     parser.add_argument("--checkpoint-updates", type=int, default=1)
     parser.add_argument("--torch-threads", type=int, default=0)
+    parser.add_argument("--snapshot-updates", type=int, default=2)
+    parser.add_argument("--population-recent", type=int, default=4)
+    parser.add_argument("--snapshot-probability", type=float, default=0.5)
+    parser.add_argument("--causal-sdpa", action="store_true")
+    parser.add_argument("--rollout-kv-cache", action="store_true")
+    parser.add_argument("--profile-collection", action="store_true")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--resume", default=None)
     return parser
@@ -422,6 +528,10 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config = config_from_args(args)
     trainer = HistoryTrainer(config, args.output, device=args.device, resume=args.resume)
+    def stop(signum, frame):
+        trainer.stop_requested = True
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
     trainer.run()
     return 0
 
