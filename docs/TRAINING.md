@@ -6,16 +6,18 @@ history Transformer through self-play RL. Old MLPs are evaluation-only.
 
 ## Implementation status and entrypoints
 
-There is not yet a verified cold-start history-RL launch command. Do not
-rename a legacy config and describe it as a Transformer run. Add executable
-commands here only after T1--T4 supply the implementation and verification.
+The history-RL route completed a bounded RTX 4090 cold-start/resume/population
+pilot on September 26 UTC. The [T4 receipt](reports/history-t4-pilot-2026-09-26.md)
+records its measured configuration and limits. Larger runs still need their
+own measurement and explicit compute budget; legacy MLP configs do not apply.
 
 | Existing entrypoint/component | Current role |
 |---|---|
 | `train.dmc`, `train.ppo`, M1/B8/B11 configs | Old MLP training path; not the new launch command |
 | `train.behaviour_probe` | Offline behavior-cloning/next-event diagnostic; no cold-start RL or strength claim |
 | `train.history_model` | T1 contract: `PublicStream`, `HistoryActor` (public-only `encode_stream`, full canonical candidate head), `HistoryCritic`, `history_ppo` checkpoint marker. CPU-verified 2026-09-25 |
-| `train.history_rollout`, `train.history_ppo` | T2 cold-start sequence trainer: match event store, sequence rollout buffer, PPO with full-prefix recompute, atomic checkpoint/resume, CLI `python -m train.history_ppo`. CPU smoke only (8 envs, 3 updates); not a pilot entrypoint until T4 records GPU throughput and a bounded run |
+| `train.history_rollout`, `train.history_ppo`, `train.history_population` | Cold-start sequence trainer with same-lineage frozen seats, match-pinned assignment, learner-only rows, atomic optimizer/RNG/population resume, source/engine/token identity checks and device-local sampler. Verified in T4: 200 CUDA updates, real resume and 34,204 historical-policy decisions |
+| `train.history_ddp` | Opt-in data-parallel trainer (September 26): each rank is a full `HistoryTrainer` with its own environments; per-minibatch gradients averaged over gloo on CPU; parameter checksum verified across ranks every update; resume supported. `world_size = 1` is bitwise the base trainer. Engineering-verified; changes the effective batch, so it needs a development A/B before use as evidence ([run 2](reports/history-recipe2-2026-09-26.md)) |
 | `eval.history_policy` | T3 adapter: history policies receive every public action in every evaluator and reset per match/leg; `load_policy` returns it for `history_ppo` checkpoints |
 | `train.belief_experiment`, `train.memory_experiment` | Historical supervised experiments; not architecture gates |
 | `scripts/preflight.sh` | Existing MLP update/resume check; cannot certify the new sequence trainer |
@@ -26,7 +28,91 @@ The old `infra/run_train.sh`/bootstrap path was built around MLP configs and
 preflight. Verify its actual module, config and lifecycle behavior before
 reusing it for the new trainer. No proposed config field is an implemented CLI.
 
+## Verified bounded T4 workload
+
+The [T4 run contract](reports/history-t4-readiness-2026-09-26.md) records the
+prelaunch budget and frozen evaluators; the [completed receipt](reports/history-t4-pilot-2026-09-26.md)
+records the approved execution and teardown. `infra.history_pilot prepare --kit DIR`
+writes an allowlisted source archive, manifest, payload/setup.sh, payload/run.sh,
+config and a separate local evaluation directory. It does not allocate compute.
+Preparation uses Python 3.12 at `.work/external/danlm-venv/bin/python` on this
+checkout because `.venv` is absent. Run with `PYTHONPATH=python:oracle:.`.
+
+After explicit rental approval, `infra.runpod create` allocates the one reviewed
+resource and `infra.history_monitor` immediately starts an independent provider
+guard, waits for SSH, verifies the uploaded archive, builds and launches the
+bounded workload. Neither old preflight nor MLP training is invoked. The monitor
+syncs without deletion, inspects learning metrics every 30 seconds, checks
+completed artifacts against remote SHA-256 values, deletes only its owned pod
+and records provider readback. Guard availability still depends on this Mac
+and provider connectivity; it is not a provider-enforced TTL.
+
+`bench.history_ppo` first measures actual growing full-match prefixes for 4/8/16
+environments at width 64, two layers, FP32, no TF32 and no snapshot mixing. It
+reports all-seat collection decisions/sec, unique learned rows/sec, epoch
+exposures/sec, prefix lengths and CUDA peak allocated/reserved memory. A case
+must reach a mean prefix of at least 720, retain half of its throughput near
+144 tokens and reserve less than 70% of device memory. These are predeclared
+engineering stop rules, not universal hardware performance claims. A failed
+sweep ends the workload; batch KV cache work then needs full-prefix parity,
+weight-version invalidation and raw-history rebuild tests before another run.
+
+Only a passing measured configuration enters the bounded population pilot.
+The first completed updates create snapshots; a save/resume exercise restores
+actor, critic, optimizer, sampler and population, discards incomplete rounds
+and reconstructs new histories. The current implementation has no persistent
+cache. Evaluation reads only the frozen development deals through
+`python -m eval.history_frozen --freeze FILE --candidate FILE --output FILE`.
+It writes duplicate raw legs and same-seed full-match seat-swap pairs, with
+whole-pair bootstrap intervals. There is no final-test switch.
+
+The completed run selected eight environments: collection retained 67.2% of
+its speed as mean prefix grew from 166 to 754 tokens. It completed 200 updates
+and 63,948 learner training rows. All 54 remote artifacts were hash-verified,
+the pod was deleted, and independent provider readback showed zero pods / $0
+hourly spend. Initial/final development scores improved but full-match wins
+remained 0/16 against each frozen MLP. This is no playing-strength promotion.
+
+The population pilot reached 2,403-token prefixes and 24.31 GB allocator
+reservation despite only 1.55 GB peak allocated tensor memory. The short-sweep
+memory margin therefore does not certify sustained headroom. Profile before
+scaling; no persistent KV cache or asymptotic scaling improvement is claimed.
+
+## Recipe runs after T4 (September 26)
+
+Five bounded CPU-on-pod recipe runs are summarized in
+[the recipe summary](reports/history-recipe-summary-2026-09-26.md). Development
+findings, all against the batch-size kit's A-arm control with in-pod controls:
+two PPO epochs is a seed-robust improvement (the `HistoryPPOConfig` default is
+already `epochs=2`; the T4/batch kits overrode it to 1); data-parallel
+collection and current-policy-only self-play speed learning further; four
+epochs, a 16-snapshot population, GAE lambda 1.0 and critic lr 1e-3 were worse.
+None is a strength claim. The kit tooling (`prepare.py`, `arm.py`,
+`arm_ddp.py`, `recipe.py`, `lifecycle.py`, `analyze.py`, `pooled.py`) lives in
+`.work/history-recipe-kits/`; `lifecycle.py` keeps the cumulative ledger.
+The small history model trains faster on the pod's CPUs than on its GPU;
+training on CPU is the FP32 reference path covered by the equivalence tests.
+
 ## Local development checks
+
+The [history-stack follow-up](reports/history-stack-2026-09-26.md) adds optional
+`--causal-sdpa` and `--rollout-kv-cache` paths. The
+[bounded CUDA comparison](reports/history-stack-cuda-2026-09-26.md) passed
+98 Python checks and measured 1.76x / 1.50x full-update KV throughput with
+all-current / mixed seats. Both remain off by default: fixed-fixture numerical
+equivalence and engineering throughput do not certify long-run playing quality.
+Every optimization must preserve model capability, FP32, full event history,
+canonical legal support and PPO/reward/population semantics. Controlled replay
+and development-baseline strength checks remain the sustained quality gate.
+The cache is public-only and partitioned by
+policy/environment/match; learner updates invalidate it and PPO retains full
+gradient recomputation. `--profile-collection` enables synchronized diagnostic
+phase timers, which must be excluded from ordinary throughput comparisons.
+`bench.history_stack` alternates dense/SDPA/KV cases with fixed learning rules
+and records full-update throughput/memory. CPU mode requires `--collect-only`
+and charges a learner-cache rebuild each chunk unless explicitly disabled for
+a frozen-cache diagnostic. Source changes preserve the original T4 archive;
+they do not silently bypass checkpoint source identity for resume.
 
 Use the existing Python environment with the matching C++ extension. Fresh
 installation uses Python 3.11+, C++20, CMake 3.24+ and Ninja:
