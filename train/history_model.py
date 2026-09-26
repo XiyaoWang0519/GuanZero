@@ -218,6 +218,21 @@ def segment_log_softmax(scores: Tensor, rows: Tensor, count: int) -> Tensor:
     return scores - top[rows] - total[rows].log()
 
 
+@dataclass
+class ExplorationSample:
+    """One sampled candidate per decision under the exploration floor.
+
+    ``logp`` is the target (temperature 1, no epsilon) log-probability that
+    PPO's ratio uses; ``behaviour_logp`` is the log-probability of the
+    distribution the choice was actually drawn from.
+    """
+    choice: Tensor            # int64 [n], relative to each decision's candidates
+    logp: Tensor              # [n] log softmax(logits)[choice]
+    behaviour_logp: Tensor    # [n] log pi_b(choice)
+    uniform_pick: Tensor      # bool [n], the epsilon branch chose the candidate
+    behaviour_entropy: Tensor  # [n] entropy of pi_b over the legal candidates
+
+
 class HistoryActor(nn.Module):
     """Causal public-stream encoder, private query, full-candidate head.
 
@@ -413,6 +428,14 @@ class HistoryActor(nn.Module):
         ``choice[i]``; ``log_prob[i]`` is the behaviour log-probability under
         this actor, which PPO stores.
         """
+        table = self._log_prob_table(inputs, encoded, max_candidates)
+        choice = table.argmax(1) if greedy else _gumbel_argmax(table, generator)
+        chosen = table.gather(1, choice[:, None])[:, 0]
+        return choice, chosen
+
+    def _log_prob_table(self, inputs: DecisionInputs, encoded: Tensor | None,
+                        max_candidates: int | None) -> Tensor:
+        """``[n, width]`` candidate log-probabilities, ``-inf`` past each count."""
         log_probs = self.candidate_log_probs(inputs, encoded=encoded)
         counts = inputs.counts
         offsets = inputs.offsets
@@ -421,15 +444,54 @@ class HistoryActor(nn.Module):
                            device=log_probs.device, dtype=log_probs.dtype)
         local = torch.arange(len(log_probs), device=log_probs.device) - offsets[:-1][inputs.rows]
         table[inputs.rows, local] = log_probs
-        if greedy:
-            choice = table.argmax(1)
-        else:
-            uniform = torch.rand(table.shape, generator=generator, device=table.device,
-                                 dtype=table.dtype).clamp_min(1e-12)
-            gumbel = -(-uniform.log()).log()
-            choice = (table + gumbel).argmax(1)
-        chosen = table.gather(1, choice[:, None])[:, 0]
-        return choice, chosen
+        return table
+
+    @torch.no_grad()
+    def explore(self, inputs: DecisionInputs, generator: torch.Generator | None = None, *,
+                temperature: float = 1.0, epsilon: float = 0.0,
+                encoded: Tensor | None = None, max_candidates: int | None = None
+                ) -> ExplorationSample:
+        """Sample from pi_b = (1 - epsilon) softmax(logits / T) + epsilon / n_legal.
+
+        With ``temperature == 1`` and ``epsilon == 0`` this is ``act``
+        exactly: the same table, the same single Gumbel draw from
+        ``generator``, the same choice, and ``behaviour_logp`` is the very
+        ``logp`` tensor. With ``epsilon > 0`` two extra ``[n]`` uniform draws
+        follow the Gumbel draw (the epsilon coin, then the uniform index), so
+        the generator stream advances further than ``act`` would.
+        """
+        if not temperature > 0 or not 0 <= epsilon <= 1:
+            raise ValueError("temperature must be positive and epsilon in [0, 1]")
+        table = self._log_prob_table(inputs, encoded, max_candidates)
+        counts = inputs.counts
+        valid = torch.arange(table.shape[1], device=table.device)[None] < counts[:, None]
+        behaviour = table if temperature == 1 else torch.log_softmax(table / temperature, 1)
+        choice = _gumbel_argmax(behaviour, generator)
+        uniform_pick = torch.zeros(len(choice), dtype=torch.bool, device=choice.device)
+        if epsilon > 0:
+            coin = torch.rand(len(choice), generator=generator, device=table.device,
+                              dtype=torch.float64)
+            draw = torch.rand(len(choice), generator=generator, device=table.device,
+                              dtype=torch.float64)
+            index = torch.minimum((draw * counts).long(), counts - 1)
+            uniform_pick = coin < epsilon
+            choice = torch.where(uniform_pick, index, choice)
+            mixed = torch.logaddexp(behaviour + math.log1p(-epsilon) if epsilon < 1
+                                    else torch.full_like(behaviour, float("-inf")),
+                                    (math.log(epsilon) - counts.to(table.dtype).log())[:, None])
+            behaviour = torch.where(valid, mixed, table)
+        logp = table.gather(1, choice[:, None])[:, 0]
+        behaviour_logp = behaviour.gather(1, choice[:, None])[:, 0]
+        terms = torch.where(valid, behaviour.exp() * behaviour, torch.zeros_like(behaviour))
+        return ExplorationSample(choice, logp, behaviour_logp, uniform_pick, -terms.sum(1))
+
+
+def _gumbel_argmax(table: Tensor, generator: torch.Generator | None) -> Tensor:
+    """One categorical draw per row of a log-probability table (one uniform per cell)."""
+    uniform = torch.rand(table.shape, generator=generator, device=table.device,
+                         dtype=table.dtype).clamp_min(1e-12)
+    gumbel = -(-uniform.log()).log()
+    return (table + gumbel).argmax(1)
 
 
 # ---- critic -------------------------------------------------------------------

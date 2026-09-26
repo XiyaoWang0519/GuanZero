@@ -119,7 +119,7 @@ def test_cached_population_rollout_choices_probabilities_and_private_isolation(d
         np.testing.assert_array_equal(a, b)
     a, b = dense.buffer.compact(), cached.buffer.compact()
     for key in a:
-        if key == "logp":
+        if key in ("logp", "behaviour_logp"):
             np.testing.assert_allclose(a[key], b[key], rtol=0, atol=2e-5)
         else:
             np.testing.assert_array_equal(a[key], b[key])

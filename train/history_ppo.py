@@ -100,6 +100,10 @@ class HistoryPPOConfig:
     gae_lambda: float = 0.95
     grad_clip: float = 10.0
     normalize_advantages: bool = True
+    # exploration floor, learner seats only: pi_b = (1 - eps) softmax(logits / T) + eps / n
+    rollout_temperature: float = 1.0
+    rollout_epsilon: float = 0.0
+    behaviour_weight_cap: float = 1.0
     # lifecycle
     updates: int = 1
     checkpoint_updates: int = 1
@@ -119,6 +123,10 @@ class HistoryPPOConfig:
             raise ValueError("gamma must be in (0, 1] and gae_lambda in [0, 1]")
         if self.lr <= 0 or self.clip <= 0 or self.entropy < 0:
             raise ValueError("lr and clip must be positive; entropy must not be negative")
+        if (not 0 < self.rollout_temperature < math.inf or not 0 <= self.rollout_epsilon <= 1
+                or not 0 < self.behaviour_weight_cap < math.inf):
+            raise ValueError("rollout_temperature and behaviour_weight_cap must be positive "
+                             "and finite; rollout_epsilon must be in [0, 1]")
         if (self.snapshot_updates < 0 or self.population_recent < 1
                 or not 0 <= self.snapshot_probability <= 1):
             raise ValueError("invalid population schedule")
@@ -164,7 +172,8 @@ class HistoryTrainer:
 
     STAT_KEYS = ("policy_loss", "value_loss", "entropy", "approx_kl", "clip_fraction",
                  "ratio_deviation", "actor_grad_norm", "encoder_grad_norm", "critic_grad_norm",
-                 "response_loss", "response_accuracy", "response_event_fraction")
+                 "response_loss", "response_accuracy", "response_event_fraction",
+                 "behaviour_weight_mean", "behaviour_weight_cap_fraction")
 
     def __init__(self, config: HistoryPPOConfig, output: str | Path, device: str = "cpu",
                  resume: str | Path | None = None) -> None:
@@ -237,7 +246,9 @@ class HistoryTrainer:
                                           resolve_policy=self.resolve_rollout_policy,
                                           assignment_log=self.population_event,
                                           kv_cache=config.rollout_kv_cache,
-                                          profile=config.profile_collection)
+                                          profile=config.profile_collection,
+                                          temperature=config.rollout_temperature,
+                                          epsilon=config.rollout_epsilon)
         self.prior_elapsed = float(self.progress["elapsed_seconds"])
         self.started = time.monotonic()
         self.metrics_path = self.output / "metrics.jsonl"
@@ -365,12 +376,22 @@ class HistoryTrainer:
                               "response_accuracy": (prediction.argmax(-1) == targets).float().mean(),
                               "response_event_fraction": (targets != 0).float().mean()}
         old = torch.as_tensor(buffer.compact()["logp"][rows], device=self.device)
+        behaviour = torch.as_tensor(buffer.compact()["behaviour_logp"][rows], device=self.device)
         advantage = torch.as_tensor(buffer.advantage[rows], device=self.device)
         returns = torch.as_tensor(buffer.returns[rows], device=self.device)
         log_ratio = log_prob - old
         ratio = log_ratio.exp()
         if cfg.normalize_advantages and len(advantage) > 1:
             advantage = (advantage - advantage.mean()) / (advantage.std() + 1e-8)
+        # Exploration floor: rows were drawn from pi_b, so each advantage carries
+        # the truncated per-action weight min(cap, pi_old / pi_b). It is applied
+        # AFTER normalization, so the minibatch statistics stay those of the raw
+        # GAE advantages and the weight only rescales rows. With temperature 1
+        # and epsilon 0, logp == behaviour_logp bitwise, the weight is exactly
+        # 1.0 and this multiplication leaves the loss unchanged bit for bit.
+        raw_weight = (old - behaviour).exp()
+        weight = raw_weight.clamp(max=cfg.behaviour_weight_cap)
+        advantage = advantage * weight
         clipped = torch.minimum(ratio * advantage,
                                 ratio.clamp(1 - cfg.clip, 1 + cfg.clip) * advantage)
         surrogate = -clipped.mean()
@@ -385,10 +406,12 @@ class HistoryTrainer:
             approx_kl = ((ratio - 1) - log_ratio).mean()
             clip_fraction = ((ratio - 1).abs() > cfg.clip).float().mean()
             ratio_deviation = (ratio - 1).abs().max()
+            weight_capped = (raw_weight > cfg.behaviour_weight_cap).float().mean()
         return {"policy_total": policy_total, "value_total": cfg.value_coef * value_loss,
                 "policy_loss": surrogate, "value_loss": value_loss, "entropy": entropy.mean(),
                 "approx_kl": approx_kl, "clip_fraction": clip_fraction,
-                "ratio_deviation": ratio_deviation, **response_stats}
+                "ratio_deviation": ratio_deviation, "behaviour_weight_mean": weight.mean(),
+                "behaviour_weight_cap_fraction": weight_capped, **response_stats}
 
     def learn(self) -> dict[str, Any]:
         cfg = self.config
@@ -502,6 +525,10 @@ class HistoryTrainer:
             "collection_phase_seconds": collected.phase_seconds,
             "collection_profile_synchronized": self.config.profile_collection,
             "collection_policy_batches": collected.policy_batches,
+            "rollout_epsilon_pick_fraction": (collected.epsilon_picks / collected.learner_rows
+                                              if collected.learner_rows else None),
+            "rollout_behaviour_entropy": (collected.behaviour_entropy_sum / collected.learner_rows
+                                          if collected.learner_rows else None),
             "cuda_allocated_bytes": torch.cuda.memory_allocated(self.device) if self.device.type == "cuda" else 0,
             "cuda_reserved_bytes": torch.cuda.memory_reserved(self.device) if self.device.type == "cuda" else 0,
             "cuda_inactive_split_peak_bytes": torch.cuda.memory_stats(self.device).get("inactive_split_bytes.all.peak", 0) if self.device.type == "cuda" else 0,
@@ -575,6 +602,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gamma", type=float, default=1.0)
     parser.add_argument("--gae-lambda", type=float, default=0.95)
     parser.add_argument("--grad-clip", type=float, default=10.0)
+    parser.add_argument("--rollout-temperature", type=float, default=1.0)
+    parser.add_argument("--rollout-epsilon", type=float, default=0.0)
+    parser.add_argument("--behaviour-weight-cap", type=float, default=1.0)
     parser.add_argument("--checkpoint-updates", type=int, default=1)
     parser.add_argument("--torch-threads", type=int, default=0)
     parser.add_argument("--snapshot-updates", type=int, default=2)

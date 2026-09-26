@@ -68,7 +68,9 @@ class HistoryDDPTrainer(HistoryTrainer):
                                               resolve_policy=self.population.resolve,
                                               assignment_log=self.population_event,
                                               kv_cache=config.rollout_kv_cache,
-                                              profile=config.profile_collection)
+                                              profile=config.profile_collection,
+                                              temperature=config.rollout_temperature,
+                                              epsilon=config.rollout_epsilon)
         self.write_manifest()
         self.population_event(dict(event="ddp", rank=self.rank, world_size=self.world_size,
                                    lineage=self.lineage, resumed=resume is not None))

@@ -13,7 +13,10 @@ Three pieces sit between ``gd.VecEnv`` and the history learner:
 * ``SequenceRolloutBuffer``: every learner row with its environment, match,
   round, seat, policy version, history prefix, observation, hidden counts
   (critic only), the full canonical candidate set in engine order, chosen
-  index, behaviour log-probability, value, reward, done and phase.
+  index, target log-probability (``logp``, the collecting actor at temperature
+  1 without epsilon), behaviour log-probability (``behaviour_logp``, the
+  distribution the choice was drawn from; equal to ``logp`` unless the
+  exploration floor is on), value, reward, done and phase.
   Trajectories are keyed ``(env, team, round)`` exactly as ``train/ppo.py``'s
   buffer keys them: the team's per-round return lands on the team's last
   stored row of the round, ``done`` is set there, all other rewards are zero
@@ -135,7 +138,7 @@ def compute_gae(values: np.ndarray, rewards: np.ndarray, dones: np.ndarray,
 # ---- rollout buffer ----------------------------------------------------------------
 
 ROW_FIELDS = ("env", "match", "round", "seat", "version", "prefix", "phase", "traj",
-              "chosen", "logp", "cand_count")
+              "chosen", "logp", "cand_count", "behaviour_logp")
 
 
 def ragged_index(starts: np.ndarray, counts: np.ndarray) -> np.ndarray:
@@ -188,11 +191,12 @@ class SequenceRolloutBuffer:
                  round_index: np.ndarray, seat: np.ndarray, phase: np.ndarray,
                  obs: np.ndarray, hidden: np.ndarray, cand: np.ndarray, offsets: np.ndarray,
                  chosen: np.ndarray, logp: np.ndarray, prefix: np.ndarray,
-                 version: int) -> int:
+                 version: int, behaviour_logp: np.ndarray | None = None) -> int:
         """Store the batch rows where ``keep`` is true. ``obs``/``cand`` are the
         batch's arrays (uint8 or the engine's binary float32), ``offsets`` the
         batch's ragged candidate offsets, ``chosen`` the local candidate index
-        of every batch row and ``prefix`` the history length each row read."""
+        of every batch row and ``prefix`` the history length each row read.
+        ``behaviour_logp`` defaults to ``logp`` (on-policy sampling)."""
         rows = np.flatnonzero(np.asarray(keep, bool))
         if rows.size == 0:
             return 0
@@ -225,6 +229,8 @@ class SequenceRolloutBuffer:
             "prefix": np.asarray(prefix, np.int64)[rows],
             "phase": np.asarray(phase, np.int64)[rows], "traj": traj, "chosen": chosen,
             "logp": np.asarray(logp, np.float32)[rows], "cand_count": counts,
+            "behaviour_logp": np.asarray(logp if behaviour_logp is None else behaviour_logp,
+                                         np.float32)[rows],
             "obs": np.asarray(obs)[rows].astype(np.uint8, copy=True),
             "hidden": np.asarray(hidden).reshape(len(offsets) - 1, HIDDEN_DIM)[rows]
             .astype(np.uint8, copy=True),
@@ -264,6 +270,7 @@ class SequenceRolloutBuffer:
             else:
                 data = {name: np.zeros(0, np.int64) for name in ROW_FIELDS}
                 data["logp"] = np.zeros(0, np.float32)
+                data["behaviour_logp"] = np.zeros(0, np.float32)
                 data["obs"] = np.zeros((0, self.obs_dim), np.uint8)
                 data["hidden"] = np.zeros((0, HIDDEN_DIM), np.uint8)
                 data["cand"] = np.zeros((0, self.act_dim), np.uint8)
@@ -435,6 +442,8 @@ class CollectStats:
     prefix_max: int = 0
     phase_seconds: dict[str, float] = field(default_factory=dict)
     policy_batches: int = 0
+    epsilon_picks: int = 0      # learner rows chosen by the exploration floor's uniform branch
+    behaviour_entropy_sum: float = 0.0  # sum over learner rows of the entropy of pi_b
 
     @property
     def mean_prefix(self) -> float:
@@ -450,6 +459,9 @@ class HistoryCollector:
     policy identity of each seat when a match starts; only rows of the
     ``LEARNER`` identity are stored. ``resolve_policy`` supplies frozen history
     actors for the other identities; missing identities fail explicitly.
+    ``temperature`` and ``epsilon`` shape the learner identity's sampling
+    only (``HistoryActor.explore``); frozen snapshot seats always use
+    ``HistoryActor.act`` at temperature 1.
     """
 
     def __init__(self, env: Any, actor: HistoryActor, store: MatchEventStore,
@@ -458,7 +470,8 @@ class HistoryCollector:
                  record_choices: bool = False,
                  resolve_policy: Callable[[int], HistoryActor] | None = None,
                  assignment_log: Callable[[dict], None] | None = None,
-                 kv_cache: bool = False, profile: bool = False) -> None:
+                 kv_cache: bool = False, profile: bool = False,
+                 temperature: float = 1.0, epsilon: float = 0.0) -> None:
         self.env = env
         self.actor = actor
         self.store = store
@@ -472,6 +485,8 @@ class HistoryCollector:
             raise ValueError("rollout KV cache requires full history")
         self.kv_cache = kv_cache
         self.profile = profile
+        self.temperature = float(temperature)
+        self.epsilon = float(epsilon)
         self.caches = {}
         self.policy_decisions: dict[int, int] = {}
         self.assignments: dict[tuple[int, int], np.ndarray] = {}
@@ -570,6 +585,7 @@ class HistoryCollector:
         hidden = np.asarray(batch.hidden_counts)
         choices = np.array(batch.greedy_choice, dtype=np.int32, copy=True)
         logp = np.zeros(n, np.float32)
+        behaviour_logp = np.zeros(n, np.float32)
         prefix = np.zeros(n, np.int64)
         learner = np.zeros(n, bool)
         identities = np.zeros(n, np.int64)
@@ -612,11 +628,20 @@ class HistoryCollector:
                 cand=torch.as_tensor(cand[src].astype(np.uint8), device=self.device),
                 offsets=torch.as_tensor(local, dtype=torch.long, device=self.device))
             mark("decision_upload")
-            choice, chosen_logp = actor.act(inputs, self.generator, encoded=encoded,
-                                           max_candidates=int(counts[rows].max()))
+            if identity == LEARNER:
+                sample = actor.explore(inputs, self.generator, temperature=self.temperature,
+                                       epsilon=self.epsilon, encoded=encoded,
+                                       max_candidates=int(counts[rows].max()))
+                choice, chosen_logp = sample.choice, sample.logp
+                behaviour_logp[rows] = sample.behaviour_logp.float().cpu().numpy()
+                stats.epsilon_picks += int(sample.uniform_pick.sum())
+                stats.behaviour_entropy_sum += float(sample.behaviour_entropy.double().sum())
+            else:
+                choice, chosen_logp = actor.act(inputs, self.generator, encoded=encoded,
+                                               max_candidates=int(counts[rows].max()))
             mark("actor_and_sampling")
             picked_logp = chosen_logp.float().cpu().numpy()
-            if not np.isfinite(picked_logp).all():
+            if not (np.isfinite(picked_logp).all() and np.isfinite(behaviour_logp[rows]).all()):
                 raise FloatingPointError("non-finite behaviour probability")
             choices[rows] = choice.cpu().numpy().astype(np.int32)
             logp[rows] = picked_logp
@@ -628,7 +653,7 @@ class HistoryCollector:
         stored = self.buffer.add_step(
             keep=acting, env_id=env_id, match_id=match_id, round_index=round_index, seat=seat,
             phase=phase, obs=obs, hidden=hidden, cand=cand, offsets=offsets, chosen=choices,
-            logp=logp, prefix=prefix, version=self.version)
+            logp=logp, prefix=prefix, version=self.version, behaviour_logp=behaviour_logp)
         if stored:
             rows = np.flatnonzero(acting)
             stats.learner_rows += stored
