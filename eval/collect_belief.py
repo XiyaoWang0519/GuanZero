@@ -27,7 +27,8 @@ import torch
 from eval.policies import ModelPolicy, load_policy
 from train import styles as style_lib
 from train.buffer import Decision
-from train.logs import DRIVER_BOT, DRIVER_POLICY, public_token, save_round
+from train.logs import (CANDIDATE_SCHEMA_VERSION, DRIVER_BOT, DRIVER_POLICY, public_token,
+                        save_round, token_meta)
 from train.model import select_actions
 from train.tribute_data import engine_source_digest
 
@@ -78,11 +79,17 @@ def collect_belief(checkpoint: str | Path, output: Path, *, rounds: int = 100,
                    device: str = "cpu", threads: int = 1,
                    purpose: str = "evaluation_only", styled: bool = False,
                    style_region: str = "train", style_seed: int | None = None,
-                   heldout_fraction: float = 0.5, policy_team: str = "random") -> dict:
+                   heldout_fraction: float = 0.5, policy_team: str = "random",
+                   candidates: bool = False) -> dict:
     """Collect balanced per-environment round quotas under a fixed policy.
 
     At least two environments provide distinct match groups even for a
     two-round smoke test. An incomplete run is clearly marked and raises.
+
+    With `candidates` every logged decision also records the canonical
+    candidate set it chose from, each candidate's abstract id and the chosen
+    index, and every public token records its abstract id, forced flag and
+    phase (log schema 3). Behaviour probes need these; belief probes do not.
     """
     started = time.monotonic()
     if rounds < 2 or num_envs < 2 or threads < 1:
@@ -115,12 +122,14 @@ def collect_belief(checkpoint: str | Path, output: Path, *, rounds: int = 100,
     completed = [0] * num_envs
     pending: dict[tuple[int, int, int], list[Decision]] = {}
     tokens: dict[tuple[int, int, int], list[np.ndarray]] = {}
+    metas: dict[tuple[int, int, int], list[tuple[int, int, int]]] = {}
     groups: set[str] = set()
     assignments: dict[tuple[int, int], StyleAssignment] = {}
     behaviour: dict[tuple[int, int], style_lib.BehaviourAccumulator] = {}
     match_rounds: dict[tuple[int, int], int] = {}
     provenance = {
-        "schema_version": 2, "purpose": purpose, "status": "collecting",
+        "schema_version": CANDIDATE_SCHEMA_VERSION if candidates else 2,
+        "candidates": bool(candidates), "purpose": purpose, "status": "collecting",
         "checkpoint_source": str(checkpoint), "seed": seed,
         "requested_rounds": rounds,
         "num_envs": num_envs, "collected_rounds": 0, "learner_updates": 0,
@@ -225,12 +234,15 @@ def collect_belief(checkpoint: str | Path, output: Path, *, rounds: int = 100,
                 key = (int(event.env_id), int(event.match_id), int(event.round_index))
                 if completed[key[0]] < quotas[key[0]]:
                     tokens.setdefault(key, []).append(public_token(event))
+                    if candidates:
+                        metas.setdefault(key, []).append(token_meta(event))
                 match = (key[0], key[1])
                 behaviour.setdefault(match, style_lib.BehaviourAccumulator()).add_event(event)
             for result in env.drain_finished_rounds():
                 key = (int(result.env_id), int(result.match_id), int(result.round_index))
                 decisions = pending.pop(key, [])
                 history = tokens.pop(key, [])
+                history_meta = metas.pop(key, None)
                 if decisions and completed[key[0]] < quotas[key[0]]:
                     # The action at each prefix is the action just about to be
                     # chosen. Consumers must read only tokens[:prefix].
@@ -246,7 +258,8 @@ def collect_belief(checkpoint: str | Path, output: Path, *, rounds: int = 100,
                                meta={"match_id": key[1], "round_index": key[2],
                                      "env_id": key[0], "styles": entry.styles,
                                      "seat_driver": entry.seat_driver,
-                                     "style_region": entry.region, "styled": styled})
+                                     "style_region": entry.region, "styled": styled},
+                               token_metas=history_meta)
                     completed[key[0]] += 1
                     match_rounds[(key[0], key[1])] = match_rounds.get((key[0], key[1]), 0) + 1
                     provenance["collected_rounds"] = sum(completed)
@@ -284,11 +297,21 @@ def collect_belief(checkpoint: str | Path, output: Path, *, rounds: int = 100,
                 if completed[key[0]] >= quotas[key[0]]:
                     continue
                 index = int(batch.offsets[row]) + int(choices[row])
+                extra = {}
+                if candidates:
+                    start, stop = int(batch.offsets[row]), int(batch.offsets[row + 1])
+                    extra = {
+                        "cand": np.array(batch.cand[start:stop], dtype=np.uint8, copy=True),
+                        "cand_abstract": np.asarray(
+                            [a.abstract_id for a in env.row_actions(int(row))], dtype=np.int64),
+                        "choice": int(choices[row]),
+                    }
                 pending.setdefault(key, []).append(Decision(
                     obs=np.array(batch.obs[row], dtype=np.uint8, copy=True),
                     action=np.array(batch.cand[index], dtype=np.uint8, copy=True),
                     hidden=np.array(batch.hidden_counts[row], dtype=np.uint8, copy=True),
                     seat=int(batch.seat[row]), phase=3, prefix=len(tokens.get(key, [])),
+                    **extra,
                 ))
             env.step(choices)
         check_deadline()
@@ -327,13 +350,15 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--heldout-fraction", type=float, default=0.5,
                         help="probability of a held-out style under --style-region mixed")
     parser.add_argument("--policy-team", default="random", choices=("random", "0", "1"))
+    parser.add_argument("--candidates", action=argparse.BooleanOptionalAction, default=False,
+                        help="log every decision's candidate set and token metadata (schema 3)")
     args = parser.parse_args(argv)
     report = collect_belief(args.checkpoint, args.output, rounds=args.rounds,
                             num_envs=args.num_envs, seed=args.seed, max_seconds=args.max_seconds,
                             device=args.device, threads=args.threads, purpose=args.purpose,
                             styled=args.styled, style_region=args.style_region,
                             style_seed=args.style_seed, heldout_fraction=args.heldout_fraction,
-                            policy_team=args.policy_team)
+                            policy_team=args.policy_team, candidates=args.candidates)
     print(json.dumps(report, allow_nan=False))
 
 

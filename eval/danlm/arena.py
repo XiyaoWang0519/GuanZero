@@ -39,6 +39,7 @@ from eval.danlm.bridge import (BIG_JOKER, NormalizedPlay, PlayIndex, card_ours_t
                                card_theirs_to_ours, decode_play, hand_ours_to_theirs,
                                level_ours_to_theirs, normalize_action)
 from eval.duplicate import bootstrap_interval
+from eval.history_policy import apply_and_observe, needs_history
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DANLM_ROOT = ROOT / ".work/external/DanLM"
@@ -136,6 +137,9 @@ class RoundRecord:
     decisions: int
     tribute: str                   # "none", "single", "double", "anti"
     divergences: Divergences
+    # One entry per finisher, in finish order: the finishing seat, the decision
+    # count at that moment and every seat's remaining card count (gd's mirror).
+    finish_snapshots: list[dict] = field(default_factory=list)
 
 
 class LockstepRound:
@@ -161,7 +165,13 @@ class LockstepRound:
         self.div = Divergences()
         self.decisions = 0
         self.tribute_kind = "none"
+        self.finish_snapshots: list[dict] = []
         self._play_cache: dict[tuple[int, str, bytes], NormalizedPlay] = {}
+        # A history policy hears every action applied to our mirror (both
+        # sides' plays, tribute exchanges and the lone passes applied
+        # explicitly above), never anything from DanLM's referee objects.
+        self.history = our_policy if needs_history(our_policy) else None
+        self.applied = 0
 
     # -- helpers ---------------------------------------------------------
 
@@ -179,7 +189,17 @@ class LockstepRound:
         self.div.add(kind, f"{self.round_id}: {detail}" if detail else "", n)
 
     def apply_ours(self, action) -> None:
-        self.engine_full.apply(self.state, action)
+        self.applied += 1
+        if self.history is None:
+            self.engine_full.apply(self.state, action)
+        else:
+            apply_and_observe(self.engine_full, self.state, action, (self.history,))
+
+    def check_history(self) -> None:
+        """Every action applied to the mirror this round reached the history policy."""
+        if self.history is not None and self.history.events_seen != self.applied:
+            raise RuntimeError(f"{self.round_id}: history policy saw {self.history.events_seen} "
+                               f"events for {self.applied} applied mirror actions")
 
     # -- tribute ---------------------------------------------------------
 
@@ -292,6 +312,8 @@ class LockstepRound:
         for seat in range(4):
             if self.seat_kind[seat] != "ours":
                 self.their_agent(seat).reset(seat, self.level_t)
+        if self.history is not None:
+            self.history.start_match()   # each lockstep round is an independent match
         records, anti = self.run_tribute()
         if has_tribute(self.deal):
             for seat in range(4):
@@ -363,6 +385,11 @@ class LockstepRound:
                 self.apply_ours(usable[pick])
             self.decisions += 1
             obs = self.step_theirs(rnd, obs, choice)
+            if len(rnd.finish_order) > len(self.finish_snapshots):
+                self.finish_snapshots.append(
+                    {"seat": int(rnd.finish_order[len(self.finish_snapshots)]),
+                     "decision": self.decisions,
+                     "cards_left": [len(self.state.hand(s)) for s in range(4)]})
         finish = list(rnd.finish_order)
         rewards = [int(self.game.compute_reward(finish, p)) for p in range(4)] if rnd.done else [0] * 4
         our_order = our_returns = None
@@ -380,8 +407,9 @@ class LockstepRound:
                     self.note("finish_order_mismatch", f"ours {our_order} theirs {finish}")
                 if our_returns != rewards:
                     self.note("reward_mismatch", f"ours {our_returns} theirs {rewards}")
+        self.check_history()
         return RoundRecord(status, self.seat_kind, finish, rewards, our_order, our_returns,
-                           self.decisions, self.tribute_kind, self.div)
+                           self.decisions, self.tribute_kind, self.div, self.finish_snapshots)
 
     def step_theirs(self, rnd, obs, choice: int):
         play = obs.legal_plays[choice]
@@ -506,6 +534,7 @@ def _run_rounds(job: dict) -> list[dict]:
                     "finish_order": record.finish_order, "rewards": record.rewards,
                     "our_order": record.our_order, "our_returns": record.our_returns,
                     "decisions": record.decisions, "tribute": record.tribute,
+                    "finish_snapshots": record.finish_snapshots,
                     "divergences": {"counts": record.divergences.counts,
                                     "samples": record.divergences.samples}})
     return out

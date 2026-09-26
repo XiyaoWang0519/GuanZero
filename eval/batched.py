@@ -16,6 +16,7 @@ import numpy as np
 import torch
 
 from .duplicate import DuplicateScore, RoundScore
+from .history_policy import HistoryPolicy, HistoryStreamStore, needs_history
 from .policies import GreedyPolicy, ModelPolicy, Policy, PrunedPolicy, RandomPolicy, StyledPolicy
 from train.model import select_actions
 from train.policy import sample_segments, segment_log_softmax
@@ -62,14 +63,18 @@ def gather(obs, cand, offsets, index):
 
 
 class BatchActor:
-    def __init__(self, policy: Policy, seed: int):
+    def __init__(self, policy: Policy, seed: int, streams: HistoryStreamStore | None = None):
         # Exact types avoid silently ignoring a custom subclass's select().
-        if type(policy) not in (GreedyPolicy, RandomPolicy, StyledPolicy, ModelPolicy, PrunedPolicy):
+        if type(policy) not in (GreedyPolicy, RandomPolicy, StyledPolicy, ModelPolicy, PrunedPolicy,
+                                HistoryPolicy):
             raise TypeError(f"unsupported batched policy {type(policy).__name__}; use scalar backend")
+        if isinstance(policy, HistoryPolicy) and streams is None:
+            raise ValueError("a history policy needs the runner's per-slot stream store")
         self.policy = policy
+        self.streams = streams
         self.rng = np.random.default_rng(seed % (1 << 64))
         self.generator = None
-        if isinstance(policy, ModelPolicy):
+        if isinstance(policy, (ModelPolicy, HistoryPolicy)):
             self.generator = torch.Generator(device=policy.device).manual_seed(seed % (1 << 63))
 
     def act(self, batch, index):
@@ -90,6 +95,17 @@ class BatchActor:
             return out
         obs, cand, off = gather(np.asarray(batch.obs), np.asarray(batch.cand),
                                 np.asarray(batch.offsets), rows)
+        if isinstance(policy, HistoryPolicy):
+            # The store was fed from drain_public_actions() right after
+            # pending(); a slot whose match restarted since its last event
+            # shows a newer match_id here and gets a fresh stream.
+            env_ids = np.asarray(batch.env_id)[rows]
+            self.streams.sync(env_ids, np.asarray(batch.match_id)[rows])
+            streams, match_index = self.streams.select_streams(env_ids)
+            inputs = policy.batch_inputs(streams, match_index, np.asarray(batch.seat)[rows],
+                                         obs, cand, off)
+            out[positions] = policy.act(inputs, self.generator if policy.sample else None)
+            return out
         device = policy.device
         o = torch.from_numpy(obs).to(device)
         c = torch.from_numpy(cand).to(device)
@@ -154,7 +170,10 @@ def _play(env, seats, seed, *, matches=False, max_rounds=1000, max_decisions=200
             if not any(policy is p for p in policies):
                 policies.append(policy)
             assignment[e, seat] = next(i for i, p in enumerate(policies) if policy is p)
-    actors = [BatchActor(p, seed + i) for i, p in enumerate(policies)]
+    # One public stream per slot, shared by every history policy in the wave
+    # (the events are public; each policy still encodes them with its own weights).
+    streams = HistoryStreamStore(env.num_envs) if any(needs_history(p) for p in policies) else None
+    actors = [BatchActor(p, seed + i, streams) for i, p in enumerate(policies)]
     if any(isinstance(p, StyledPolicy) for p in policies):
         styles = np.tile(np.asarray(gd.StyleParams.neutral().to_array(), np.float32), (len(seats), 4, 1))
         for e, lineup in enumerate(seats):
@@ -167,6 +186,10 @@ def _play(env, seats, seed, *, matches=False, max_rounds=1000, max_decisions=200
     rounds = np.zeros(len(seats), np.int64)
     while not done.all():
         batch = env.pending()
+        if streams is not None:
+            # Every action applied by step() and every pass the engine
+            # resolved inside pending(), in per-slot order, before anyone acts.
+            streams.ingest(env.drain_public_actions())
         for result in env.drain_finished_rounds():
             e = result.env_id
             if done[e] or result.match_id != 0:
@@ -202,9 +225,11 @@ def play_duplicate_batch(deals: Iterable[gd.DealSpec], team: tuple[Policy, Polic
         raise ValueError("max_decisions must be positive")
     scores = []
     # Scripted policies use choices and offsets, so the engine can skip features.
-    encode = any(isinstance(policy, ModelPolicy) for policy in (*team, *opponents))
+    history = any(needs_history(policy) for policy in (*team, *opponents))
+    encode = any(isinstance(policy, ModelPolicy) for policy in (*team, *opponents)) or history
     for wave in _waves(deals, config.batch_size):
-        env = gd.VecEnv(2 * len(wave), config.engine_threads, seed % (1 << 64), encode=encode)
+        env = gd.VecEnv(2 * len(wave), config.engine_threads, seed % (1 << 64), encode=encode,
+                        log_public_actions=history)
         env.reset([deal for deal in wave for _ in range(2)])
         seats = [(team[0], opponents[0], team[1], opponents[1]),
                  (opponents[0], team[0], opponents[1], team[1])] * len(wave)
@@ -223,9 +248,11 @@ def play_matches_batch(agent: Policy, opponent: Policy, indices: Iterable[int], 
     totals = dict.fromkeys(MATCH_COUNTERS, 0)
     totals["records"] = []
     # Keep observation/action encoding when either side runs a network.
-    encode = isinstance(agent, ModelPolicy) or isinstance(opponent, ModelPolicy)
+    history = needs_history(agent) or needs_history(opponent)
+    encode = isinstance(agent, ModelPolicy) or isinstance(opponent, ModelPolicy) or history
     for wave in _waves(indices, config.batch_size):
-        env = gd.VecEnv(len(wave), config.engine_threads, seed % (1 << 64), encode=encode)
+        env = gd.VecEnv(len(wave), config.engine_threads, seed % (1 << 64), encode=encode,
+                        log_public_actions=history)
         env.reset(match_seeds=[seed + m for m in wave])
         seats = [(agent, opponent, agent, opponent) if m % 2 == 0 else
                  (opponent, agent, opponent, agent) for m in wave]

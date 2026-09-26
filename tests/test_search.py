@@ -92,3 +92,16 @@ def test_custom_blueprint_cannot_inspect_live_hidden_hands():
 def test_nonfinite_search_parameters_are_rejected(field, value):
     with pytest.raises(ValueError, match="invalid search configuration"):
         SearchConfig(**{field: value})
+
+
+def test_search_spec_takes_config_overrides():
+    from eval.policies import load_policy
+
+    assert load_policy("search:greedy").config == SearchConfig()
+    tuned = load_policy("search@unseen_threshold=30,time_ms=250.0:greedy").config
+    assert (tuned.unseen_threshold, tuned.time_ms) == (30, 250.0)
+    assert tuned.max_worlds == SearchConfig().max_worlds
+    for bad in ("search@no_such_field=1:greedy", "search@unseen_threshold=:greedy",
+                "search@unseen_threshold=30:"):
+        with pytest.raises(ValueError):
+            load_policy(bad)

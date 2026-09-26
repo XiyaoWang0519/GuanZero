@@ -1,5 +1,12 @@
 # 修正后的猜牌与跨回合记忆实验
 
+> Historical record. The proposals, budgets and next steps below belong to
+> this dated experiment. The active route is now random-start Transformer
+> self-play, with old MLPs used only for evaluation; see
+> [DESIGN.md](../DESIGN.md) and [STAGE_C_TODO.md](../STAGE_C_TODO.md).
+> Preserve the recorded results and artifacts; do not launch an old plan as
+> the new experiment or infer current provider state from its snapshot.
+
 已完成，2026-09-22。使用训练完成的 M1 重新采集的 100,000 回合，完成 Task3 九次训练和 Task4 六次训练。全部最佳权重、逐局结果、日志和图表已保存并校验；GPU 已删除。本轮没有 RL 更新。
 
 **当前决策：Stage B 采用 no_history；本轮 v3 记忆原型不进入正式策略。** 后续主线仍是 critic → PPO → league，再用对局胜率验证。这个决定只针对当前数据、模型和训练预算，不能据此否定真人习惯或更大规模记忆模型的价值。

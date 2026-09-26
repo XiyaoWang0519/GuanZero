@@ -136,11 +136,12 @@ def load_dataset(directory: Path, deadline: float | None = None, *,
         digest.update(path.read_bytes())
         with np.load(path, allow_pickle=False) as data:
             version = int(data["schema_version"])
-            if version not in (1, 2):
+            if version not in (1, 2, 3):
                 raise ValueError("unsupported belief schema")
             r = {k: data[k].copy() for k in ("obs", "hidden", "seat", "prefix", "tokens")}
             r["group"] = str(data["group"])
-            # Schema 2 adds styled-opponent labels; schema 1 rounds stay loadable.
+            # Schema 2 adds styled-opponent labels and schema 3 candidate sets;
+            # schema 1 rounds stay loadable.
             r["schema_version"] = version
             r["style_region"] = str(data["style_region"]) if version >= 2 else "unknown"
             r["driver"] = data["driver"].copy() if version >= 2 else np.zeros(len(r["seat"]), np.int64)

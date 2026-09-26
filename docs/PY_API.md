@@ -196,7 +196,31 @@ collections pass `meta` and get schema 2, which adds styled-opponent labels:
 `driver` is derived from `seat_driver[seat]`, so a policy row can never be
 marked bot-driven and a bot row can never be marked policy-driven. Readers that
 only need the belief tensors (`train/belief_probe.load_rounds`,
-`train/belief_experiment.load_dataset`) accept both schema versions.
+`train/belief_experiment.load_dataset`) accept every schema version.
+
+## Round-log schema 3
+
+`eval/collect_belief.py --candidates` passes `token_metas` to `save_round`
+and gets schema 3 on top of schema 2. It records what a behaviour probe
+(`train/behaviour_probe.py`) needs: the canonical candidate set each policy
+seat chose from and per-token metadata. Every candidate carries its abstract
+id (`Action.abstract_id`, one of `gd.NUM_ABSTRACT` = 393 play entries).
+
+| Field | Shape / type | Meaning |
+|---|---|---|
+| `schema_version` | scalar int | `3` |
+| `cand` | uint8 `[sum_k, ACT_DIM]` | Ragged candidate rows of all decisions, in order |
+| `cand_offsets` | int64 `[decisions + 1]` | Row range of each decision inside `cand` |
+| `cand_abstract` | int64 `[sum_k]` | Abstract id of each candidate |
+| `choice` | int64 `[decisions]` | Index of the chosen candidate; `cand[offset + choice]` equals the token at `prefix` |
+| `token_abstract` | int64 `[tokens]` | Abstract id of each public token, `-1` for tribute exchanges |
+| `token_forced` | int64 `[tokens]` | `1` for an automatically applied pass |
+| `token_phase` | int64 `[tokens]` | Engine phase of the token's action |
+
+The probe stitches the rounds of one `(env_id, match_id)` into a single
+match-long stream in `round_index` order, so a decision's `prefix` becomes an
+offset into the whole match. A match whose earlier rounds are missing is
+rejected; a quota-truncated tail is fine because every prefix stays exact.
 
 Tribute payments are settled together after all payers choose, so the first
 payer's `cards_left` can still be 27 at its selection event. The play-phase

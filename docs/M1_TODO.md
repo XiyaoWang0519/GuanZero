@@ -1,8 +1,9 @@
-# M1 readiness tracker
+# M1 historical readiness record
 
-The first v1 DMC training run is complete and the larger Stage A run is ready.
-This is an implementation gate, separate from the external playing-strength
-gate in DESIGN.md section 1.2.
+The September 21 v1 MLP pilot and its implementation checks are historical
+evidence. Current training follows [STAGE_C_TODO.md](STAGE_C_TODO.md): a new
+history Transformer trained from random initialization. This page does not
+schedule a larger MLP run or gate Transformer RL on a belief experiment.
 
 RunPod validation and a 20.5-minute pilot completed under the approved
 $5/two-hour cap. Artifacts are downloaded and verified; the pod is deleted.
@@ -19,7 +20,7 @@ See `reports/M1-runpod.md` for measurements, costs and remaining research gates.
 | Duplicate arena, match intervals, Elo and behavior probes | done | Determinism/statistics tests and real checkpoint evaluation |
 | Public history logs and matched-parameter belief experiment | done | Match-separated splits, causal-mask tests and real logged-data smoke |
 | Launch image/scripts, optional durable sync, budget/time watchdog | done | Official CUDA image/bootstrap verified; artifacts retrieved; owned pod deleted and provider readback confirmed |
-| CPU preflight, regression tests and updated operator guide | done | `reports/M1-preflight.md`, `TRAINING.md` |
+| CPU preflight, regression tests and updated operator guide | done | `reports/M1-preflight.md` (legacy MLP preflight) |
 
 GPU validation on the chosen node:
 
@@ -29,13 +30,11 @@ GPU validation on the chosen node:
    1,787 evidence files were checksum-verified locally before pod deletion.
    The node existed for 36.31 minutes, with a conservative $0.603 cost estimate.
 3. Final v1 won 100/100 held-out matches against greedy and beat the five-minute
-   checkpoint directly. Two play probes still fail. The small three-seed belief
-   experiment favors the flat model; v2 RL remains gated.
+   checkpoint directly. Two play probes still failed in that pilot. Historical
+   belief experiments were subsequently corrected; see [M2 evidence](M2_TODO.md).
 
-The original external M1 strength gate remains unmeasured because the named
-baseline agents are unavailable. Internal results do not replace it. v2 RL, learned tribute, PPO,
-league training, exploiter tests, search and human UI remain later milestones,
-with the evidence gates and external-baseline limitation stated in DESIGN.md.
-
-Work toward M2 is tracked in `M2_TODO.md`; the first component is the frozen-play
-Stage A2 tribute experiment in `reports/M2-A2.md`.
+The original external M1 strength gate was not measured because the named
+baseline agents were unavailable; internal results do not replace it.
+Later A2, critic, PPO and league outcomes are in [M2_TODO.md](M2_TODO.md) and
+[STAGE_B_TODO.md](STAGE_B_TODO.md). Their old pretrained-player route has been
+replaced by [the current design](DESIGN.md).

@@ -1,0 +1,324 @@
+{
+  "verified_epoch": 1790343315.983934,
+  "provider_status": "COMPLETE",
+  "manifest_verified_files": 178,
+  "manifest_verified_bytes": 4289298341,
+  "sha_mismatches": [],
+  "completion": {
+    "success": true,
+    "wall_seconds": 29463.244136529,
+    "all_children_stopped": true,
+    "script_budget_seconds": 34500,
+    "paid_cost_usd": 0
+  },
+  "reports": {
+    "control/development.json": {
+      "candidate_sha256": "be784c81503cb61a0ff6ff7c5657bf0a636bc1c408f872bca459c08581660282",
+      "control_sha256": "ebb614f35f825e835c9d5b18bdc5a6efb0f79d5ba5ed9bfcdf44eca98ae139fe",
+      "deals": 2000,
+      "matches": 500,
+      "excluded_deals": 0,
+      "excluded_matches": 0,
+      "net": 0.04375,
+      "net_ci": [
+        -0.013756249999999989,
+        0.09825624999999998
+      ],
+      "wins": 289,
+      "win_rate": 0.578,
+      "win_ci": [
+        0.534276977868969,
+        0.6205336250190289
+      ],
+      "styles": {
+        "greedy": {
+          "deals": 2000,
+          "mean_levels_per_round": 0.04575,
+          "bootstrap_95_ci": [
+            -0.0045062499999999886,
+            0.09675
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:bomb-happy": {
+          "deals": 2000,
+          "mean_levels_per_round": -0.04325,
+          "bootstrap_95_ci": [
+            -0.10251874999999996,
+            0.014
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:bomb-shy": {
+          "deals": 2000,
+          "mean_levels_per_round": 0.02275,
+          "bootstrap_95_ci": [
+            -0.022762499999999977,
+            0.06775
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:high-lead": {
+          "deals": 2000,
+          "mean_levels_per_round": 0.00725,
+          "bootstrap_95_ci": [
+            -0.016,
+            0.031
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:low-lead": {
+          "deals": 2000,
+          "mean_levels_per_round": 0.0375,
+          "bootstrap_95_ci": [
+            0.000743750000000011,
+            0.07175624999999997
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "heldout:0": {
+          "deals": 2000,
+          "mean_levels_per_round": -0.00175,
+          "bootstrap_95_ci": [
+            -0.02125,
+            0.01775
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "heldout:1": {
+          "deals": 2000,
+          "mean_levels_per_round": 0.0065,
+          "bootstrap_95_ci": [
+            -0.00875,
+            0.021756249999999963
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "heldout:2": {
+          "deals": 2000,
+          "mean_levels_per_round": -0.00575,
+          "bootstrap_95_ci": [
+            -0.02500624999999999,
+            0.01425
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        }
+      },
+      "raw_file_sha256": "77d69067a878b0eb9592786c50aaeb63d02c56895a4c00b9e38195b97cb81cb3",
+      "raw_duplicate_cells_verified": 17
+    },
+    "half_lr/development.json": {
+      "candidate_sha256": "6cd944888c26dd8a86bd08ecd7e906a2fff1968955a1944551811773c7baf585",
+      "control_sha256": "ebb614f35f825e835c9d5b18bdc5a6efb0f79d5ba5ed9bfcdf44eca98ae139fe",
+      "deals": 2000,
+      "matches": 500,
+      "excluded_deals": 0,
+      "excluded_matches": 0,
+      "net": 0.10425,
+      "net_ci": [
+        0.05074375000000001,
+        0.15900624999999996
+      ],
+      "wins": 276,
+      "win_rate": 0.552,
+      "win_ci": [
+        0.508179738010616,
+        0.5950273305813826
+      ],
+      "styles": {
+        "greedy": {
+          "deals": 2000,
+          "mean_levels_per_round": 0.01875,
+          "bootstrap_95_ci": [
+            -0.030262499999999977,
+            0.06876249999999993
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:bomb-happy": {
+          "deals": 2000,
+          "mean_levels_per_round": 0.011,
+          "bootstrap_95_ci": [
+            -0.04901874999999997,
+            0.07025
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:bomb-shy": {
+          "deals": 2000,
+          "mean_levels_per_round": 0.036,
+          "bootstrap_95_ci": [
+            -0.00725,
+            0.08075624999999997
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:high-lead": {
+          "deals": 2000,
+          "mean_levels_per_round": 0.006,
+          "bootstrap_95_ci": [
+            -0.01675,
+            0.029756249999999963
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:low-lead": {
+          "deals": 2000,
+          "mean_levels_per_round": -0.0085,
+          "bootstrap_95_ci": [
+            -0.04325,
+            0.0245
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "heldout:0": {
+          "deals": 2000,
+          "mean_levels_per_round": -0.002,
+          "bootstrap_95_ci": [
+            -0.02125,
+            0.01675
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "heldout:1": {
+          "deals": 2000,
+          "mean_levels_per_round": 0.005,
+          "bootstrap_95_ci": [
+            -0.01075,
+            0.020756249999999966
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "heldout:2": {
+          "deals": 2000,
+          "mean_levels_per_round": -0.0025,
+          "bootstrap_95_ci": [
+            -0.022256249999999988,
+            0.01725
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        }
+      },
+      "raw_file_sha256": "04c76dea06a9fdf4c65600638e894b300c4cf3e5e499112fe63f1f3965abf7e0",
+      "raw_duplicate_cells_verified": 17
+    },
+    "half-v-control-development.json": {
+      "candidate_sha256": "6cd944888c26dd8a86bd08ecd7e906a2fff1968955a1944551811773c7baf585",
+      "control_sha256": "be784c81503cb61a0ff6ff7c5657bf0a636bc1c408f872bca459c08581660282",
+      "deals": 2000,
+      "matches": 500,
+      "excluded_deals": 0,
+      "excluded_matches": 0,
+      "net": 0.04375,
+      "net_ci": [
+        -0.007506249999999989,
+        0.09800624999999998
+      ],
+      "wins": 261,
+      "win_rate": 0.522,
+      "win_ci": [
+        0.47821548941356756,
+        0.5654490396061242
+      ],
+      "styles": {
+        "greedy": {
+          "deals": 2000,
+          "mean_levels_per_round": -0.027,
+          "bootstrap_95_ci": [
+            -0.07800624999999999,
+            0.02626249999999993
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:bomb-happy": {
+          "deals": 2000,
+          "mean_levels_per_round": 0.05425,
+          "bootstrap_95_ci": [
+            -0.0065,
+            0.11501249999999993
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:bomb-shy": {
+          "deals": 2000,
+          "mean_levels_per_round": 0.01325,
+          "bootstrap_95_ci": [
+            -0.03200624999999999,
+            0.05925624999999996
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:high-lead": {
+          "deals": 2000,
+          "mean_levels_per_round": -0.00125,
+          "bootstrap_95_ci": [
+            -0.02475,
+            0.022256249999999964
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:low-lead": {
+          "deals": 2000,
+          "mean_levels_per_round": -0.046,
+          "bootstrap_95_ci": [
+            -0.08025,
+            -0.01225
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "heldout:0": {
+          "deals": 2000,
+          "mean_levels_per_round": -0.00025,
+          "bootstrap_95_ci": [
+            -0.02,
+            0.01875
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "heldout:1": {
+          "deals": 2000,
+          "mean_levels_per_round": -0.0015,
+          "bootstrap_95_ci": [
+            -0.016,
+            0.01325
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "heldout:2": {
+          "deals": 2000,
+          "mean_levels_per_round": 0.00325,
+          "bootstrap_95_ci": [
+            -0.01525,
+            0.021756249999999963
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        }
+      },
+      "raw_file_sha256": "167dea060481af68c1cfa3d323756c34eeed97aef9b9bfac19e0eb65d2f350c8",
+      "raw_duplicate_cells_verified": 17
+    }
+  },
+  "selection": {
+    "per_seed_direct_net": [
+      0.04275,
+      0.04375
+    ],
+    "equal_weight_net": 0.04325,
+    "stratified_whole_deal_bootstrap_95_ci": [
+      0.003875,
+      0.08225312499999973
+    ],
+    "bootstrap_samples": 20000,
+    "bootstrap_seed": 2026092620,
+    "both_training_seeds_positive": true,
+    "reproduced_heldout_style_regressions": [],
+    "clear_direct_full_match_regression": false,
+    "half_lr_selected": true,
+    "uncertainty": "Conditional on these two trained model pairs; does not characterize general training-seed variance."
+  },
+  "quota_used_hours": 16.48,
+  "quota_remaining_hours": 13.52,
+  "round2_quota_hours": 8.19,
+  "campaign_quota_hours": 16.38,
+  "paid_cost_usd": 0
+}

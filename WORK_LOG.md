@@ -1,3 +1,26 @@
+# Current plan update — September 25, 2026
+
+- Consolidated DESIGN.md v0.6, STAGE_C_TODO.md T0--T8 and TRAINING.md around
+  randomly initialized history Transformer self-play; old MLPs are evaluation-only.
+- Removed active MLP distillation, old replay/pool, teacher-reference pruning/KL
+  and belief-first gates. Standard and looped Transformers share the same
+  cold-start boundary, with separate history/auxiliary/compute comparisons.
+- Updated the implementation inventory, performance and compute guides, plus
+  repository entrypoints. Retained dated results and marked old proposals as
+  historical. Existing partial implementation and legacy models remain intact.
+- Documented public-history privacy, sequence PPO/cache requirements and the
+  need for history-aware evaluation. Engine-private forced-pass metadata is
+  not a public actor feature.
+- Scope is documentation. No runtime code, checkpoint, training job or cloud
+  resource was changed by this update. No new RL trainer is claimed ready.
+- Verification: `git diff --check` passed; 88 local links across 11 active
+  documents resolved, tables/fences were consistent, and stale-route checks
+  passed. Five historical-plan notices preserve their original bodies;
+  pre-existing `docs/PY_API.md` edits were unchanged. No runtime tests were
+  needed for this documentation-only update.
+
+The entries below are historical work logs, not the current task queue.
+
 # Overnight candidate support work
 
 Branch: `codex/overnight-candidates` in `wt-candidates`. Scope: C1(b) only.
@@ -48,3 +71,46 @@ Pending: final diff review and commit. No cloud resource or local long training 
   `docs/reports/search-danlm-transfer-500.*`; interpretation and limits
   are in `docs/reports/stage-c-search-transfer-2026-09-24.md`.
 - No model training, paid inference, GPU, or cloud job was started.
+
+## Behaviour probe and Transformer inventory — September 25 (Claude session)
+
+- Read-only inventory of what the history-Transformer route can reuse:
+  `docs/reports/transformer-inventory-2026-09-25.md` (since rewritten by the
+  v0.6 consolidation; the survey facts stand).
+- Log schema 3: `train/logs.py` and `eval/collect_belief.py --candidates`
+  record each decision's canonical candidate set, abstract ids and choice, and
+  per-token abstract id / forced flag / phase. Old schemas and loaders unchanged.
+- `train/behaviour_probe.py` plus `tests/test_behaviour_probe.py` (15 tests):
+  offline BC/NTP diagnostic with candidate, fixed-vocabulary and structured
+  vocabulary heads, flat control, `--window k` control, driver-split cells.
+  Diagnostic only under v0.6, never a gate; results in
+  `docs/reports/behaviour-probe-2026-09-25.md`.
+- Found and fixed a boundary issue: the engine's `forced` flag means "only pass
+  was legal"; it is removed from token inputs and pinned by a test. T2 must not
+  expose it either.
+- Local CPU only: two 3,000-round M1 collections (self-play and styled) and
+  seven probe arms under `.work/behaviour-probe/`. No GPU, no RL, no cloud.
+- `.venv` was missing; used `.work/external/danlm-venv` (3.12) with pip,
+  hypothesis and pytest-xdist added. Full Python suite: 610 passed, 1 failed
+  (tensorboard absent in that environment).
+
+## T1--T3 of the v0.6 route — September 25, later (Claude session, three subagents)
+
+- T1 `train/history_model.py` (lead): `PublicStream` (186-dim public tokens +
+  round + phase, no forced bit), `HistoryActor` with public-only
+  `encode_stream`, private query and full canonical candidate head,
+  `HistoryCritic` on obs + hidden counts, `history_ppo` checkpoint marker.
+  Adversarial tests `tests/test_history_model.py`: 68 cases pass.
+- T2 `train/history_rollout.py`, `train/history_ppo.py` (subagent): match
+  event store, sequence rollout buffer, PPO with full-prefix recompute,
+  atomic checkpoint/resume, manifest + metrics, CLI. 14 tests pass; CPU smoke
+  8 envs x 3 updates learns. Throughput falls with prefix length (2,500 to
+  580 decisions/s at mean prefix 144 to 720), recorded under T4.
+- T3 `eval/history_policy.py` + hooks in policies/duplicate/arena/batched/
+  danlm arena (subagent): scalar event source with Python forced-pass
+  resolution, exact token parity with VecEnv, per-leg/per-match resets,
+  DanLM lockstep invariant. 13 tests pass; 264 evaluator tests unchanged.
+- Full Python suite: 712 passed, 1 failed (tensorboard absent in the 3.12
+  environment), 1 skipped. Codex's uncommitted hunks in eval/ and train/ppo.py
+  verified intact. Nothing committed. No GPU, no cloud, no long training.
+- Receipts written in `docs/STAGE_C_TODO.md` T1--T3 and `docs/TRAINING.md`.

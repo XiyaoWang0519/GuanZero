@@ -1,10 +1,11 @@
-# M0 task tracker
+# M0 historical engine acceptance record
 
-Gate (DESIGN.md 1.2): the engine passes every test in RULES.md, replays
+Original M0 acceptance: the engine passes every test in RULES.md, replays
 OpenGuanDan traces without divergence and meets the throughput target
 (at least 100,000 decisions per second per core, random play, canonical mode).
 
-**Status: complete.** Report: `docs/reports/M0.md`.
+**Status: complete.** Report: `docs/reports/M0.md`. Current model work is
+tracked in [STAGE_C_TODO.md](STAGE_C_TODO.md); these engine results are retained.
 
 | # | Task | Check | Evidence | Status |
 |---|---|---|---|---|
@@ -23,8 +24,8 @@ OpenGuanDan traces without divergence and meets the throughput target
 ## Carried into M1
 
 1. The OpenGuanDan repository ships no baseline agents and no weights, so the
-   external ladder the M2 and M3 gates assume does not exist yet. See section 5
-   of the report; this needs a decision before M2.
+   original external M2/M3 ladder was unavailable in this audit. See section 5
+   of the report. The current independent-evaluation plan is DESIGN.md section 9.
 2. `docs/RULES.md` 11.2 and 14.5 were corrected: the canonical-mode guarantee
    the document stated cannot hold alongside its own reductions.
 3. Parity check O11 is documented rather than emulated: the simulator

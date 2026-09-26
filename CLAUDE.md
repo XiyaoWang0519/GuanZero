@@ -1,5 +1,23 @@
 # Guandan AI: build, test and style
 
+## Current model plan (September 25, 2026)
+
+Read `docs/DESIGN.md` v0.6 and `docs/STAGE_C_TODO.md` T0--T8 before model or
+training work. The current route is a history Transformer trained from random
+initialization by self-play RL; the optional looped decision module has a
+standard history Transformer control. Existing MLP players are evaluation-only:
+no weight/critic transfer, imitation, old replay, training opponents/partners,
+frozen-reference action filtering or MLP-reference KL in the new trainer.
+Training populations contain only current/past Transformer versions. Keep
+the existing tribute-only heuristic identical across initial arms.
+
+`docs/TRAINING.md` records actual entrypoint readiness. Old MLP commands,
+dated plans and offline behavior probes are not instructions to launch the
+new experiment. Preserve historical results and in-progress work. Do not
+claim implementation or GPU training completion from a documentation change.
+
+## Repository conventions
+
 Read `docs/RULES.md` before touching anything in `cpp/`. It is the acceptance
 standard: if the engine and that document disagree, one of them has a bug.
 `docs/DESIGN.md` holds the system design and the milestone list.
@@ -26,12 +44,12 @@ cmake --build build -j
 ./build/cpp/tests/gd_tests                 # C++ unit tests
 .venv/bin/python -m pytest -q tests oracle # Python suites and oracle
 ./scripts/check.sh                         # everything CI runs
-./scripts/preflight.sh cpu .work/preflight # real learner and checkpoint resume
+./scripts/preflight.sh cpu .work/preflight # legacy MLP update/resume check only
 ```
 
-First-run configuration, checkpoint evaluation, and the GPU launch procedure
-are in `docs/TRAINING.md`. M1 implementation readiness is tracked separately
-from the playing-strength gate in `docs/M1_TODO.md`.
+Current training readiness, independent checkpoint evaluation and GPU lifecycle
+requirements are in `docs/TRAINING.md`. `docs/M1_TODO.md` and
+`docs/STAGE_B_TODO.md` are historical evidence trackers, not the active queue.
 
 Sanitizer build. `-DGD_SANITIZE=ON` is address plus undefined; the variable
 also takes an explicit `-fsanitize` list.

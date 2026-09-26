@@ -1,7 +1,8 @@
 """A small policy interface shared by the arena and scripted probes."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+
+from dataclasses import dataclass, fields
 import hashlib
 import math
 from pathlib import Path
@@ -200,6 +201,10 @@ def load_policy(spec: str, device: str = "cpu", margin: float = 0.0) -> Policy:
       over the pruned set. A Stage B checkpoint uses its own temperature unless
       ``T`` overrides it; a DMC checkpoint needs ``T`` and prunes with itself,
       so it plays softmax(Q / T) over its own top-k plus pass.
+    - a ``stage == "history_ppo"`` checkpoint (``train.history_model``) loads
+      as an ``eval.history_policy.HistoryPolicy`` (greedy, or ``sample:`` at
+      its own temperature). Its ``needs_history`` flag tells the round loops
+      to feed it every public action; any other stage marker is rejected.
     """
     if not math.isfinite(margin) or margin < 0:
         raise ValueError("sampling margin must be nonnegative and finite")
@@ -212,13 +217,23 @@ def load_policy(spec: str, device: str = "cpu", margin: float = 0.0) -> Policy:
 
         style_name = spec[len("styled:"):]
         return StyledPolicy(fixed_style(style_name), name=spec)
-    if spec.startswith("search:"):
-        from .search import SearchPolicy
+    if spec.startswith("search:") or spec.startswith("search@"):
+        from .search import SearchConfig, SearchPolicy
 
-        checkpoint_path = spec.removeprefix("search:")
+        # search:<checkpoint>, or search@key=value,...:<checkpoint> with
+        # SearchConfig fields, e.g. search@unseen_threshold=30:ckpt.pt.
+        head, _, checkpoint_path = spec.partition(":")
+        overrides = {}
+        if head.startswith("search@"):
+            names = {f.name for f in fields(SearchConfig)}
+            for item in head.removeprefix("search@").split(","):
+                key, _, value = item.partition("=")
+                if key not in names or not value:
+                    raise ValueError(f"unknown search setting {item!r}")
+                overrides[key] = float(value) if "." in value else int(value)
         if not checkpoint_path:
             raise ValueError("search policy requires a checkpoint path")
-        return SearchPolicy(load_policy(checkpoint_path, device, margin))
+        return SearchPolicy(load_policy(checkpoint_path, device, margin), SearchConfig(**overrides))
     from train.ckpt import load_checkpoint
     from train.model import GuandanModel, ModelConfig
 
@@ -233,6 +248,13 @@ def load_policy(spec: str, device: str = "cpu", margin: float = 0.0) -> Policy:
     path = Path(spec)
     checkpoint = load_checkpoint(path, device=device)
     stage = checkpoint.get("stage", "dmc")
+    if stage == "history_ppo":
+        # A history Transformer player (train.history_model). It needs every
+        # public action fed in order: see eval.history_policy and the
+        # ``needs_history`` flag the round loops read.
+        from .history_policy import load_history_policy
+
+        return load_history_policy(path, device, margin, sample, temperature)
     tribute_policy = checkpoint.get("tribute_policy", "heuristic")
     if (stage, tribute_policy) not in (("dmc", "heuristic"), ("a2", "learned"),
                                        ("ppo", "heuristic"), ("ppo", "learned")):

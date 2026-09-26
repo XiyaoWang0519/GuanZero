@@ -1,13 +1,12 @@
-# Stage B implementation tracker: critic, PPO, league
+# Stage B historical record: MLP critic, PPO and league
 
-Status: complete, September 23, 2026 (drafted September 22). G1, G2 and G4
-passed, G3 passed as revised, G5 not passed; B11b is deferred. The strongest
-checkpoint is B11's main arm. See "Outcome" at the end. This is M2
-task 6 in `M2_TODO.md`, expanded so that independent sessions can each own
-one task. Design source: `DESIGN.md` 8.4 (Stage B), 9.1 (arena), 9.3 and
-9.4 (exploiter test). Rules of the house in `CLAUDE.md` still apply.
+This records the September 23, 2026 MLP experiments and their original gates.
+Current work follows [DESIGN.md](DESIGN.md) v0.6 and
+[STAGE_C_TODO.md](STAGE_C_TODO.md) T0--T8: random-start Transformer self-play,
+with old MLPs used only for evaluation. Decisions and task IDs below explain
+completed historical runs; they are not requirements for the new trainer.
 
-## Decisions carried in from M2 tasks 3 to 5
+## Historical decisions carried in from M2 tasks 3 to 5
 
 - **State tower stays v1.** Task 5 chose `no_history`. In
   `train/belief_model.py` that model is the v2 query block attending only to
@@ -23,7 +22,7 @@ one task. Design source: `DESIGN.md` 8.4 (Stage B), 9.1 (arena), 9.3 and
 - **Equal-compute rule.** Every strength claim compares against a baseline
   given the same wall-clock or update budget on the same hardware.
 
-## What already exists and is reused
+## Components used in those experiments
 
 | Piece | Where | Reuse |
 |---|---|---|
@@ -37,7 +36,7 @@ one task. Design source: `DESIGN.md` 8.4 (Stage B), 9.1 (arena), 9.3 and
 | Elo refresh | `eval/elo.py` | checkpoint ladder |
 | `load_policy` spec strings | `eval/policies.py` | opponent pool entries |
 
-## Gates for Stage B
+## Historical gates for Stage B
 
 1. **G1, critic quality.** On held-out M1 self-play rounds the critic's
    return MSE is below the MSE of the M1 play head's best `Q`, overall and in
@@ -81,7 +80,7 @@ one task. Design source: `DESIGN.md` 8.4 (Stage B), 9.1 (arena), 9.3 and
 A gate that fails is reported, not tuned around. The external DanZero and
 SDMC thresholds stay unavailable and are not claimed.
 
-## Tasks
+## Historical implementation tasks
 
 Each row is sized for one session. "Depends" names the row that must be
 merged first. Rows with no dependency can start now in parallel.
@@ -102,31 +101,14 @@ merged first. Rows with no dependency can start now in parallel.
 | B9 | **Exploiter test.** `train/exploiter.py` or a mode of B5: freeze a target checkpoint, train a fresh PPO agent against it only, fixed budget, report win rate. Run against the M1 final and the B8 checkpoint. | B5, B8 | G4 in `reports/stage-b-exploiter.md` | done, **G4 passed (primary and secondary)**: `frozen:<path>` plays any `load_policy` checkpoint (`CheckpointOpponent`); arms `train/configs/b9-exploit-{m1,league}.json`, the ppo-a recipe from the M1 final, 3,000 updates each; `eval/exploiter.py`, 6 tests in `tests/test_exploiter.py`. RTX 4090, 2.14 h, $1.59. 4,000 deals: m1 exploiter vs M1 +1.079 [+1.039, +1.118] (960/1000 matches), league exploiter vs league -0.097 [-0.136, -0.058] (404/1000); primary difference -1.175 [-1.233, -1.118]. Secondary, difference of gains over the start policy: -0.059 [-0.119, +0.003], a marginal pass: the budget buys about one level/round against either target, so the league is stronger but not clearly less exploitable ([report](reports/stage-b-exploiter.md)) |
 | B10 | **Docs and gate update.** Update `DESIGN.md` 8.4 with what was actually built, `M2_TODO.md` task 6 status, `TRAINING.md` with the Stage B commands, and the milestone table. | B6, B8, B9 | one report per gate linked from `M2_TODO.md` | done: `DESIGN.md` 8.4 as-built and gate results, M2 milestone row; `M2_TODO.md` task 6 and status rows with a report per gate; `TRAINING.md` section "Stage B"; `STAGE_C_TODO.md` start point moved to B11 main |
 | B11 | **Live exploiter in the league (proposed 2026-09-23 after B9).** A league run and an exploiter run on one host, cooperating through files: the exploiter always plays the league learner's newest snapshot (`follow:<dir>`, `FollowOpponent`), publishes itself every cycle (or early past a win rate) and resets to that snapshot; the league learner imports each published exploiter into its pool (`league_import_dir`, `League.import_new`, own cap `max_imports`). Configs `b11-main.json`, `b11-exploiter.json`, and `b11-control.json` (main without imports), all warm-started from the B8 league final, pool `league-b11.json` = B8's pool plus imports. | B8, B9 | G5 below, in `reports/stage-b-live-exploiter.md` | done, **G5 not passed, guard passed**: RTX 4090, 6.24 h, $4.67. The first launch was stopped after about an hour: with max_active_models 4 the imports were never drawn (now 16), and the exploiter now pins its target per cycle. Phase 1: 3 h per arm, main 1,262 updates with 5 imported exploiters (each beat main 53-60% at argmax), control 1,349. G5 at 1,500 evaluation-exploiter updates: gain against main minus against control -0.045 [-0.116, +0.023]. Guard: main vs control +0.005 [-0.019, +0.030]. Both beat the B8 final slightly (main +0.075 [+0.038, +0.115]). All arms ran 4 engine threads (nproc bug), equally. [report](reports/stage-b-live-exploiter.md) |
-| B11b | **B11 rerun at a real dose (deferred, 2026-09-23).** B11 found no measurable effect, but main trained only 1,262 updates with 5 exploiters, the first arriving at update ~400, and every arm ran 4 engine threads. Rerun main, exploiter and control with the thread fix (size with `python -m infra.cpu_budget`, check `top` on the first poll), a longer budget or a shorter exploiter cycle, and G5 measured at two training budgets. Start from the B11 finals or the B8 final, the same for both arms. Needs an account top-up first. | B11 | G5 as written | pending, not scheduled |
 
-## Parallel start
+## Follow-up boundary
 
-Sessions that can begin immediately: B0, B1, B3, B4. B2 follows B1 within a
-day. B7 follows B4. B5 waits for B2, B3, B4. The initial session verifies the
-merged result, runs `./scripts/check.sh` and owns B6 onward, because those
-tasks spend money.
-
-## Not in scope
-
-- v2 round-history tower in the playing policy, KV cache in rollout,
-  sequence RL. Deferred per M2 task 5; conditional row C5 in
-  `STAGE_C_TODO.md`.
-- v3 match memory. Re-test after B8 with a shuffled-opponent-history
-  control and match-level metrics, not belief CE.
-- Endgame search, human play UI, OpenGuanDan parity beyond what exists.
-
-## What follows Stage B
-
-`STAGE_C_TODO.md` (drafted September 23 from the merged research review,
-`DESIGN.md` v0.5): the DanLM external baseline under a `botzone` rules
-profile, the top-32 pruning audit, the learning-signal arms (Q-critic with
-expected SARSA, advantage filtering, EMA, match-level value, scale), and
-search over sampled hidden hands. B10 and B11 stay here and finish first.
+The proposed B11b warm-start rerun and the old history-after-belief schedule
+are retired from the work queue. Completed results remain below and in the
+dated reports. The new trainer must not import this league, its M1 reference
+or its critic. Reusable mechanics require the new source/privacy/sequence
+contracts in [DESIGN.md](DESIGN.md).
 
 ## Outcome
 
@@ -138,10 +120,10 @@ search over sampled hidden hands. B10 and B11 stay here and finish first.
 | G4 exploitability | passed; the secondary gain clause at the margin | [stage-b-exploiter.md](reports/stage-b-exploiter.md) |
 | G5 live exploiter | not passed; no strength cost | [stage-b-live-exploiter.md](reports/stage-b-live-exploiter.md) |
 
-What carries forward: B11 main is the strongest checkpoint. A fixed exploiter
-budget buys about one level per round against every Stage B model tested, so
-exploitability has not fallen with strength. A league cap of 4 active models
-starves new entries at 2,048 environments. The style-conditioned learner from
-M2 task 6 was not built. Deferred: B11b (the live exploiter at a real dose)
-and the v3 retest above.
-
+At the end of the September 23 comparison, B11 main was the selected
+checkpoint. The fixed-budget exploiter results did not establish that
+exploitability fell with strength. The active-model cap of 4 starved new
+entries in that workload. These remain useful observations, not a statement
+about today's default checkpoint or a recommendation to resume those arms.
+Later MLP continuation results are indexed in
+[the campaign report](reports/kaggle-campaign-results-2026-09-26.md).

@@ -12,6 +12,11 @@ class Decision:
     seat: int
     phase: int
     prefix: int = 0
+    # Schema 3 only: the canonical candidate set the actor chose from, the
+    # abstract id of every candidate and the index of the chosen one.
+    cand: np.ndarray | None = None
+    cand_abstract: np.ndarray | None = None
+    choice: int = -1
 
 
 class ReplayBuffer:

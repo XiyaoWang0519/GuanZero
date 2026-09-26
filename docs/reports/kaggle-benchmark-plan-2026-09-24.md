@@ -1,5 +1,12 @@
 # Kaggle 免费 GPU 测速：已完成
 
+> Historical record. The proposals, budgets and next steps below belong to
+> this dated experiment. The active route is now random-start Transformer
+> self-play, with old MLPs used only for evaluation; see
+> [DESIGN.md](../DESIGN.md) and [STAGE_C_TODO.md](../STAGE_C_TODO.md).
+> Preserve the recorded results and artifacts; do not launch an old plan as
+> the new experiment or infer current provider state from its snapshot.
+
 用户随后明确批准私有上传；version 2 已完成，实际脚本耗时 337.94 秒，额度消耗约 0.10 小时。最终结果见 [测速报告](kaggle-benchmark-2026-09-24.md)。下文保留原始审批前计划，状态及 840/900 秒预算已被 version 2 的 720/780 秒预算取代。
 
 # Kaggle 免费 GPU 测速：已准备，等待上传授权

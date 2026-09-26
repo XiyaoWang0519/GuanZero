@@ -1,0 +1,569 @@
+"""Public match-event store, sequence rollout buffer and collector (STAGE_C T2).
+
+Three pieces sit between ``gd.VecEnv`` and the history learner:
+
+* ``MatchEventStore``: one ``PublicStream`` per ``(env_id, match_id)``. Drained
+  ``PublicActionEvent``s are routed by that key, and so are pending decisions,
+  so a match whose first decision arrives before any of its events (round 0
+  has no tribute) still gets its own empty stream. Streams outlive the
+  collection chunk that produced them: a match continues across PPO updates,
+  and its earlier tokens stay available while any stored row still cites
+  them. ``prune`` drops a match only when it is no longer the environment's
+  current match and no retained row points at it.
+* ``SequenceRolloutBuffer``: every learner row with its environment, match,
+  round, seat, policy version, history prefix, observation, hidden counts
+  (critic only), the full canonical candidate set in engine order, chosen
+  index, behaviour log-probability, value, reward, done and phase.
+  Trajectories are keyed ``(env, team, round)`` exactly as ``train/ppo.py``'s
+  buffer keys them: the team's per-round return lands on the team's last
+  stored row of the round, ``done`` is set there, all other rewards are zero
+  and GAE never bootstraps across a round end. Only completed trajectories
+  train; rows of rounds still in progress carry over to the next update.
+* ``HistoryCollector``: the vector rollout. Per step it calls ``pending()``,
+  drains public events into the store and finished rounds into the buffer,
+  lets ``HistoryActor.act`` choose for play-phase rows of the learner policy
+  and keeps the engine's ``greedy_choice`` for tribute and back-tribute rows
+  (the declared exchange-only heuristic of DESIGN 1.3), stores the rows and
+  steps the environment.
+
+The store never reads an event's ``forced`` flag: ``PublicStream.append``
+consumes only seat, encoded action, cards left, round index and phase.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Callable, Iterator, Sequence
+
+import gd
+import numpy as np
+import torch
+
+from train.history_model import (HIDDEN_DIM, PLAY_PHASE, DecisionInputs, HistoryActor,
+                                 PublicStream, StreamBatch)
+
+LEARNER = 0     # policy identity of the collecting learner in a seat assignment
+NUM_SEATS = 4
+
+
+# ---- event store ---------------------------------------------------------------
+
+class MatchEventStore:
+    """Raw public token streams keyed by ``(env_id, match_id)``."""
+
+    def __init__(self) -> None:
+        self.streams: dict[tuple[int, int], PublicStream] = {}
+        self.current: dict[int, int] = {}
+
+    def stream(self, env_id: int, match_id: int) -> PublicStream:
+        """The stream of that match, created empty when first seen."""
+        key = (int(env_id), int(match_id))
+        stream = self.streams.get(key)
+        if stream is None:
+            latest = self.current.get(key[0], -1)
+            if key[1] < latest:
+                raise ValueError(f"match id went backwards for environment {key[0]}: "
+                                 f"{key[1]} after {latest}")
+            stream = PublicStream(key[1])
+            self.streams[key] = stream
+            self.current[key[0]] = key[1]
+        return stream
+
+    def ingest(self, events: Sequence[Any]) -> int:
+        """Append drained public events, in order, to their match streams."""
+        for event in events:
+            self.stream(event.env_id, event.match_id).append(event)
+        return len(events)
+
+    def prefix(self, env_id: int, match_id: int) -> int:
+        return self.stream(env_id, match_id).prefix
+
+    def prune(self, cited: set[tuple[int, int]]) -> int:
+        """Drop streams of past matches no retained row cites. Returns the count."""
+        stale = [key for key in self.streams
+                 if key not in cited and self.current.get(key[0]) != key[1]]
+        for key in stale:
+            del self.streams[key]
+        return len(stale)
+
+    @property
+    def tokens(self) -> int:
+        return sum(stream.prefix for stream in self.streams.values())
+
+    def __len__(self) -> int:
+        return len(self.streams)
+
+
+# ---- GAE --------------------------------------------------------------------------
+
+def compute_gae(values: np.ndarray, rewards: np.ndarray, dones: np.ndarray,
+                gamma: float = 1.0, lam: float = 0.95,
+                mask: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """Generalized advantage estimation along the last axis, ``[..., T]``.
+
+    Same semantics as the Stage B buffer: ``dones[t]`` is a terminal step and
+    nothing is bootstrapped across it, padding (``mask`` false) contributes
+    nothing, and the value past the last column is zero, so a trajectory that
+    ends with its round is terminal. Returns float32 ``(advantages, returns)``
+    with ``returns = advantages + values``.
+    """
+    values = np.asarray(values, np.float64)
+    rewards = np.asarray(rewards, np.float64)
+    dones = np.asarray(dones, bool)
+    if not (values.shape == rewards.shape == dones.shape):
+        raise ValueError("values, rewards and dones must share a shape")
+    valid = np.ones(values.shape, bool) if mask is None else np.asarray(mask, bool)
+    if valid.shape != values.shape:
+        raise ValueError("mask must match values")
+    batch_shape = values.shape[:-1]
+    advantages = np.zeros(values.shape, np.float64)
+    next_adv = np.zeros(batch_shape, np.float64)
+    next_value = np.zeros(batch_shape, np.float64)
+    for t in range(values.shape[-1] - 1, -1, -1):
+        live = 1.0 - dones[..., t]
+        delta = rewards[..., t] + gamma * next_value * live - values[..., t]
+        adv = delta + gamma * lam * live * next_adv
+        keep = valid[..., t]
+        adv = np.where(keep, adv, 0.0)
+        advantages[..., t] = adv
+        next_adv = adv
+        next_value = np.where(keep, values[..., t], 0.0)
+    returns = np.where(valid, advantages + values, 0.0)
+    return advantages.astype(np.float32), returns.astype(np.float32)
+
+
+# ---- rollout buffer ----------------------------------------------------------------
+
+ROW_FIELDS = ("env", "match", "round", "seat", "version", "prefix", "phase", "traj",
+              "chosen", "logp", "cand_count")
+
+
+def ragged_index(starts: np.ndarray, counts: np.ndarray) -> np.ndarray:
+    """Flat source indices of the ragged slices ``starts[i]:starts[i]+counts[i]``."""
+    total = int(counts.sum())
+    if total == 0:
+        return np.zeros(0, np.int64)
+    first = np.repeat(starts - (np.cumsum(counts) - counts), counts)
+    return first + np.arange(total, dtype=np.int64)
+
+
+@dataclass
+class Trajectory:
+    env: int
+    team: int
+    match: int
+    round: int
+    rows: list[int] = field(default_factory=list)
+    complete: bool = False
+    reward: float = 0.0
+
+
+class SequenceRolloutBuffer:
+    """Learner rows grouped into ``(env, team, round)`` trajectories.
+
+    Rows are appended per vector step as small array chunks and concatenated
+    once by ``finalize``; that is fine for the CPU trainer and keeps every row
+    addressable by one global index. ``values`` are written by the learner
+    (current critic, at ``learn`` time) right before ``finalize``.
+    """
+
+    def __init__(self, obs_dim: int = int(gd.OBS_DIM), act_dim: int = int(gd.ACT_DIM)) -> None:
+        self.obs_dim = int(obs_dim)
+        self.act_dim = int(act_dim)
+        self.chunks: list[dict[str, np.ndarray]] = []
+        self.n_rows = 0
+        self.trajectories: list[Trajectory] = []
+        self.open: dict[tuple[int, int], int] = {}
+        self.data: dict[str, np.ndarray] | None = None
+        self.samples = np.zeros(0, np.int64)
+        self.value = np.zeros(0, np.float32)
+        self.reward = np.zeros(0, np.float32)
+        self.done = np.zeros(0, bool)
+        self.advantage = np.zeros(0, np.float32)
+        self.returns = np.zeros(0, np.float32)
+
+    # -- collection -----------------------------------------------------------
+
+    def add_step(self, *, keep: np.ndarray, env_id: np.ndarray, match_id: np.ndarray,
+                 round_index: np.ndarray, seat: np.ndarray, phase: np.ndarray,
+                 obs: np.ndarray, hidden: np.ndarray, cand: np.ndarray, offsets: np.ndarray,
+                 chosen: np.ndarray, logp: np.ndarray, prefix: np.ndarray,
+                 version: int) -> int:
+        """Store the batch rows where ``keep`` is true. ``obs``/``cand`` are the
+        batch's arrays (uint8 or the engine's binary float32), ``offsets`` the
+        batch's ragged candidate offsets, ``chosen`` the local candidate index
+        of every batch row and ``prefix`` the history length each row read."""
+        rows = np.flatnonzero(np.asarray(keep, bool))
+        if rows.size == 0:
+            return 0
+        env = np.asarray(env_id, np.int64)[rows]
+        match = np.asarray(match_id, np.int64)[rows]
+        rnd = np.asarray(round_index, np.int64)[rows]
+        seats = np.asarray(seat, np.int64)[rows]
+        offsets = np.asarray(offsets, np.int64)
+        counts = offsets[rows + 1] - offsets[rows]
+        chosen = np.asarray(chosen, np.int64)[rows]
+        if ((chosen < 0) | (chosen >= counts)).any():
+            raise ValueError("chosen index outside the row's candidate set")
+        traj = np.empty(rows.size, np.int64)
+        for i in range(rows.size):
+            key = (int(env[i]), int(seats[i]) % 2)
+            t = self.open.get(key)
+            if t is None:
+                t = len(self.trajectories)
+                self.trajectories.append(Trajectory(key[0], key[1], int(match[i]), int(rnd[i])))
+                self.open[key] = t
+            record = self.trajectories[t]
+            if record.match != int(match[i]) or record.round != int(rnd[i]):
+                raise ValueError("finish_round was not called before the next round's decisions")
+            record.rows.append(self.n_rows + i)
+            traj[i] = t
+        src = ragged_index(offsets[rows], counts)
+        chunk = {
+            "env": env, "match": match, "round": rnd, "seat": seats,
+            "version": np.full(rows.size, int(version), np.int64),
+            "prefix": np.asarray(prefix, np.int64)[rows],
+            "phase": np.asarray(phase, np.int64)[rows], "traj": traj, "chosen": chosen,
+            "logp": np.asarray(logp, np.float32)[rows], "cand_count": counts,
+            "obs": np.asarray(obs)[rows].astype(np.uint8, copy=True),
+            "hidden": np.asarray(hidden).reshape(len(offsets) - 1, HIDDEN_DIM)[rows]
+            .astype(np.uint8, copy=True),
+            "cand": np.asarray(cand)[src].astype(np.uint8, copy=True),
+        }
+        self.chunks.append(chunk)
+        self.n_rows += rows.size
+        self.data = None
+        return rows.size
+
+    def finish_round(self, env_id: int, match_id: int, round_index: int, seat_return) -> None:
+        """Close both teams' trajectories of a finished round with the team's
+        return (``seat_return[team]``; seats 0/2 are team 0, 1/3 team 1)."""
+        for team in (0, 1):
+            t = self.open.get((int(env_id), team))
+            if t is None:
+                continue        # this team had no learner decision in the round
+            record = self.trajectories[t]
+            if record.match != int(match_id) or record.round != int(round_index):
+                raise ValueError("finished round does not match the open trajectory")
+            record.reward = float(seat_return[team])
+            record.complete = True
+            del self.open[(int(env_id), team)]
+
+    def finish_rounds(self, results: Sequence[Any]) -> None:
+        for r in results:
+            self.finish_round(int(r.env_id), int(r.match_id), int(r.round_index), r.seat_return)
+
+    # -- storage -----------------------------------------------------------
+
+    def compact(self) -> dict[str, np.ndarray]:
+        """All rows as contiguous arrays (cached until the next append)."""
+        if self.data is None:
+            if self.chunks:
+                data = {name: np.concatenate([c[name] for c in self.chunks])
+                        for name in (*ROW_FIELDS, "obs", "hidden", "cand")}
+            else:
+                data = {name: np.zeros(0, np.int64) for name in ROW_FIELDS}
+                data["logp"] = np.zeros(0, np.float32)
+                data["obs"] = np.zeros((0, self.obs_dim), np.uint8)
+                data["hidden"] = np.zeros((0, HIDDEN_DIM), np.uint8)
+                data["cand"] = np.zeros((0, self.act_dim), np.uint8)
+            data["cand_start"] = np.cumsum(data["cand_count"]) - data["cand_count"]
+            self.data = data
+        return self.data
+
+    def __len__(self) -> int:
+        return self.n_rows
+
+    def completed_rows(self) -> np.ndarray:
+        """Rows of completed trajectories, trajectory-major, time order within."""
+        return np.asarray([r for t in self.trajectories if t.complete for r in t.rows], np.int64)
+
+    def cited_matches(self) -> set[tuple[int, int]]:
+        data = self.compact()
+        return set(zip(data["env"].tolist(), data["match"].tolist()))
+
+    # -- learning -----------------------------------------------------------
+
+    def finalize(self, values: np.ndarray, gamma: float = 1.0, lam: float = 0.95) -> int:
+        """GAE over completed trajectories. ``values`` is one value per stored
+        row (``len(self)``); only completed rows are read. Returns the number
+        of trainable samples."""
+        values = np.asarray(values, np.float32)
+        if values.shape != (self.n_rows,):
+            raise ValueError("one value per stored row is required")
+        self.compact()
+        self.value = values
+        self.reward = np.zeros(self.n_rows, np.float32)
+        self.done = np.zeros(self.n_rows, bool)
+        self.advantage = np.zeros(self.n_rows, np.float32)
+        self.returns = np.zeros(self.n_rows, np.float32)
+        complete = [t for t in self.trajectories if t.complete]
+        for t in complete:
+            last = t.rows[-1]
+            self.reward[last] = t.reward
+            self.done[last] = True
+        self.samples = self.completed_rows()
+        if not complete:
+            return 0
+        longest = max(len(t.rows) for t in complete)
+        shape = (len(complete), longest)
+        v = np.zeros(shape, np.float32)
+        r = np.zeros(shape, np.float32)
+        d = np.zeros(shape, bool)
+        m = np.zeros(shape, bool)
+        for i, t in enumerate(complete):
+            rows = np.asarray(t.rows, np.int64)
+            n = rows.size
+            v[i, :n] = values[rows]
+            r[i, :n] = self.reward[rows]
+            d[i, :n] = self.done[rows]
+            m[i, :n] = True
+        adv, ret = compute_gae(v, r, d, gamma, lam, mask=m)
+        for i, t in enumerate(complete):
+            rows = np.asarray(t.rows, np.int64)
+            self.advantage[rows] = adv[i, :rows.size]
+            self.returns[rows] = ret[i, :rows.size]
+        return int(self.samples.size)
+
+    def match_groups(self) -> dict[tuple[int, int], np.ndarray]:
+        """Completed sample rows grouped by ``(env, match)``."""
+        data = self.compact()
+        groups: dict[tuple[int, int], list[int]] = {}
+        for row in self.samples.tolist():
+            groups.setdefault((int(data["env"][row]), int(data["match"][row])), []).append(row)
+        return {key: np.asarray(rows, np.int64) for key, rows in groups.items()}
+
+    def minibatches(self, matches_per_batch: int, rng: np.random.Generator
+                    ) -> Iterator[np.ndarray]:
+        """Row index arrays, each covering ``matches_per_batch`` whole matches."""
+        groups = self.match_groups()
+        keys = list(groups)
+        order = rng.permutation(len(keys))
+        for begin in range(0, len(keys), max(1, int(matches_per_batch))):
+            picked = [keys[i] for i in order[begin:begin + max(1, int(matches_per_batch))]]
+            yield np.concatenate([groups[key] for key in picked])
+
+    def next_iteration(self) -> set[tuple[int, int]]:
+        """Discard completed trajectories, carry rows of rounds still in progress
+        and return the ``(env, match)`` keys those rows still cite."""
+        data = self.compact()
+        keep_traj = [i for i, t in enumerate(self.trajectories) if not t.complete]
+        remap = {old: new for new, old in enumerate(keep_traj)}
+        rows = np.asarray([r for i in keep_traj for r in self.trajectories[i].rows], np.int64)
+        rows.sort()
+        row_remap = {int(old): new for new, old in enumerate(rows.tolist())}
+        kept = []
+        for i in keep_traj:
+            t = self.trajectories[i]
+            kept.append(Trajectory(t.env, t.team, t.match, t.round,
+                                   [row_remap[r] for r in t.rows], False, 0.0))
+        self.trajectories = kept
+        self.open = {key: remap[t] for key, t in self.open.items()}
+        if rows.size:
+            counts = data["cand_count"][rows]
+            src = ragged_index(data["cand_start"][rows], counts)
+            chunk = {name: data[name][rows] for name in (*ROW_FIELDS, "obs", "hidden")}
+            chunk["traj"] = np.asarray([remap[int(t)] for t in data["traj"][rows]], np.int64)
+            chunk["cand"] = data["cand"][src]
+            self.chunks = [chunk]
+        else:
+            self.chunks = []
+        self.n_rows = int(rows.size)
+        self.data = None
+        self.samples = np.zeros(0, np.int64)
+        self.value = self.reward = self.advantage = self.returns = np.zeros(0, np.float32)
+        self.done = np.zeros(0, bool)
+        return self.cited_matches()
+
+    # -- actor inputs -----------------------------------------------------------
+
+    def decision_inputs(self, rows: np.ndarray, store: MatchEventStore, device,
+                        streams: dict[tuple[int, int], PublicStream] | None = None
+                        ) -> tuple[DecisionInputs, torch.Tensor]:
+        """``DecisionInputs`` for stored rows against the store's current
+        streams, plus the flat index of each row's chosen candidate. Each
+        row's ``prefix`` is what it read at collection, however many tokens
+        the match has gained since. ``streams`` overrides the store's streams
+        per match (tests truncate them to check prefix invariance)."""
+        data = self.compact()
+        rows = np.asarray(rows, np.int64)
+        keys = list(zip(data["env"][rows].tolist(), data["match"][rows].tolist()))
+        unique = list(dict.fromkeys(keys))
+        index = {key: i for i, key in enumerate(unique)}
+        picked = [(streams or {}).get(key) or store.stream(*key) for key in unique]
+        prefix = data["prefix"][rows]
+        for key, p in zip(keys, prefix.tolist()):
+            if p > picked[index[key]].prefix:
+                raise ValueError("a stored row cites more history than its match has")
+        counts = data["cand_count"][rows]
+        src = ragged_index(data["cand_start"][rows], counts)
+        offsets = np.concatenate(([0], np.cumsum(counts)))
+        inputs = DecisionInputs(
+            streams=StreamBatch.from_streams(picked, device),
+            match_index=torch.as_tensor([index[key] for key in keys], dtype=torch.long,
+                                        device=device),
+            prefix=torch.as_tensor(prefix, dtype=torch.long, device=device),
+            obs=torch.as_tensor(data["obs"][rows], device=device),
+            seat=torch.as_tensor(data["seat"][rows], dtype=torch.long, device=device),
+            cand=torch.as_tensor(data["cand"][src], device=device),
+            offsets=torch.as_tensor(offsets, dtype=torch.long, device=device))
+        chosen = torch.as_tensor(offsets[:-1] + data["chosen"][rows], dtype=torch.long,
+                                 device=device)
+        return inputs, chosen
+
+
+# ---- collector -------------------------------------------------------------------
+
+SeatPolicy = Callable[[int, int], Sequence[int]]
+
+
+def all_learner(env_id: int, match_id: int) -> Sequence[int]:
+    """Default seat assignment: current-policy copies in all four seats."""
+    return (LEARNER,) * NUM_SEATS
+
+
+@dataclass
+class CollectStats:
+    steps: int = 0
+    decisions: int = 0          # pending rows stepped (all seats, all phases)
+    learner_rows: int = 0       # rows stored for PPO
+    rounds: int = 0
+    matches: int = 0
+    team0_return: float = 0.0   # sum of seat_return[0] over finished rounds (zero-sum: team 1 is its negative)
+    gain: float = 0.0           # sum of RoundResult.gain (levels won) over finished rounds
+    prefix_sum: int = 0
+    prefix_max: int = 0
+
+    @property
+    def mean_prefix(self) -> float:
+        return self.prefix_sum / self.learner_rows if self.learner_rows else 0.0
+
+
+class HistoryCollector:
+    """Vector rollout of the history actor with heuristic tribute.
+
+    ``env`` must have been built with ``log_public_actions=True`` and a
+    ``log_env_limit`` covering every environment; ``reset()`` is called once,
+    lazily, on the first step. ``seat_policy(env_id, match_id)`` records the
+    policy identity of each seat when a match starts; only rows of the
+    ``LEARNER`` identity are stored. This first version has no other policy to
+    play the remaining seats, so any other identity raises.
+    """
+
+    def __init__(self, env: Any, actor: HistoryActor, store: MatchEventStore,
+                 buffer: SequenceRolloutBuffer, generator: torch.Generator | None = None,
+                 device: str | torch.device = "cpu", seat_policy: SeatPolicy = all_learner,
+                 record_choices: bool = False) -> None:
+        self.env = env
+        self.actor = actor
+        self.store = store
+        self.buffer = buffer
+        self.generator = generator
+        self.device = torch.device(device)
+        self.seat_policy = seat_policy
+        self.assignments: dict[tuple[int, int], np.ndarray] = {}
+        self.results: list[Any] = []            # RoundResults drained by the last collect()
+        self.choice_log: list[np.ndarray] | None = [] if record_choices else None
+        self.started = False
+        self.version = 0
+
+    def assignment(self, env_id: int, match_id: int) -> np.ndarray:
+        key = (int(env_id), int(match_id))
+        seats = self.assignments.get(key)
+        if seats is None:
+            seats = np.asarray(list(self.seat_policy(*key)), np.int64)
+            if seats.shape != (NUM_SEATS,):
+                raise ValueError("a seat assignment names four policies")
+            if (seats != LEARNER).any():
+                raise NotImplementedError("only current-policy copies can fill seats yet")
+            self.assignments[key] = seats
+            stale = [k for k in self.assignments if k[0] == key[0] and k[1] < key[1]]
+            for k in stale:
+                del self.assignments[k]
+        return seats
+
+    def step(self, stats: CollectStats | None = None) -> int:
+        """One vector step. Returns the number of pending rows stepped."""
+        stats = stats if stats is not None else CollectStats()
+        env = self.env
+        if not self.started:
+            env.reset()
+            self.started = True
+        batch = env.pending()
+        # Contract order: events, ended rounds, then this batch's rows.
+        self.store.ingest(env.drain_public_actions())
+        results = env.drain_finished_rounds()
+        self.buffer.finish_rounds(results)
+        for r in results:
+            self.results.append(r)
+            stats.rounds += 1
+            stats.matches += int(r.match_winner >= 0)
+            stats.team0_return += float(r.seat_return[0])
+            stats.gain += float(r.gain)
+        n = int(batch.rows)
+        if not n:
+            raise RuntimeError("environment produced no pending decisions")
+        env_id = np.asarray(batch.env_id, np.int64)
+        match_id = np.asarray(batch.match_id, np.int64)
+        round_index = np.asarray(batch.round_index, np.int64)
+        seat = np.asarray(batch.seat, np.int64)
+        phase = np.asarray(batch.phase, np.int64)
+        offsets = np.asarray(batch.offsets, np.int64)
+        counts = offsets[1:] - offsets[:-1]
+        obs = np.asarray(batch.obs)
+        cand = np.asarray(batch.cand)
+        hidden = np.asarray(batch.hidden_counts)
+        choices = np.array(batch.greedy_choice, dtype=np.int32, copy=True)
+        logp = np.zeros(n, np.float32)
+        prefix = np.zeros(n, np.int64)
+        learner = np.zeros(n, bool)
+        for i in range(n):
+            seats = self.assignment(env_id[i], match_id[i])
+            learner[i] = seats[seat[i]] == LEARNER
+            prefix[i] = self.store.stream(env_id[i], match_id[i]).prefix
+        acting = learner & (phase == PLAY_PHASE)
+        rows = np.flatnonzero(acting)
+        if rows.size:
+            keys = list(zip(env_id[rows].tolist(), match_id[rows].tolist()))
+            unique = list(dict.fromkeys(keys))
+            index = {key: i for i, key in enumerate(unique)}
+            src = ragged_index(offsets[rows], counts[rows])
+            local = np.concatenate(([0], np.cumsum(counts[rows])))
+            inputs = DecisionInputs(
+                streams=StreamBatch.from_streams([self.store.stream(*k) for k in unique],
+                                                 self.device),
+                match_index=torch.as_tensor([index[k] for k in keys], dtype=torch.long,
+                                            device=self.device),
+                prefix=torch.as_tensor(prefix[rows], dtype=torch.long, device=self.device),
+                obs=torch.as_tensor(obs[rows].astype(np.uint8), device=self.device),
+                seat=torch.as_tensor(seat[rows], dtype=torch.long, device=self.device),
+                cand=torch.as_tensor(cand[src].astype(np.uint8), device=self.device),
+                offsets=torch.as_tensor(local, dtype=torch.long, device=self.device))
+            choice, chosen_logp = self.actor.act(inputs, self.generator)
+            choices[rows] = choice.cpu().numpy().astype(np.int32)
+            logp[rows] = chosen_logp.float().cpu().numpy()
+        if ((choices < 0) | (choices >= counts)).any():
+            raise ValueError("a choice lies outside its candidate list")
+        stored = self.buffer.add_step(
+            keep=acting, env_id=env_id, match_id=match_id, round_index=round_index, seat=seat,
+            phase=phase, obs=obs, hidden=hidden, cand=cand, offsets=offsets, chosen=choices,
+            logp=logp, prefix=prefix, version=self.version)
+        if stored:
+            stats.learner_rows += stored
+            stats.prefix_sum += int(prefix[rows].sum())
+            stats.prefix_max = max(stats.prefix_max, int(prefix[rows].max()))
+        if self.choice_log is not None:
+            self.choice_log.append(choices.copy())
+        env.step(choices)
+        stats.steps += 1
+        stats.decisions += n
+        return n
+
+    def collect(self, steps: int, version: int | None = None) -> CollectStats:
+        """``steps`` vector steps; ``version`` tags the stored rows' policy."""
+        if version is not None:
+            self.version = int(version)
+        self.results.clear()
+        stats = CollectStats()
+        for _ in range(int(steps)):
+            self.step(stats)
+        return stats

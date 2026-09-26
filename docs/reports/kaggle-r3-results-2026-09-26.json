@@ -1,0 +1,434 @@
+{
+  "verified_epoch": 1790382898.1597528,
+  "provider_status": "COMPLETE",
+  "manifest_verified_files": 207,
+  "manifest_verified_bytes": 5098415347,
+  "sha_mismatches": [],
+  "completion": {
+    "success": true,
+    "wall_seconds": 37307.756244977,
+    "all_children_stopped": true,
+    "script_budget_seconds": 41400,
+    "paid_cost_usd": 0
+  },
+  "fixed_candidates": {
+    "primary": "lineage_r2",
+    "checkpoints": {
+      "lineage_r1": "d6900e33b1813fe399281fcef49234c89f82137ac6155fe4790071ad0d7cb58e",
+      "lineage_r2": "60d7bf62e93f6ddc2ea27729dfb033de9801e75bd2340ea69b2684febd4b1a15"
+    },
+    "rule": "Final endpoint predeclared before training, no selection using heldout outcomes"
+  },
+  "reports": {
+    "lineage_r1/final-vs_baseline.json": {
+      "candidate_sha256": "d6900e33b1813fe399281fcef49234c89f82137ac6155fe4790071ad0d7cb58e",
+      "control_sha256": "ebb614f35f825e835c9d5b18bdc5a6efb0f79d5ba5ed9bfcdf44eca98ae139fe",
+      "deals": 4000,
+      "matches": 1000,
+      "excluded_deals": 0,
+      "excluded_matches": 0,
+      "net": 0.111125,
+      "net_ci": [
+        0.071746875,
+        0.15025
+      ],
+      "wins": 594,
+      "win_rate": 0.594,
+      "win_ci": [
+        0.5632592745396628,
+        0.6240212948650526
+      ],
+      "styles": {
+        "greedy": {
+          "deals": 4000,
+          "mean_levels_per_round": 0.030125,
+          "bootstrap_95_ci": [
+            -0.006375,
+            0.06550312499999998
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:bomb-happy": {
+          "deals": 4000,
+          "mean_levels_per_round": 0.080375,
+          "bootstrap_95_ci": [
+            0.03886250000000002,
+            0.12087812499999998
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:bomb-shy": {
+          "deals": 4000,
+          "mean_levels_per_round": 0.0275,
+          "bootstrap_95_ci": [
+            -0.008,
+            0.060628124999999984
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:high-lead": {
+          "deals": 4000,
+          "mean_levels_per_round": -0.00525,
+          "bootstrap_95_ci": [
+            -0.022256249999999988,
+            0.011878124999999982
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:low-lead": {
+          "deals": 4000,
+          "mean_levels_per_round": -0.006,
+          "bootstrap_95_ci": [
+            -0.031003124999999996,
+            0.0195
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "heldout:0": {
+          "deals": 4000,
+          "mean_levels_per_round": 0.009625,
+          "bootstrap_95_ci": [
+            -0.0002531249999999945,
+            0.019125
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "heldout:1": {
+          "deals": 4000,
+          "mean_levels_per_round": 0.015625,
+          "bootstrap_95_ci": [
+            0.0028718750000000055,
+            0.028253124999999983
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "heldout:2": {
+          "deals": 4000,
+          "mean_levels_per_round": 0.007375,
+          "bootstrap_95_ci": [
+            -0.006503124999999994,
+            0.020378124999999983
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        }
+      },
+      "raw_duplicate_cells_verified": 17,
+      "raw_file_sha256": "6a5978468d40dfd9403676b3df5b9ec71280fe96c36fce82fe6056fa6af97bf4"
+    },
+    "lineage_r1/final-vs_parent.json": {
+      "candidate_sha256": "d6900e33b1813fe399281fcef49234c89f82137ac6155fe4790071ad0d7cb58e",
+      "control_sha256": "28dcfbd31b0d4918aa3f9a3f723139c967111e85c9969bd71c51e6bc90453656",
+      "deals": 4000,
+      "matches": 1000,
+      "excluded_deals": 0,
+      "excluded_matches": 0,
+      "net": 0.032,
+      "net_ci": [
+        -0.006125,
+        0.0715
+      ],
+      "wins": 531,
+      "win_rate": 0.531,
+      "win_ci": [
+        0.5000102483912816,
+        0.5617524925826141
+      ],
+      "styles": {
+        "greedy": {
+          "deals": 4000,
+          "mean_levels_per_round": 0.00825,
+          "bootstrap_95_ci": [
+            -0.02625,
+            0.044
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:bomb-happy": {
+          "deals": 4000,
+          "mean_levels_per_round": 0.003625,
+          "bootstrap_95_ci": [
+            -0.034503124999999996,
+            0.04262812499999999
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:bomb-shy": {
+          "deals": 4000,
+          "mean_levels_per_round": 0.004875,
+          "bootstrap_95_ci": [
+            -0.027509374999999985,
+            0.03600312499999998
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:high-lead": {
+          "deals": 4000,
+          "mean_levels_per_round": 0.001375,
+          "bootstrap_95_ci": [
+            -0.015503124999999994,
+            0.018875
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:low-lead": {
+          "deals": 4000,
+          "mean_levels_per_round": -0.0265,
+          "bootstrap_95_ci": [
+            -0.050625,
+            -0.0024968750000000173
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "heldout:0": {
+          "deals": 4000,
+          "mean_levels_per_round": 0.006375,
+          "bootstrap_95_ci": [
+            -0.00325,
+            0.016125
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "heldout:1": {
+          "deals": 4000,
+          "mean_levels_per_round": 0.0005,
+          "bootstrap_95_ci": [
+            -0.0115,
+            0.011884374999999949
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "heldout:2": {
+          "deals": 4000,
+          "mean_levels_per_round": -0.001125,
+          "bootstrap_95_ci": [
+            -0.014,
+            0.0115
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        }
+      },
+      "raw_duplicate_cells_verified": 17,
+      "raw_file_sha256": "8f05b88902aeb6ae499f2fa9d3824fb0fc5437caef5a7b36ba92b91d66038234"
+    },
+    "lineage_r2/final-vs_baseline.json": {
+      "candidate_sha256": "60d7bf62e93f6ddc2ea27729dfb033de9801e75bd2340ea69b2684febd4b1a15",
+      "control_sha256": "ebb614f35f825e835c9d5b18bdc5a6efb0f79d5ba5ed9bfcdf44eca98ae139fe",
+      "deals": 4000,
+      "matches": 1000,
+      "excluded_deals": 0,
+      "excluded_matches": 0,
+      "net": 0.16,
+      "net_ci": [
+        0.1215,
+        0.19888437499999995
+      ],
+      "wins": 566,
+      "win_rate": 0.566,
+      "win_ci": [
+        0.5350866438157509,
+        0.5964082240641557
+      ],
+      "styles": {
+        "greedy": {
+          "deals": 4000,
+          "mean_levels_per_round": 0.04,
+          "bootstrap_95_ci": [
+            0.004121875000000006,
+            0.076625
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:bomb-happy": {
+          "deals": 4000,
+          "mean_levels_per_round": 0.07075,
+          "bootstrap_95_ci": [
+            0.02636875000000001,
+            0.11239062499999991
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:bomb-shy": {
+          "deals": 4000,
+          "mean_levels_per_round": 0.0385,
+          "bootstrap_95_ci": [
+            0.0067468750000000055,
+            0.071875
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:high-lead": {
+          "deals": 4000,
+          "mean_levels_per_round": -0.004375,
+          "bootstrap_95_ci": [
+            -0.021125,
+            0.0125
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:low-lead": {
+          "deals": 4000,
+          "mean_levels_per_round": 0.02325,
+          "bootstrap_95_ci": [
+            0.0004968750000000056,
+            0.046628124999999986
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "heldout:0": {
+          "deals": 4000,
+          "mean_levels_per_round": 0.004875,
+          "bootstrap_95_ci": [
+            -0.005128124999999995,
+            0.015375
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "heldout:1": {
+          "deals": 4000,
+          "mean_levels_per_round": 0.008375,
+          "bootstrap_95_ci": [
+            -0.00525,
+            0.021253124999999984
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "heldout:2": {
+          "deals": 4000,
+          "mean_levels_per_round": 0.008875,
+          "bootstrap_95_ci": [
+            -0.004753124999999994,
+            0.02125
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        }
+      },
+      "raw_duplicate_cells_verified": 17,
+      "raw_file_sha256": "e9eef760eb1d1ffed13a8988ff8d563328cf7a6547b880239eff5fcae370969b"
+    },
+    "lineage_r2/final-vs_parent.json": {
+      "candidate_sha256": "60d7bf62e93f6ddc2ea27729dfb033de9801e75bd2340ea69b2684febd4b1a15",
+      "control_sha256": "6cd944888c26dd8a86bd08ecd7e906a2fff1968955a1944551811773c7baf585",
+      "deals": 4000,
+      "matches": 1000,
+      "excluded_deals": 0,
+      "excluded_matches": 0,
+      "net": 0.040375,
+      "net_ci": [
+        0.001625,
+        0.081
+      ],
+      "wins": 565,
+      "win_rate": 0.565,
+      "win_ci": [
+        0.5340823279157767,
+        0.595420193481101
+      ],
+      "styles": {
+        "greedy": {
+          "deals": 4000,
+          "mean_levels_per_round": 0.002375,
+          "bootstrap_95_ci": [
+            -0.03389062499999997,
+            0.03638124999999996
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:bomb-happy": {
+          "deals": 4000,
+          "mean_levels_per_round": 0.02625,
+          "bootstrap_95_ci": [
+            -0.014503124999999995,
+            0.06737812499999998
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:bomb-shy": {
+          "deals": 4000,
+          "mean_levels_per_round": 0.0015,
+          "bootstrap_95_ci": [
+            -0.030375,
+            0.032625
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:high-lead": {
+          "deals": 4000,
+          "mean_levels_per_round": -0.007625,
+          "bootstrap_95_ci": [
+            -0.023503124999999996,
+            0.007625
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:low-lead": {
+          "deals": 4000,
+          "mean_levels_per_round": -0.005375,
+          "bootstrap_95_ci": [
+            -0.027753124999999997,
+            0.01800312499999998
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "heldout:0": {
+          "deals": 4000,
+          "mean_levels_per_round": 0.00275,
+          "bootstrap_95_ci": [
+            -0.007503124999999994,
+            0.013375
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "heldout:1": {
+          "deals": 4000,
+          "mean_levels_per_round": -0.001875,
+          "bootstrap_95_ci": [
+            -0.014,
+            0.010753124999999981
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "heldout:2": {
+          "deals": 4000,
+          "mean_levels_per_round": 0.010625,
+          "bootstrap_95_ci": [
+            -0.0025031249999999945,
+            0.023003124999999982
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        }
+      },
+      "raw_duplicate_cells_verified": 17,
+      "raw_file_sha256": "3a6c5ceab05b32ba6e4a601c5dfe7200e1f58ecb4c872329918e15014826842b"
+    }
+  },
+  "runner_sha256": "4eb5adc00703f36c53d6d313cbc25e4d7178fc702f77e0d43681e4dfc3beb164",
+  "manifest_sha256": "6bcd61712cabb49c219c42311de47a7f1422f35e9808a351e0ebc08d413a7c86",
+  "script_elapsed_hours": 10.363265623604722,
+  "paid_cost_usd": 0,
+  "final_danlm_status": "complete",
+  "uncertainty": "Intervals are conditional on each fixed model pair. Eight style comparisons are secondary, unadjusted for multiplicity; no candidate reselection.",
+  "provider": {
+    "recorded_epoch": 1790383515.8584929,
+    "observed_this_turn": true,
+    "url": "https://www.kaggle.com/code/xiyaowang0519/guanzero-continuation-r1-20260924?scriptVersionId=352705092",
+    "version": 6,
+    "script_version_id": 352705092,
+    "dom_runtime_label": "10h 22m 13s · GPU T4 x2",
+    "dom_success_label": "37332.6 second run - successful",
+    "runtime_seconds": 37332.6,
+    "cli_terminal_status": "COMPLETE",
+    "cli_snapshot_epoch": 1790382702.6811159,
+    "privacy": "private",
+    "input_count": 3,
+    "evidence_method": "Authenticated Kaggle version page DOM via Chrome browser skill; exact runtime and successful terminal text observed during this turn."
+  },
+  "campaign_hours_approx": 26.750166666666665,
+  "campaign_hours_basis": "R1 and R2 account quota increments rounded to 0.01h (8.19h each), plus R3 provider version runtime; quota rollover does not renew campaign authorization.",
+  "danlm_frozen_config_sha256": "cc3ef0835000ca9ce1c6041fd4588031a087e71e4512ca9d63af1a195dcffe39",
+  "danlm_final_seed": 2026092699,
+  "danlm_hard_deadline_utc": "2026-09-26T02:55:06.841542+00:00",
+  "default_model_replaced": false,
+  "final_danlm_audit_path": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/kaggle-continuation-20260925-r3/danlm-final/audit.json",
+  "final_danlm_verification_path": "/Users/xiyaowang/Documents/Projects/GuanZero/.work/kaggle-continuation-20260925-r3/danlm-final/independent-verification.json",
+  "campaign_report_path": "/Users/xiyaowang/Documents/Projects/GuanZero/docs/reports/kaggle-campaign-results-2026-09-26.md"
+}

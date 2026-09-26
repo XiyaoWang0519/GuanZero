@@ -1,5 +1,12 @@
 # GuanZero 模型路线研究：Transformer、推断与搜索
 
+> Historical record. The proposals, budgets and next steps below belong to
+> this dated experiment. The active route is now random-start Transformer
+> self-play, with old MLPs used only for evaluation; see
+> [DESIGN.md](../DESIGN.md) and [STAGE_C_TODO.md](../STAGE_C_TODO.md).
+> Preserve the recorded results and artifacts; do not launch an old plan as
+> the new experiment or infer current provider state from its snapshot.
+
 调研日期：2026-09-23。仓库读取快照：`a18b2d41e05429fc7a1cd9d6f31ae84963618834`。本文是研究建议，不是新增训练结果。只新增此文档；没有启动训练或评测，没有更改训练、性能优化代码或运行中的进程。其他 session 的在途结果不在本文结论内。
 
 **判断：现有自博弈、PPO、特权信息 critic 和联赛路线值得继续。Transformer 适合掼蛋，值得重新做直接参与决策的实验；目前还不能认定它在我们的预算下优于 MLP。追求更高上限，我最看好局内历史表示、符合规则的联合手牌推断、有限搜索的组合。**

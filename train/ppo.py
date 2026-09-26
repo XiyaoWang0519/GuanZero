@@ -180,6 +180,12 @@ class PPOConfig:
     candidate_mode: str = "top_k"
     candidate_extra: int = 0
     candidate_chunk: int = 32768
+    # STAGE_C_TODO C2(c). 0 is off. d in (0, 1) keeps an exponential moving
+    # average of the policy weights, ema = d * ema + (1 - d) * weights after
+    # every optimizer step, started from the weights at the first step. It never
+    # feeds back into training; save() writes it beside latest.pt as
+    # latest-ema.pt, a policy checkpoint load_policy reads like any other.
+    policy_ema: float = 0.0
     # Rollout buffer capacities; 0 derives them from num_envs and rollout_steps.
     buffer_steps: int = 0
     buffer_candidates: int = 0
@@ -272,6 +278,10 @@ class PPOConfig:
             raise ValueError("league_import_dir needs a league:<pool.json> opponent")
         if self.exploiter_win_rate > 1:
             raise ValueError("exploiter_win_rate must be at most 1")
+        if not (0 <= self.policy_ema < 1):
+            raise ValueError("policy_ema must be in [0, 1)")
+        if self.policy_ema and self.exploiter_publish_dir:
+            raise ValueError("policy_ema is not defined across exploiter resets")
         if self.exploiter_pin_target and (self.actor_processes or not self.exploiter_publish_dir):
             raise ValueError("exploiter_pin_target needs exploiter mode and in-process rollout")
         if not self.init_checkpoint:
@@ -298,7 +308,7 @@ class PPOConfig:
 # Fields that may change on resume: runtime limits and resources only.
 MUTABLE_ON_RESUME = {"max_updates", "max_seconds", "checkpoint_seconds", "snapshot_updates",
                      "tensorboard", "torch_threads", "num_threads", "init_checkpoint", "critic_init",
-                     "fast_rollout", "actor_processes", "learn_on_device",
+                     "fast_rollout", "actor_processes", "learn_on_device", "policy_ema",
                      "skip_unpruned_reference"}
 
 
@@ -976,6 +986,11 @@ class PPOTrainer(RolloutCollector):
         self.policy_optimizer = torch.optim.Adam(self.net.parameters(), lr=config.policy_lr)
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=config.critic_lr)
         self.generator = torch.Generator(device=self.device)
+        # PPOConfig.policy_ema: the averaged policy weights, None until the first step.
+        self.policy_ema_state: dict[str, torch.Tensor] | None = None
+        if payload is not None and config.policy_ema and payload.get("policy_ema_model") is not None:
+            self.policy_ema_state = {k: v.to(self.device)
+                                     for k, v in payload["policy_ema_model"].items()}
         if payload is not None:
             self.policy_optimizer.load_state_dict(payload["optimizer"])
             self.critic_optimizer.load_state_dict(payload["critic_optimizer"])
@@ -1293,6 +1308,8 @@ class PPOTrainer(RolloutCollector):
                                & torch.isfinite(policy_grad) & torch.isfinite(critic_grad))
                     self.policy_optimizer.step()
                     self.critic_optimizer.step()
+                    if cfg.policy_ema:
+                        self.update_policy_ema()
                 self.progress["optimizer_steps"] += 1
                 terms["policy_grad_norm"] = policy_grad
                 terms["critic_grad_norm"] = critic_grad
@@ -1373,6 +1390,22 @@ class PPOTrainer(RolloutCollector):
                 "clip_fraction": clip_fraction, "ratio_deviation": ratio_deviation}
 
     # -------------------------------------------------------------- bookkeeping
+    @torch.no_grad()
+    def update_policy_ema(self) -> None:
+        """One EMA step of the policy weights (PPOConfig.policy_ema); integer
+        buffers are copied."""
+        weights = self.net.state_dict()
+        if self.policy_ema_state is None:
+            self.policy_ema_state = {k: v.detach().clone() for k, v in weights.items()}
+            return
+        weight = 1.0 - self.config.policy_ema
+        for key, value in weights.items():
+            average = self.policy_ema_state[key]
+            if average.is_floating_point():
+                average.lerp_(value, weight)
+            else:
+                average.copy_(value)
+
     def save(self, snapshot: bool = False) -> None:
         self.progress["elapsed_seconds"] = self.prior_elapsed + time.monotonic() - self.started
         if snapshot:
@@ -1400,7 +1433,14 @@ class PPOTrainer(RolloutCollector):
             if self.actors is not None:
                 payload["league_actor_rng"] = self.actors.request("league_rng")
         self.league_snapshot_taken = False
+        if self.policy_ema_state is not None:
+            payload["policy_ema_model"] = self.policy_ema_state
         save_checkpoint(self.run_dir / "latest.pt", payload)
+        if self.policy_ema_state is not None:
+            # The averaged weights as a plain policy checkpoint, for evaluation.
+            save_checkpoint(self.run_dir / "latest-ema.pt",
+                            {**payload, "model": self.policy_ema_state,
+                             "policy_ema_of": "latest.pt", "policy_ema": self.config.policy_ema})
         if snapshot:
             snapshots = self.run_dir / "checkpoints"
             snapshots.mkdir(exist_ok=True)

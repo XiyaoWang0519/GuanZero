@@ -8,6 +8,8 @@ from typing import Iterable, Sequence
 import gd
 import numpy as np
 
+from .history_policy import (apply_and_observe, explicit_passes, history_listeners,
+                             resolve_forced_passes)
 from .policies import Policy, choose_action
 
 
@@ -88,20 +90,35 @@ def play_round_seats(engine: gd.Engine, state: gd.MatchState,
 
     Seat RNGs are the same as in `play_round`, so seating one policy at both
     seats of a team replays `play_round` exactly.
+
+    History policies (``needs_history``) receive every applied action of every
+    seat, engine-resolved passes included, through ``observe``; the engine's
+    auto-pass is off for such a round so those passes become events. The
+    caller opens the match with ``start_match()``: every leg of a duplicate
+    is one, and a full match keeps its stream across rounds.
     """
     if len(policies) != 4:
         raise ValueError("one policy per seat required")
     rngs = [random.Random(seed + seat * 0x9E3779B9) for seat in range(4)]
+    listeners = history_listeners(policies)
     decisions = 0
-    while state.phase != gd.Phase.RoundEnd:
-        if state.phase == gd.Phase.MatchEnd:
-            raise ValueError("cannot play an already completed match")
-        if decisions >= max_decisions:
-            raise RuntimeError(f"round exceeded {max_decisions} decisions")
-        seat = state.to_move
-        action = choose_action(policies[seat], engine, state, rngs[seat])
-        engine.apply(state, action)
-        decisions += 1
+    with explicit_passes(engine, listeners):
+        while state.phase != gd.Phase.RoundEnd:
+            if state.phase == gd.Phase.MatchEnd:
+                raise ValueError("cannot play an already completed match")
+            if listeners:
+                resolve_forced_passes(engine, state, listeners)
+                if state.phase == gd.Phase.RoundEnd:
+                    break
+            if decisions >= max_decisions:
+                raise RuntimeError(f"round exceeded {max_decisions} decisions")
+            seat = state.to_move
+            action = choose_action(policies[seat], engine, state, rngs[seat])
+            if listeners:
+                apply_and_observe(engine, state, action, listeners)
+            else:
+                engine.apply(state, action)
+            decisions += 1
     result = engine.end_round(state)
     return RoundScore(tuple(result.order), result.winning_team, result.gain,
                       tuple(result.seat_return), decisions)
@@ -114,6 +131,8 @@ def play_duplicate(deal: gd.DealSpec, agent: Policy, opponent: Policy,
     for policies in ((agent, opponent), (opponent, agent)):
         state = gd.MatchState()
         engine.set_deal(state, deal)
+        for listener in history_listeners(policies):
+            listener.start_match()   # each leg is an independent single-round match
         scores.append(play_round(engine, state, policies, seed))
     return DuplicateScore(*scores)
 
@@ -133,6 +152,8 @@ def play_duplicate_teams(deal: gd.DealSpec, team: tuple[Policy, Policy],
                   (opponents[0], team[0], opponents[1], team[1])):
         state = gd.MatchState()
         engine.set_deal(state, deal)
+        for listener in history_listeners(seats):
+            listener.start_match()
         scores.append(play_round_seats(engine, state, seats, seed))
     return DuplicateScore(*scores)
 

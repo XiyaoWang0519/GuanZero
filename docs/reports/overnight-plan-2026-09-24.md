@@ -1,5 +1,12 @@
 # Overnight training and parallel development plan — September 24, 2026
 
+> Historical record. The proposals, budgets and next steps below belong to
+> this dated experiment. The active route is now random-start Transformer
+> self-play, with old MLPs used only for evaluation; see
+> [DESIGN.md](../DESIGN.md) and [STAGE_C_TODO.md](../STAGE_C_TODO.md).
+> Preserve the recorded results and artifacts; do not launch an old plan as
+> the new experiment or infer current provider state from its snapshot.
+
 Status: execution approved and started at 2026-09-24 06:21:44 UTC.
 Absolute session deadline: 2026-09-24 13:21:44 UTC. Runtime state and the shared
 budget reservations are in `.work/overnight-20260924/state.json`. Live RunPod

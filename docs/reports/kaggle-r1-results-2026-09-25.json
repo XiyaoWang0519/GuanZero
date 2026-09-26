@@ -1,0 +1,332 @@
+{
+  "protocol": "internal-house-development",
+  "train_seed": 2026092601,
+  "evaluation_seed": 2026092611,
+  "audit": {
+    "verified_epoch": 1790312823.5220401,
+    "provider_status": "COMPLETE",
+    "manifest_verified_files": 173,
+    "manifest_verified_bytes": 4159982857,
+    "sha_mismatches": [],
+    "completion": {
+      "success": true,
+      "wall_seconds": 29465.441021887,
+      "all_children_stopped": true,
+      "script_budget_seconds": 34500,
+      "paid_cost_usd": 0
+    },
+    "reports": {
+      "control/development.json": {
+        "duplicate_cells": 17,
+        "deals_per_cell": 2000,
+        "complete_matches": 500,
+        "excluded_deals": 0,
+        "excluded_matches": 0,
+        "candidate_sha256": "152d780777052f39edf40a397acbad3915e736abfec02d77eb0a86a358b2afb2",
+        "control_sha256": "ebb614f35f825e835c9d5b18bdc5a6efb0f79d5ba5ed9bfcdf44eca98ae139fe"
+      },
+      "half_lr/development.json": {
+        "duplicate_cells": 17,
+        "deals_per_cell": 2000,
+        "complete_matches": 500,
+        "excluded_deals": 0,
+        "excluded_matches": 0,
+        "candidate_sha256": "28dcfbd31b0d4918aa3f9a3f723139c967111e85c9969bd71c51e6bc90453656",
+        "control_sha256": "ebb614f35f825e835c9d5b18bdc5a6efb0f79d5ba5ed9bfcdf44eca98ae139fe"
+      },
+      "half-v-control-development.json": {
+        "duplicate_cells": 17,
+        "deals_per_cell": 2000,
+        "complete_matches": 500,
+        "excluded_deals": 0,
+        "excluded_matches": 0,
+        "candidate_sha256": "28dcfbd31b0d4918aa3f9a3f723139c967111e85c9969bd71c51e6bc90453656",
+        "control_sha256": "152d780777052f39edf40a397acbad3915e736abfec02d77eb0a86a358b2afb2"
+      }
+    },
+    "quota_used_hours": 8.29,
+    "quota_remaining_hours": 21.71,
+    "campaign_used_hours": 8.19,
+    "paid_cost_usd": 0,
+    "independent_primary_bootstrap_ci_recomputed": true,
+    "independent_match_wins_and_wilson_verified": true
+  },
+  "results": {
+    "control": {
+      "net_levels_per_round": 0.02725,
+      "net_levels_95_ci": [
+        -0.026256249999999988,
+        0.08500624999999998
+      ],
+      "duplicate_deals": 2000,
+      "matches": 500,
+      "wins": 277,
+      "match_win_rate": 0.554,
+      "match_win_rate_95_ci": [
+        0.5101829628154826,
+        0.5969936084146699
+      ],
+      "styles": {
+        "greedy": {
+          "deals": 2000,
+          "mean_levels_per_round": 0.04925,
+          "bootstrap_95_ci": [
+            -0.001256249999999989,
+            0.0992687499999999
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:bomb-happy": {
+          "deals": 2000,
+          "mean_levels_per_round": -0.02025,
+          "bootstrap_95_ci": [
+            -0.07976249999999999,
+            0.03775
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:bomb-shy": {
+          "deals": 2000,
+          "mean_levels_per_round": 0.053,
+          "bootstrap_95_ci": [
+            0.005981250000000033,
+            0.09675
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:high-lead": {
+          "deals": 2000,
+          "mean_levels_per_round": -0.01525,
+          "bootstrap_95_ci": [
+            -0.04,
+            0.01075
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:low-lead": {
+          "deals": 2000,
+          "mean_levels_per_round": 0.03825,
+          "bootstrap_95_ci": [
+            0.002993750000000011,
+            0.07175624999999997
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "heldout:0": {
+          "deals": 2000,
+          "mean_levels_per_round": 0.001,
+          "bootstrap_95_ci": [
+            -0.02475,
+            0.027506249999999965
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "heldout:1": {
+          "deals": 2000,
+          "mean_levels_per_round": -0.0205,
+          "bootstrap_95_ci": [
+            -0.0375,
+            -0.004493750000000034
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "heldout:2": {
+          "deals": 2000,
+          "mean_levels_per_round": -0.01525,
+          "bootstrap_95_ci": [
+            -0.0315,
+            0.00175
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        }
+      },
+      "report_file": ".work/kaggle-continuation-20260924/results-r1/results/control/development.json",
+      "report_sha256": "544943c1dd5c55033a5889b3dc37e948bdc80c275b624c47be69b26e3b372ba8"
+    },
+    "half_lr": {
+      "net_levels_per_round": 0.08525,
+      "net_levels_95_ci": [
+        0.032737500000000024,
+        0.13850624999999997
+      ],
+      "duplicate_deals": 2000,
+      "matches": 500,
+      "wins": 275,
+      "match_win_rate": 0.55,
+      "match_win_rate_95_ci": [
+        0.5061772177351765,
+        0.5930603482186684
+      ],
+      "styles": {
+        "greedy": {
+          "deals": 2000,
+          "mean_levels_per_round": 0.0405,
+          "bootstrap_95_ci": [
+            -0.0075,
+            0.08875624999999997
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:bomb-happy": {
+          "deals": 2000,
+          "mean_levels_per_round": 0.02475,
+          "bootstrap_95_ci": [
+            -0.03478124999999995,
+            0.08450624999999998
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:bomb-shy": {
+          "deals": 2000,
+          "mean_levels_per_round": 0.066,
+          "bootstrap_95_ci": [
+            0.024,
+            0.10925
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:high-lead": {
+          "deals": 2000,
+          "mean_levels_per_round": -0.013,
+          "bootstrap_95_ci": [
+            -0.03700624999999999,
+            0.011256249999999966
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:low-lead": {
+          "deals": 2000,
+          "mean_levels_per_round": -0.006,
+          "bootstrap_95_ci": [
+            -0.04325,
+            0.028262499999999934
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "heldout:0": {
+          "deals": 2000,
+          "mean_levels_per_round": 0.0175,
+          "bootstrap_95_ci": [
+            -0.0065,
+            0.04125
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "heldout:1": {
+          "deals": 2000,
+          "mean_levels_per_round": -0.005,
+          "bootstrap_95_ci": [
+            -0.01950624999999999,
+            0.00875
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "heldout:2": {
+          "deals": 2000,
+          "mean_levels_per_round": -0.00475,
+          "bootstrap_95_ci": [
+            -0.0195,
+            0.008756249999999967
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        }
+      },
+      "report_file": ".work/kaggle-continuation-20260924/results-r1/results/half_lr/development.json",
+      "report_sha256": "167eb8de63cbde19f127a4bcd3cd0dbf859445bb0858cf272ba8b8d3928fb918"
+    },
+    "half_vs_control": {
+      "net_levels_per_round": 0.04275,
+      "net_levels_95_ci": [
+        -0.01175,
+        0.09525624999999997
+      ],
+      "duplicate_deals": 2000,
+      "matches": 500,
+      "wins": 266,
+      "match_win_rate": 0.532,
+      "match_win_rate_95_ci": [
+        0.48818610813244,
+        0.5753259340780207
+      ],
+      "styles": {
+        "greedy": {
+          "deals": 2000,
+          "mean_levels_per_round": -0.00875,
+          "bootstrap_95_ci": [
+            -0.0605,
+            0.04276249999999993
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:bomb-happy": {
+          "deals": 2000,
+          "mean_levels_per_round": 0.045,
+          "bootstrap_95_ci": [
+            -0.01575,
+            0.10650624999999997
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:bomb-shy": {
+          "deals": 2000,
+          "mean_levels_per_round": 0.013,
+          "bootstrap_95_ci": [
+            -0.030518749999999966,
+            0.05750624999999997
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:high-lead": {
+          "deals": 2000,
+          "mean_levels_per_round": 0.00225,
+          "bootstrap_95_ci": [
+            -0.02175,
+            0.027256249999999965
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "styled:low-lead": {
+          "deals": 2000,
+          "mean_levels_per_round": -0.04425,
+          "bootstrap_95_ci": [
+            -0.07825,
+            -0.0085
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "heldout:0": {
+          "deals": 2000,
+          "mean_levels_per_round": 0.0165,
+          "bootstrap_95_ci": [
+            -0.00775,
+            0.04075
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "heldout:1": {
+          "deals": 2000,
+          "mean_levels_per_round": 0.0155,
+          "bootstrap_95_ci": [
+            -0.00025,
+            0.031
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        },
+        "heldout:2": {
+          "deals": 2000,
+          "mean_levels_per_round": 0.0105,
+          "bootstrap_95_ci": [
+            -0.007,
+            0.027256249999999965
+          ],
+          "definition": "candidate pair score minus control pair score, paired by deal"
+        }
+      },
+      "report_file": ".work/kaggle-continuation-20260924/results-r1/results/half-v-control-development.json",
+      "report_sha256": "941b580d51e8590343725f469929884fb660c0399902f61c70aabb4417eb0d27"
+    }
+  },
+  "lr_winner": "not_established",
+  "paid_cost_usd": 0,
+  "next_round": "matched_second_training_seed"
+}

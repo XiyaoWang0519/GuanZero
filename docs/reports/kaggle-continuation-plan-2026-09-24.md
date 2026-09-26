@@ -1,5 +1,12 @@
 # Kaggle 约 30 小时续训计划 — 2026-09-24
 
+> Historical record. The proposals, budgets and next steps below belong to
+> this dated experiment. The active route is now random-start Transformer
+> self-play, with old MLPs used only for evaluation; see
+> [DESIGN.md](../DESIGN.md) and [STAGE_C_TODO.md](../STAGE_C_TODO.md).
+> Preserve the recorded results and artifacts; do not launch an old plan as
+> the new experiment or infer current provider state from its snapshot.
+
 用户授权使用剩余免费 GPU 额度推进 GuanZero，并要求 W&B 实时监控。当前账户剩 29.90 小时；付费预算 $0。本轮会话累计实际已用与未完成会话的保守预约之和上限 29.75 小时，不跨配额刷新扩大授权，最后为保存结果留余量。Kaggle 官方单会话上限 12 小时，脚本按不超过约 9.6 小时的分段任务执行，每次启动前重新核对账户额度。
 
 ## 下一步与实验问题
@@ -48,3 +55,33 @@ R1 两臂终点各对起点评估 2000 duplicate deals、500 full matches、固�
 账户最新回读已用 0.44 小时、剩余 29.56 小时，均包含既往测速。本轮按单会话最大 12 小时保守预约，尚未将已使用的会话时间与完整预约重复计费。Codex 账户共享周额度剩 71%，其他窗口未返回。检查自动化 `guanzero` 已设为每 30 分钟；健康时安静，仅重要变化通知。
 
 证据保存在 `.work/kaggle-continuation-20260924/latest-check.json`、`wandb-live-proof.json` 和 `state.json`。用户授权后，密钥已保存并关联 Kaggle Secret；云端 CPU 联通预检与当前 GPU 训练上传均通过。当前版本使用编辑器的“仅本次以 GPU 运行”，远端 pull 显示的默认 CPU 草稿设置不能代表当前实际分配。
+
+## R1 完成与 R2 复验
+
+2026-09-25 已回收并核验 R1 全部输出，见 [R1 结果与 R2 冻结选择规则](kaggle-r1-results-2026-09-25.md)。第一轮内部结果支持继续复验，但不支持宣布半 LR 优于原 LR。
+
+05:13:59 UTC 已通过编辑器在同一私有 Notebook 提交 version 5，版本名 `R2 Second Seed LR Comparison 8h`。UI 回读 GPU T4 x2；远端代码 AST 与本地冻结代码完全一致，SHA256 `7fdf92cd6b989db52613ea0ae54b6b6bd11c65858352f564ef35443b38510ed4`。Secret 保持关联，输入仍为两个已授权私有 Dataset。
+
+本轮训练 seed 2026092602，终点开发 seed 2026092612；从同一五小时起点和 Adam 状态重新跑原 LR/半 LR 两组，每组 8 小时。当前工作目录 `.work/kaggle-continuation-20260925-r2/`；共享检查脚本与状态仍在原 `.work/kaggle-continuation-20260924/`，已按当前轮动态读取 W&B run IDs。
+
+- [R2 原 LR 曲线](https://wandb.ai/mcraenanren-university-of-toronto/guanzero/runs/kg26r2-control)
+- [R2 半 LR 曲线](https://wandb.ai/mcraenanren-university-of-toronto/guanzero/runs/kg26r2-half_lr)
+
+启动前已用 campaign 约 8.19h，当前 R2 保守预约 12h，合计 20.19h；R3 仍未启动。05:15 UTC 账户剩余约 21.69h。所有支出为免费额度，付费 $0。下一轮须先回收、核验本轮输出并根据结果决定，不能跨配额刷新扩大 campaign 的 29.75h 上限。
+
+05:18:40 UTC 已验证 R2 两臂均有 14 个真实训练 updates，各约 46.3 万学习方决策，正确 seed 与实际 LR、有限数值指标、实时 heartbeat 均通过。两张 GPU 的保存/恢复预检完成，正式训练已启动。每条 run 有 61 项用户配置；监控已切换到 R2，按每 30 分钟唤醒，健康时保持安静。账户 Codex 周额度剩 63%，其他窗口未知。证据为 R2 目录下 `wandb-live-proof.json`、`submission-proof.json`；默认模型未替换。
+
+## R2 完成与 R3 续训
+
+2026-09-25 13:31 UTC 已确认 R2 COMPLETE，所有 178 项 artifact SHA 及原始配对数据审计通过。详见 [R2 结果及第三轮冻结决策](kaggle-r2-results-2026-09-25.md)。两轮等权主净级差支持选择半 LR，但 low-lead 风格有复现退化，不宣称全面优势。
+
+13:47:46 UTC 已提交同一私有 Notebook version 6（scriptVersionId 352705092）。实际 UI 为 GPU T4 x2；远端 AST 与本地 SHA256 `4eb5adc00703f36c53d6d313cbc25e4d7178fc702f77e0d43681e4dfc3beb164` 一致。Secret 保持勾选，增加的私有 Dataset 仅含两个已核验父模型与 manifest，约 132 MB。两张 GPU 的 smoke/save/restore 均通过，脚本第 182.804 秒开始正式训练。
+
+R3 分别续训 R1/R2 半 LR 终点各 10 小时，以不同固定 seed 检查进一步训练效果；预先固定 lineage_r2 终点为主要候选。两条线使用同一重建 league，保留各自 Adam，计数器与环境重置。算法源码仍为 4940246。每条线每两小时开发评测现含置信区间；内部最终评测独立 seed 2026092691，结果记录在 final_internal/*。不按最终数据选模型。
+
+- [R1 lineage 续训曲线](https://wandb.ai/mcraenanren-university-of-toronto/guanzero/runs/kg26r3-lineage_r1)
+- [R2 lineage 续训曲线（固定主要候选）](https://wandb.ai/mcraenanren-university-of-toronto/guanzero/runs/kg26r3-lineage_r2)
+
+启动前 campaign 累计使用 16.38h，R3 保守预约 12h，合计 28.38h，低于 29.75h 上限；脚本实际截止 11.5h，付费 $0。监控继续每 30 分钟，健康时保持安静。DanLM 本机 CPython3.12/macOS 环境已完成独立 smoke seed2026092680，4/4整deal有效、0排除；最终seed2026092699未使用，需待模型回收后做有截止的 CPU 推理及原始整deal配对审计。
+
+13:51:48 UTC 实际 W&B 回读确认 R3 两条线均完成 4 个正式 updates，各约 13.3 万学习方决策；实际 policy LR 5e-6、critic LR 1e-4，指标有限且 heartbeat 新鲜。每条 run 63 项用户配置。当前 quota 已用 16.55h / 剩 13.45h；已完成会话 16.38h 加当前完整预约 12h 不变。证据在 R3 目录的 submission-proof.json 与 wandb-live-proof.json。自动化已切换为 R3，按半小时检查，健康时安静。

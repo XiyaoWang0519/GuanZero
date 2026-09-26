@@ -15,6 +15,7 @@ from typing import Iterable
 import gd
 
 from .duplicate import evaluate_duplicates, generate_deals, play_round
+from .history_policy import history_listeners, needs_history
 from .policies import ModelPolicy, Policy, load_policy
 from .probes import evaluate_probes
 
@@ -65,6 +66,10 @@ def play_matches(agent: Policy, opponent: Policy, indices: Iterable[int],
         policies = (agent, opponent) if team == 0 else (opponent, agent)
         state = gd.MatchState()
         engine.new_match(state, seed + match)
+        # A history policy's stream spans the whole match: reset here only,
+        # never at the round boundaries below (DESIGN.md 7.3).
+        for listener in history_listeners(policies):
+            listener.start_match()
         match_rounds = 0
         while state.winner < 0:
             if match_rounds >= max_rounds:
@@ -208,7 +213,12 @@ def main(argv: list[str] | None = None) -> None:
         "checkpoint_sampling_margin": args.margin,
         "baseline_note": "random and greedy are local sanity baselines, not OpenGuanDan Rule One--Four",
         "duplicate": duplicate,
-        "probes": evaluate_probes(agent, args.seed, args.probe_repeats),
+        # eval.probes builds decision states directly and applies replies
+        # without a public stream; a history policy would be blind there, so
+        # it is not probed rather than probed blind (T3: never silently).
+        "probes": (evaluate_probes(agent, args.seed, args.probe_repeats) if not needs_history(agent)
+                   else {"skipped": "history policies are not probed: eval.probes does not "
+                                    "deliver public events"}),
     }
     if args.matches:
         report["match"] = (summarize_matches(play_matches_batch(
