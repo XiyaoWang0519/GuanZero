@@ -3,6 +3,13 @@
 Status: discussion record, not an implementation or result claim. Written while
 the T7 campaign (`.work/history-response-speed-2026-09-26/`) was on seed 2.
 
+Update, September 27: the queue and entropy-based success criterion below are
+historical. The [Codex/Fable discussion and next steps](training-next-steps-2026-09-27.md)
+recommend B control / fixed entropy 0.03 / epsilon 0.02 with three paired seeds,
+plus optional unchanged-recipe continuation of all three B endpoints. Automatic
+entropy and epsilon 0.10 are deferred. Use that record for the next preparation;
+no new run was launched by the discussion.
+
 ## Diagnosis
 
 All three T7 arms reached policy entropy 0.29--0.43 by update 700 and were

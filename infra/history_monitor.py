@@ -19,6 +19,10 @@ from infra.history_pilot import write_json
 from infra.runpod import Client, load_key, read_manifest, safe_pod, teardown, verify_owned
 
 
+SYNC_FAILURES = 12
+SYNC_TIMEOUT = 300  # large-model checkpoints are 80-120 MB
+
+
 def verify_download(root: Path, records: dict[str, str]) -> None:
     for name, digest in records.items():
         path = root / name
@@ -70,7 +74,7 @@ def main(argv=None) -> int:
     def sync():
         # ssh argv ends in host; rsync uses the same options without host.
         run(["rsync", "-az", "--exclude=*.tmp", "--exclude=.*.pt.*", "-e", shlex.join(ssh[:-1]),
-             ssh[-1] + ":/workspace/results/", str(dest) + "/"], timeout=90)
+             ssh[-1] + ":/workspace/results/", str(dest) + "/"], timeout=SYNC_TIMEOUT)
 
     try:
         until = min(time.time() + 900, owned["deadline_epoch"] - 180)
@@ -105,7 +109,10 @@ def main(argv=None) -> int:
                    "apt-get install -y -qq --no-install-recommends rsync)"], timeout=120)
         run(ssh + ["mkdir -p /workspace/GuanZero /workspace/payload /workspace/results"])
         run(scp + [str(kit / "source.tar.gz"), host + ":/workspace/source.tar.gz"], timeout=90)
-        run(scp + ["-r", str(kit / "payload") + "/.", host + ":/workspace/payload/"], timeout=60)
+        payload_bytes = sum(p.stat().st_size for p in (kit / "payload").rglob("*") if p.is_file())
+        # Resume payloads carry checkpoints (up to ~120 MB each); allow 1 MB/s.
+        run(scp + ["-r", str(kit / "payload") + "/.", host + ":/workspace/payload/"],
+            timeout=60 + payload_bytes / 1_000_000)
         actual = run(ssh + ["sha256sum /workspace/source.tar.gz"]).stdout.split()[0]
         if actual != plan["source"]["archive_sha256"]:
             raise ValueError("uploaded archive hash mismatch")
@@ -133,9 +140,12 @@ def main(argv=None) -> int:
             except (subprocess.SubprocessError, OSError):
                 failures += 1
                 log("sync_failed", consecutive=failures)
-                if failures >= 3:
-                    raise RuntimeError("three failed artifact syncs")
-                time.sleep(15)
+                # A laptop network drop or sleep fails several syncs in a row
+                # while the pod keeps training; the pod-side watchdog and the
+                # independent guard still bound spend, so wait about 10 minutes.
+                if failures >= SYNC_FAILURES:
+                    raise RuntimeError(f"{SYNC_FAILURES} failed artifact syncs")
+                time.sleep(30)
                 continue
             health_path = dest / "health.json"
             if health_path.exists():

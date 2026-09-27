@@ -156,6 +156,42 @@ def test_checkpoint_interruption_and_resume(tmp_path, monkeypatch):
     assert final["progress"]["updates"] == 3 and final["lineage"] == good["lineage"]
 
 
+def test_resume_under_other_source_only_on_request(tmp_path):
+    trainer = HistoryTrainer(small_config(updates=1), tmp_path / "run")
+    trainer.run()
+    good = torch.load(tmp_path / "run" / "latest.pt", weights_only=False)
+
+    def variant(name, **identity):
+        payload = dict(good, run_identity=dict(good["run_identity"], **identity))
+        save_checkpoint(tmp_path / name, payload)
+        return tmp_path / name
+
+    older = variant("older.pt", source=dict(good["run_identity"]["source"],
+                                            source_sha256="old-source", revision="old"))
+    with pytest.raises(ValueError, match="identity mismatch"):
+        HistoryTrainer(small_config(updates=2), tmp_path / "strict", resume=older)
+    for name, identity in (("engine.pt", dict(engine_digest="other-engine")),
+                           ("tokens.pt", dict(token_schema=99))):
+        with pytest.raises(ValueError, match="identity mismatch"):
+            HistoryTrainer(small_config(updates=2), tmp_path / name[:-3], resume=variant(name, **identity),
+                           allow_source_change=True)
+    moved = HistoryTrainer(small_config(updates=2), tmp_path / "moved", resume=older,
+                           allow_source_change=True)
+    for p, q in zip(moved.actor.state_dict().values(), good["model"].values()):
+        assert torch.equal(p, q)
+    [change] = moved.source_changes
+    assert change["at_update"] == 1 and change["previous_source_sha256"] == "old-source"
+    assert change["source_sha256"] == moved.run_identity["source"]["source_sha256"]
+    manifest = json.loads((tmp_path / "moved" / "manifest.json").read_text())
+    assert manifest["source_changes"] == [change]
+    moved.run()
+    saved = torch.load(tmp_path / "moved" / "latest.pt", weights_only=False)
+    assert saved["run_identity"] == moved.run_identity and saved["source_changes"] == [change]
+    # The lineage now carries the current identity: a plain resume works again.
+    again = HistoryTrainer(small_config(updates=3), tmp_path / "again", resume=tmp_path / "moved" / "latest.pt")
+    assert again.source_changes == [change]
+
+
 def test_cli_tiny_run(tmp_path):
     output = tmp_path / "cli"
     env = dict(os.environ, PYTHONPATH="python:oracle:.")

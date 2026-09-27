@@ -109,6 +109,10 @@ class HistoryPPOConfig:
     checkpoint_updates: int = 1
     torch_threads: int = 0               # 0 leaves torch's default
     snapshot_updates: int = 2           # 0 disables for isolated throughput sweeps
+    # historical opponent archive; 0 keeps only the recent snapshots
+    population_archive_every: int = 0
+    population_archive_size: int = 16
+    population_archive_share: float = 0.5
     population_recent: int = 4
     snapshot_probability: float = 0.5
 
@@ -128,7 +132,9 @@ class HistoryPPOConfig:
             raise ValueError("rollout_temperature and behaviour_weight_cap must be positive "
                              "and finite; rollout_epsilon must be in [0, 1]")
         if (self.snapshot_updates < 0 or self.population_recent < 1
-                or not 0 <= self.snapshot_probability <= 1):
+                or not 0 <= self.snapshot_probability <= 1
+                or self.population_archive_every < 0 or self.population_archive_size < 1
+                or not 0 <= self.population_archive_share <= 1):
             raise ValueError("invalid population schedule")
         if self.rollout_kv_cache and self.window:
             raise ValueError("rollout KV cache requires full history")
@@ -176,7 +182,7 @@ class HistoryTrainer:
                  "behaviour_weight_mean", "behaviour_weight_cap_fraction")
 
     def __init__(self, config: HistoryPPOConfig, output: str | Path, device: str = "cpu",
-                 resume: str | Path | None = None) -> None:
+                 resume: str | Path | None = None, allow_source_change: bool = False) -> None:
         self.output = Path(output)
         self.output.mkdir(parents=True, exist_ok=True)
         self.device = torch.device(device)
@@ -198,8 +204,21 @@ class HistoryTrainer:
             raise RuntimeError('CUDA rollout requested but CUDA is unavailable')
         self.run_identity = dict(engine_digest=engine_digest(), source=source_identity(),
                                  token_schema=TOKEN_SCHEMA_VERSION)
+        # A lineage may continue under newer trainer source only on request, and
+        # only with the same engine and token schema; the change is recorded.
+        self.source_changes = list(payload.get("source_changes", [])) if payload else []
         if payload is not None and payload.get("run_identity") != self.run_identity:
-            raise ValueError("resume source/engine/token identity mismatch")
+            saved = payload.get("run_identity") or {}
+            if not (allow_source_change
+                    and saved.get("engine_digest") == self.run_identity["engine_digest"]
+                    and saved.get("token_schema") == self.run_identity["token_schema"]):
+                raise ValueError("resume source/engine/token identity mismatch")
+            self.source_changes.append(dict(
+                at_update=int(payload["progress"]["updates"]),
+                previous_source_sha256=saved.get("source", {}).get("source_sha256"),
+                previous_revision=saved.get("source", {}).get("revision"),
+                source_sha256=self.run_identity["source"]["source_sha256"],
+                revision=self.run_identity["source"]["revision"]))
         # Dropout is zero, so train mode is the same policy as eval mode; staying
         # in train mode keeps the encoder on one kernel path for both the
         # behaviour log-probabilities and the learner's recomputation.
@@ -217,7 +236,10 @@ class HistoryTrainer:
                                          "elapsed_seconds": 0.0}
         self.population = HistoryPopulation(self.actor, self.lineage, config.seed + 17,
                                             config.population_recent,
-                                            config.snapshot_probability)
+                                            config.snapshot_probability,
+                                            config.population_archive_every,
+                                            config.population_archive_size,
+                                            config.population_archive_share)
         if payload is not None:
             self.actor_optimizer.load_state_dict(payload["optimizer"]["actor"])
             self.critic_optimizer.load_state_dict(payload["optimizer"]["critic"])
@@ -257,6 +279,8 @@ class HistoryTrainer:
         self.population_event(dict(event="resume" if payload else "start",
                                    resume_count=self.resume_count,
                                    discarded_partial_trajectories=bool(payload),
+                                   source_change=bool(payload) and bool(self.source_changes)
+                                   and self.source_changes[-1]["at_update"] == self.progress["updates"],
                                    cache="ephemeral; rebuilt from raw public histories" if config.rollout_kv_cache
                                          else "none; raw public histories restart with environments"))
         self.write_manifest()
@@ -275,6 +299,7 @@ class HistoryTrainer:
             "config": asdict(self.config), "model_config": asdict(self.actor.config),
             "engine_digest": self.run_identity["engine_digest"],
             "source": self.run_identity["source"],
+            "source_changes": self.source_changes,
             "engine_binary_sha256": sha256(Path(gd._gd_core.__file__)),
             "token_schema": {"version": TOKEN_SCHEMA_VERSION, "dim": int(TOKEN_DIM),
                              "forced_bit": False, "private_tribute_flags": False},
@@ -291,6 +316,9 @@ class HistoryTrainer:
             "population": {"snapshot_updates": self.config.snapshot_updates,
                            "recent": self.config.population_recent,
                            "snapshot_probability": self.config.snapshot_probability,
+                           "archive_every": self.config.population_archive_every,
+                           "archive_size": self.config.population_archive_size,
+                           "archive_share": self.config.population_archive_share,
                            "guaranteed_learner_seats": 1},
             "inference": {"causal_sdpa": self.config.causal_sdpa,
                           "rollout_kv_cache": self.config.rollout_kv_cache,
@@ -553,7 +581,7 @@ class HistoryTrainer:
                        "critic": self.critic_optimizer.state_dict()},
             config=asdict(self.config), progress=dict(self.progress), rng=rng)
         payload.update(population=self.population.state_dict(), run_identity=self.run_identity,
-                       resume_count=self.resume_count)
+                       resume_count=self.resume_count, source_changes=self.source_changes)
         return payload
 
     def save(self, path: str | Path | None = None) -> Path:
@@ -610,12 +638,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--snapshot-updates", type=int, default=2)
     parser.add_argument("--population-recent", type=int, default=4)
     parser.add_argument("--snapshot-probability", type=float, default=0.5)
+    parser.add_argument("--population-archive-every", type=int, default=0)
+    parser.add_argument("--population-archive-size", type=int, default=16)
+    parser.add_argument("--population-archive-share", type=float, default=0.5)
     parser.add_argument("--causal-sdpa", action="store_true")
     parser.add_argument("--rollout-kv-cache", action="store_true")
     parser.add_argument("--profile-collection", action="store_true")
     parser.add_argument("--rollout-device", choices=("cpu", "cuda"), default=None)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--resume", default=None)
+    parser.add_argument("--allow-source-change", action="store_true",
+                        help="resume under different trainer source (same engine and token schema)")
     return parser
 
 
@@ -627,7 +660,8 @@ def config_from_args(args: argparse.Namespace) -> HistoryPPOConfig:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config = config_from_args(args)
-    trainer = HistoryTrainer(config, args.output, device=args.device, resume=args.resume)
+    trainer = HistoryTrainer(config, args.output, device=args.device, resume=args.resume,
+                             allow_source_change=args.allow_source_change)
     def stop(signum, frame):
         trainer.stop_requested = True
     signal.signal(signal.SIGTERM, stop)

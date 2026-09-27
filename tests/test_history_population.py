@@ -88,3 +88,77 @@ def test_trainer_population_and_device_sampler_resume(tmp_path, device):
         logp, _ = resumed.recompute_log_probs(rows)
     assert np.max(np.abs(logp.cpu().numpy() - resumed.buffer.compact()["logp"])) < 2e-5
     assert resumed.learn()["encoder_grad_norm"] > 0
+
+
+def pre_archive_assignment(pool):
+    """The sampler before the archive existed, copied verbatim."""
+    seats = np.zeros(4, np.int64)
+    eligible = sorted(pool.models)[-pool.recent:]
+    if eligible:
+        anchor = int(pool.rng.integers(4))
+        for seat in range(4):
+            if seat != anchor and pool.rng.random() < pool.probability:
+                seats[seat] = pool.rng.choice(eligible)
+    return seats.tolist()
+
+
+def test_without_archive_the_sampler_and_stream_are_unchanged():
+    actor, _ = fresh_player(HistoryPolicyConfig(width=32, layers=1), 9)
+    new, old = (HistoryPopulation(actor, "t", 5) for _ in range(2))
+    for update in range(2, 40, 2):
+        new.snapshot(update)
+        old.snapshot(update)
+        for _ in range(7):
+            assert new.assignment(0, 0) == pre_archive_assignment(old)
+    assert new.rng.bit_generator.state == old.rng.bit_generator.state
+    assert new.archive == []
+
+
+def test_archive_stays_spread_and_is_sampled_resident_and_restored():
+    actor, _ = fresh_player(HistoryPolicyConfig(width=32, layers=1), 9)
+    pool = HistoryPopulation(actor, "t", 5, recent=2, snapshot_probability=1.0,
+                             archive_every=4, archive_size=4, archive_share=0.5)
+    for update in range(2, 66, 2):
+        pool.snapshot(update)
+        pool.prune({})
+    updates = [pool.metadata[i]["update"] for i in pool.archive]
+    assert len(updates) <= 4 and updates[-1] == 64 and updates[0] <= 16
+    assert all(i in pool.models for i in pool.archive)
+    recent = set(sorted(pool.models)[-2:])
+    drawn = [s for _ in range(400) for s in pool.assignment(0, 0) if s]
+    archived = [s for s in drawn if s in set(pool.archive) - recent]
+    assert 0.3 < len(archived) / len(drawn) < 0.6
+    state = pool.state_dict()
+    again = HistoryPopulation(actor, "t", 5, recent=2, snapshot_probability=1.0,
+                              archive_every=4, archive_size=4, archive_share=0.5)
+    again.load_state_dict(state)
+    assert again.archive == pool.archive
+    assert again.assignment(0, 0) == pool.assignment(0, 0)
+    with pytest.raises(ValueError, match="config mismatch"):
+        HistoryPopulation(actor, "t", 5, recent=2, snapshot_probability=1.0).load_state_dict(state)
+
+
+def test_old_population_state_loads_without_archive_fields():
+    actor, _ = fresh_player(HistoryPolicyConfig(width=32, layers=1), 9)
+    pool = HistoryPopulation(actor, "t", 5)
+    pool.snapshot(2)
+    state = pool.state_dict()
+    for key in ("archive_every", "archive_size", "archive_share", "archive"):
+        state.pop(key)
+    again = HistoryPopulation(actor, "t", 5)
+    again.load_state_dict(state)
+    assert again.archive == [] and list(again.models) == list(pool.models)
+
+
+def test_trainer_passes_archive_settings(tmp_path):
+    trainer = HistoryTrainer(HistoryPPOConfig(width=32, layers=1, heads=4, num_envs=4,
+                                              steps_per_update=16, seed=3, updates=4, epochs=1,
+                                              minibatch_matches=2, snapshot_updates=1,
+                                              population_archive_every=2,
+                                              population_archive_size=3), tmp_path)
+    trainer.run()
+    assert trainer.population.archive_every == 2
+    archived = [trainer.population.metadata[i]["update"] for i in trainer.population.archive]
+    assert archived and all(u % 2 == 0 for u in archived)
+    resumed = HistoryTrainer(HistoryPPOConfig(updates=5), tmp_path / "r", resume=tmp_path / "latest.pt")
+    assert resumed.population.archive == trainer.population.archive

@@ -1,3 +1,71 @@
+# History-budget screen results — September 27, 2026
+
+- All 9 screen runs reached exactly 2,048 updates; continuation reached its
+  targets. Estimated $7.91 of the $15 cap; zero pods / $0 per hour afterwards.
+- entropy 0.03 − control vs B11: +0.173 [−0.008, +0.342] (97.5% [−0.040,
+  +0.368]); all 3 seeds positive, also vs segment-2 → inconclusive under the
+  predeclared rule, strongest lead. epsilon 0.02 − control: −0.118, mixed signs,
+  and the only arm with PPO ratio spikes → drop this recipe. Continuation:
+  +0.115, inconclusive. Control @1024 replicates the T7 B endpoints.
+- Health gate revised twice during the run (Claude's call, flagged for review).
+  [Results](docs/reports/history-budget-results-2026-09-27.md).
+
+# History-budget formal run launched — September 27, 2026
+
+- User approved the formal run with a $15 total cap. Three screen pods and one
+  continuation pod run in parallel; the ledger counts every open pod's full cap.
+- The continuation pod was stopped by the health gate on an isolated PPO ratio
+  spike (lineage 2026092801, update 1430, approx_kl 0.65, clip 0.096). The gate
+  now tolerates one isolated spike (tested); resumed as `continuation-r1` to
+  the original absolute targets. screen-2026092721's first host was refused by
+  the 16-CPU gate. Details in the protocol report's run record.
+- Added `eval/history_entropy.py` (stratified on-policy entropy diagnostic).
+
+# History-budget preflight on RTX PRO 4500 — September 27, 2026
+
+- User decision: source identity need not match exactly across the folder move
+  and code updates, as long as it is the same model. Added an explicit,
+  recorded `allow_source_change` resume (engine digest and token schema must
+  match; `source_changes` saved in checkpoint and manifest). T7 B lineages now
+  continue under the new main; kits re-frozen at source `f8978cf1…`.
+- User approved the preflight. Pod `1y77p0hxkza7l0`, 657 s, estimated $0.132,
+  101 downloaded files verified, zero pods / $0 per hour after teardown.
+  CUDA tests 162 passed. Screen arms ~5.0 s/update concurrently (≈410
+  decisions/s, as T7); GPU resume of fresh arms and of all three T7 lineages
+  (old CUDA sampler state, source change recorded) passed.
+- Estimate for the formal run ≈$7.6 (screen 3 pods ≈3 h each, continuation
+  ≈1.45 h); not yet approved. [Protocol](docs/reports/history-budget-protocol-2026-09-27.md).
+
+# Fixed-budget screen: source integration and frozen protocol — September 27, 2026
+
+- Fast-forwarded main to `9f16759` (learner-seat epsilon floor); Python suite
+  793 passed, 13 skipped (CUDA-only and DanLM). Engine digest unchanged.
+- T7 arm-B lineages must resume under the archived T7 source (`d730650d…`,
+  identical to `14d146e`) from `train/latest.pt` (`final.pt` has no population).
+  Static resume check passed for all three; CPU resume smoke passed with the
+  CUDA sampler state swapped out, so the faithful CUDA resume is still pending.
+- Froze the screen: control / entropy 0.03 / epsilon 0.02, seeds 2026092721-23,
+  exactly 2,048 updates (4,194,304 all-seat decisions), `final.pt` endpoint;
+  continuation +1,024 updates per T7 B lineage. Kits and preflight in
+  `.work/history-budget-2026-09-27/`, runner `infra/history_budget_experiment.py`,
+  [protocol](docs/reports/history-budget-protocol-2026-09-27.md).
+- No cloud resources used. Estimate ≈$8.5 (suggested cap $12) pending the
+  preflight; needs a new budget approval. Runner and test not yet committed.
+
+# Codex/Fable training discussion archived — September 27, 2026 Toronto
+
+- Saved the [three-round transcript](docs/reports/codex-fable-training-discussion-2026-09-27.md)
+  and [decisions with next steps](docs/reports/training-next-steps-2026-09-27.md).
+  Claude Code used Fable 5.1 at high effort; both participants stayed read-only.
+- Recommended B control / entropy coefficient 0.03 / epsilon 0.02, three new
+  paired seeds each. Optional fourth experiment: extend all three existing B
+  lineages with the unchanged recipe. Automatic entropy and epsilon 0.10 deferred.
+- Next: resolve the source version and readiness, freeze seeds/budgets/endpoints,
+  then validate and measure before a newly budgeted run. Source archives were
+  hash-verified; continuation, new experiment throughput and gains remain untested.
+- Marked the older exploration queue as historical. This archival step changed
+  documentation only; no code edits, branch integration, tests or training.
+
 # History response connection experiment — September 26, 2026 UTC
 
 - Implemented the T7 three-arm comparison: PPO only, PPO plus a shared
