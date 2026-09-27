@@ -1,3 +1,36 @@
+# History response connection experiment — September 26, 2026 UTC
+
+- Implemented the T7 three-arm comparison: PPO only, PPO plus a shared
+  response-prediction task, and the same task with detached predicted
+  probabilities explicitly entering candidate scoring.
+- B/C have identical parameter tensors and initial policies; optional heads
+  do not change the base actor/critic initialization. Targets use only actual
+  executed actions and public opposing-seat events from completed rounds.
+- Added causal/label/gradient/cache/resume tests and a source-frozen kit
+  preparer, guarded remote workload and paired-seed endpoint analysis.
+- Plan: `docs/reports/history-response-plan-2026-09-26.md`. Three distinct seeds,
+  80 minutes per arm, 256 duplicate deals and 64 match pairs per baseline;
+  approved total cap $6. The original CPU attempt was stopped on the user's
+  correction: 75 files verified, pod deleted, independent zero-spend readback,
+  $0.6157 estimated cost retained inside $6.
+- Same-pod placement sweep, followed by concurrent A/B/C: CPU environment plus
+  CUDA model inference/learning achieved 1,575 decisions/s, versus CPU 876 and
+  CPU rollout/CUDA learner 1,359. Selected the measured faster CUDA model path.
+  Added optional separate rollout placement with synchronized current weights,
+  frozen snapshot mirrors, cache invalidation and sampler-device resume checks.
+- Local related suite: 126 passed, 11 CUDA skips. Dedicated split-device cloud
+  checks: 45 passed. Full cloud gate: 133 passed, one optional DanLM skip, plus
+  81 C++ cases. The formal A/B/C CUDA run is now active from fresh paired seeds.
+- Latest execution and combined ledger: `.work/history-response-speed-2026-09-26/`.
+  The controller retains the existing allocation deadline, verifies downloads,
+  confirms zero provider spend between seeds and evaluates only fixed endpoints.
+  [Placement report](docs/reports/history-device-placement-2026-09-26.md).
+- Results (September 27 UTC, $3.84 of $6): B − A +0.29 [−0.04, +0.60] and
+  C − B −0.16 [−0.35, +0.04] net levels per round vs B11; every endpoint
+  −1.2..−1.8 vs B11 with 0–2% full-match wins; entropy 0.27–0.48 at the end.
+  Build next on B (`response_mode=auxiliary`); drop the explicit connection.
+  [Results](docs/reports/history-response-results-2026-09-27.md).
+
 # History recipe campaign — September 26, 2026 UTC
 
 - Goal: lift the from-scratch history Transformer's development curve above the

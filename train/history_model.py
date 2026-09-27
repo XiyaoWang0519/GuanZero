@@ -40,6 +40,7 @@ from torch.nn import functional as F
 from train.ckpt import load_checkpoint, save_checkpoint
 from train.logs import TOKEN_DIM, public_token
 from train.model import mlp
+from train.history_response import RESPONSE_CLASSES
 
 STAGE = "history_ppo"
 TOKEN_SCHEMA_VERSION = 1      # 186 public dims + round index + phase; no forced bit
@@ -63,6 +64,7 @@ class HistoryPolicyConfig:
     critic_layers: int = 3
     obs_dim: int = int(gd.OBS_DIM)
     act_dim: int = int(gd.ACT_DIM)
+    response_mode: str = "none"  # none | auxiliary | explicit
 
     def __post_init__(self) -> None:
         if min(self.width, self.layers, self.heads, self.max_rounds, self.action_width,
@@ -72,6 +74,8 @@ class HistoryPolicyConfig:
             raise ValueError("width must be divisible by heads; window must not be negative")
         if self.obs_dim != int(gd.OBS_DIM) or self.act_dim != int(gd.ACT_DIM):
             raise ValueError("observation and action widths must match the engine")
+        if self.response_mode not in ("none", "auxiliary", "explicit"):
+            raise ValueError("response_mode must be none, auxiliary or explicit")
 
 
 # ---- public stream ----------------------------------------------------------
@@ -248,6 +252,17 @@ class HistoryActor(nn.Module):
         self.action_tower = mlp(config.act_dim, config.action_width, 2)
         self.fusion = nn.Sequential(mlp(width + config.action_width, config.fusion_width, 2),
                                     nn.Linear(config.fusion_width, 1))
+        if config.response_mode != "none":
+            # Preserve the base actor AND subsequent critic initialization.
+            # B/C allocate identical parameters. A zero bridge keeps their
+            # initial policy identical; only C receives nonzero bridge inputs.
+            with torch.random.fork_rng(devices=[]):
+                self.response_head = nn.Sequential(
+                    mlp(width + config.action_width, width, 2),
+                    nn.Linear(width, RESPONSE_CLASSES))
+                self.response_bridge = nn.Linear(RESPONSE_CLASSES,
+                                                  width + config.action_width, bias=False)
+                nn.init.zeros_(self.response_bridge.weight)
 
     # -- public side ----------------------------------------------------------
 
@@ -348,13 +363,34 @@ class HistoryActor(nn.Module):
         state = self.attention_norm(query + attended)
         return self.output_norm(state + self.feed_forward(state))
 
-    def candidate_logits(self, state: Tensor, cand: Tensor, offsets: Tensor) -> Tensor:
-        """One logit per concrete candidate of the full canonical set, [sum_k]."""
+    def candidate_outputs(self, state: Tensor, cand: Tensor, offsets: Tensor,
+                          *, predict: bool = False) -> tuple[Tensor, Tensor | None]:
+        """Policy logits and optional response logits for every legal candidate.
+
+        Prediction uses the observer state plus that candidate, without a
+        future event or a target-seat label. The explicit bridge reads detached
+        probabilities: PPO learns to use predictions, while the response head
+        itself is supervised by actual public outcomes in both B and C.
+        """
         counts = offsets[1:] - offsets[:-1]
         rows = torch.repeat_interleave(torch.arange(len(state), device=state.device), counts,
                                        output_size=len(cand))
         fused = torch.cat((state[rows], self.action_tower(cand.float())), dim=-1)
-        return self.fusion(fused).squeeze(-1)
+        response = None
+        mode = self.config.response_mode
+        if mode != "none" and (predict or mode == "explicit"):
+            response = self.response_head(fused)
+        if mode == "explicit":
+            feature = response.softmax(-1).detach() - 1.0 / RESPONSE_CLASSES
+            fused = fused + self.response_bridge(feature)
+        elif mode == "auxiliary":
+            # Matched bridge shape/parameter count without response information.
+            fused = fused + self.response_bridge(fused.new_zeros(len(cand), RESPONSE_CLASSES))
+        return self.fusion(fused).squeeze(-1), response
+
+    def candidate_logits(self, state: Tensor, cand: Tensor, offsets: Tensor) -> Tensor:
+        """One logit per concrete candidate of the full canonical set, [sum_k]."""
+        return self.candidate_outputs(state, cand, offsets)[0]
 
     def candidate_log_probs(self, inputs: DecisionInputs, encoded: Tensor | None = None
                             ) -> Tensor:

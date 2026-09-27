@@ -30,6 +30,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import copy
 from dataclasses import asdict, dataclass, fields
 import json
 import math
@@ -52,6 +53,7 @@ from train.history_model import (STAGE, TOKEN_SCHEMA_VERSION,
                                  fresh_player, load_history_checkpoint, save_history_checkpoint)
 from train.history_rollout import (HistoryCollector, MatchEventStore, SequenceRolloutBuffer)
 from train.history_population import HistoryPopulation
+from train.history_response import RESPONSE_SCHEMA, opponent_response_labels
 from train.logs import TOKEN_DIM
 
 REWARD_SEMANTICS = {
@@ -75,6 +77,8 @@ class HistoryPPOConfig:
     heads: int = 4
     window: int = 0
     max_rounds: int = 16
+    response_mode: str = "none"
+    response_coef: float = 0.1
     # rollout
     num_envs: int = 16
     num_threads: int = 1
@@ -83,6 +87,7 @@ class HistoryPPOConfig:
     causal_sdpa: bool = False           # opt-in until same-device CUDA A/B acceptance
     rollout_kv_cache: bool = False      # public-only, invalidated across learner updates
     profile_collection: bool = False   # synchronized phase timings; diagnostic only
+    rollout_device: str | None = None  # None shares the learner device
     # learner
     lr: float = 3e-4
     critic_lr: float | None = None       # None: same as lr
@@ -104,6 +109,8 @@ class HistoryPPOConfig:
     snapshot_probability: float = 0.5
 
     def __post_init__(self) -> None:
+        if self.rollout_device not in (None, 'cpu', 'cuda'):
+            raise ValueError('rollout_device must be cpu, cuda, or None')
         if min(self.num_envs, self.steps_per_update, self.epochs, self.minibatch_matches,
                self.checkpoint_updates) <= 0:
             raise ValueError("environment, step, epoch, minibatch and checkpoint counts "
@@ -117,10 +124,17 @@ class HistoryPPOConfig:
             raise ValueError("invalid population schedule")
         if self.rollout_kv_cache and self.window:
             raise ValueError("rollout KV cache requires full history")
+        if self.response_mode not in ("none", "auxiliary", "explicit"):
+            raise ValueError("unknown response_mode")
+        if not math.isfinite(self.response_coef) or self.response_coef < 0:
+            raise ValueError("response_coef must be finite and nonnegative")
+        if self.response_mode != "none" and self.response_coef == 0:
+            raise ValueError("prediction arms require a positive response_coef")
 
     def policy_config(self) -> HistoryPolicyConfig:
         return HistoryPolicyConfig(width=self.width, layers=self.layers, heads=self.heads,
-                                   window=self.window, max_rounds=self.max_rounds)
+                                   window=self.window, max_rounds=self.max_rounds,
+                                   response_mode=self.response_mode)
 
     @classmethod
     def from_payload(cls, config: dict[str, Any], **overrides: Any) -> "HistoryPPOConfig":
@@ -149,7 +163,8 @@ class HistoryTrainer:
     """Collect, learn, checkpoint. ``update()`` is one PPO iteration."""
 
     STAT_KEYS = ("policy_loss", "value_loss", "entropy", "approx_kl", "clip_fraction",
-                 "ratio_deviation", "actor_grad_norm", "encoder_grad_norm", "critic_grad_norm")
+                 "ratio_deviation", "actor_grad_norm", "encoder_grad_norm", "critic_grad_norm",
+                 "response_loss", "response_accuracy", "response_event_fraction")
 
     def __init__(self, config: HistoryPPOConfig, output: str | Path, device: str = "cpu",
                  resume: str | Path | None = None) -> None:
@@ -169,6 +184,9 @@ class HistoryTrainer:
             actor, critic = fresh_player(config.policy_config(), config.seed)
             self.lineage = f"{STAGE}-{config.seed}-{uuid.uuid4().hex[:8]}"
         self.config = config
+        self.rollout_device = torch.device(config.rollout_device or self.device)
+        if self.rollout_device.type == 'cuda' and not torch.cuda.is_available():
+            raise RuntimeError('CUDA rollout requested but CUDA is unavailable')
         self.run_identity = dict(engine_digest=engine_digest(), source=source_identity(),
                                  token_schema=TOKEN_SCHEMA_VERSION)
         if payload is not None and payload.get("run_identity") != self.run_identity:
@@ -183,7 +201,7 @@ class HistoryTrainer:
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=config.lr)
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=critic_lr)
         self.rng = np.random.default_rng(config.seed)
-        self.generator = torch.Generator(device=self.device)
+        self.generator = torch.Generator(device=self.rollout_device)
         self.generator.manual_seed(config.seed)
         self.progress: dict[str, Any] = {"updates": 0, "decisions": 0, "rounds": 0,
                                          "matches": 0, "samples": 0, "learner_rows": 0,
@@ -196,7 +214,7 @@ class HistoryTrainer:
             self.critic_optimizer.load_state_dict(payload["optimizer"]["critic"])
             self.progress.update(payload["progress"])
             rng = payload["rng"]
-            if rng.get("sampler_device", "cpu") != self.device.type:
+            if rng.get("sampler_device", "cpu") != self.rollout_device.type:
                 raise ValueError("resume requires the same sampler device type")
             if "population" in payload:
                 self.population.load_state_dict(payload["population"])
@@ -210,10 +228,13 @@ class HistoryTrainer:
                              log_public_actions=True, log_env_limit=config.num_envs)
         self.store = MatchEventStore()
         self.buffer = SequenceRolloutBuffer()
-        self.collector = HistoryCollector(self.env, self.actor, self.store, self.buffer,
-                                          self.generator, self.device,
+        self.rollout_actor = (self.actor if self.rollout_device == self.device else
+                              copy.deepcopy(self.actor).to(self.rollout_device).requires_grad_(False))
+        self.rollout_snapshots: dict[int, Any] = {}
+        self.collector = HistoryCollector(self.env, self.rollout_actor, self.store, self.buffer,
+                                          self.generator, self.rollout_device,
                                           seat_policy=self.population.assignment,
-                                          resolve_policy=self.population.resolve,
+                                          resolve_policy=self.resolve_rollout_policy,
                                           assignment_log=self.population_event,
                                           kv_cache=config.rollout_kv_cache,
                                           profile=config.profile_collection)
@@ -247,6 +268,13 @@ class HistoryTrainer:
             "token_schema": {"version": TOKEN_SCHEMA_VERSION, "dim": int(TOKEN_DIM),
                              "forced_bit": False, "private_tribute_flags": False},
             "reward": REWARD_SEMANTICS,
+            "response_prediction": {
+                "schema": RESPONSE_SCHEMA, "mode": self.config.response_mode,
+                "coefficient": self.config.response_coef,
+                "target_source": "executed actions and future public events in own-lineage self-play",
+                "policy_input": "detached predicted probabilities only in explicit mode",
+                "target_seat_or_future_events_in_actor_input": False,
+            },
             "candidates": "full canonical set in engine order; every candidate selectable",
             "seats": "match-pinned current/own-lineage snapshot seats; learner rows only",
             "population": {"snapshot_updates": self.config.snapshot_updates,
@@ -261,13 +289,33 @@ class HistoryTrainer:
             "parameters": {"actor": count_parameters(self.actor),
                            "critic": count_parameters(self.critic)},
             "torch": torch.__version__, "device": str(self.device),
+            "rollout_device": str(self.rollout_device),
+            "weight_transfer": "before each collection; included in collection timing",
             "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
         }
         (self.output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
     # -- one iteration ----------------------------------------------------------
 
+    def resolve_rollout_policy(self, identity: int):
+        if self.rollout_device == self.device:
+            return self.population.resolve(identity)
+        if identity == 0:
+            return self.rollout_actor
+        if identity not in self.rollout_snapshots:
+            self.rollout_snapshots[identity] = copy.deepcopy(
+                self.population.resolve(identity)).to(self.rollout_device)
+        return self.rollout_snapshots[identity]
+
     def collect(self):
+        if self.rollout_actor is not self.actor:
+            # Keep the learner and sampling weights identical. load_state_dict
+            # changes parameter versions, invalidating the public KV cache.
+            self.rollout_actor.load_state_dict({k: v.detach().to(self.rollout_device)
+                                               for k, v in self.actor.state_dict().items()})
+            for identity in list(self.rollout_snapshots):
+                if identity not in self.population.models:
+                    del self.rollout_snapshots[identity]
         self.collector.policy_decisions.clear()
         return self.collector.collect(self.config.steps_per_update,
                                       version=self.progress["updates"])
@@ -298,7 +346,24 @@ class HistoryTrainer:
     def minibatch_loss(self, rows: np.ndarray) -> dict[str, torch.Tensor]:
         cfg = self.config
         buffer = self.buffer
-        log_prob, entropy = self.recompute_log_probs(rows)
+        response_stats = {}
+        if cfg.response_mode == "none":
+            log_prob, entropy = self.recompute_log_probs(rows)
+        else:
+            from train.history_model import segment_log_softmax
+            inputs, chosen = buffer.decision_inputs(rows, self.store, self.device)
+            state = self.actor.decision_states(None, inputs)
+            logits, response = self.actor.candidate_outputs(state, inputs.cand, inputs.offsets,
+                                                            predict=True)
+            all_log_probs = segment_log_softmax(logits, inputs.rows, inputs.decisions)
+            log_prob = all_log_probs[chosen]
+            entropy = segment_entropy(all_log_probs, inputs.rows, inputs.decisions)
+            targets = torch.as_tensor(opponent_response_labels(buffer, self.store, rows),
+                                      device=self.device)
+            prediction = response[chosen]   # outcomes exist ONLY for executed actions
+            response_stats = {"response_loss": F.cross_entropy(prediction, targets),
+                              "response_accuracy": (prediction.argmax(-1) == targets).float().mean(),
+                              "response_event_fraction": (targets != 0).float().mean()}
         old = torch.as_tensor(buffer.compact()["logp"][rows], device=self.device)
         advantage = torch.as_tensor(buffer.advantage[rows], device=self.device)
         returns = torch.as_tensor(buffer.returns[rows], device=self.device)
@@ -310,6 +375,8 @@ class HistoryTrainer:
                                 ratio.clamp(1 - cfg.clip, 1 + cfg.clip) * advantage)
         surrogate = -clipped.mean()
         policy_total = surrogate - cfg.entropy * entropy.mean()
+        if response_stats:
+            policy_total = policy_total + cfg.response_coef * response_stats["response_loss"]
         data = buffer.compact()
         obs = torch.as_tensor(data["obs"][rows], device=self.device)
         hidden = torch.as_tensor(data["hidden"][rows], device=self.device)
@@ -321,7 +388,7 @@ class HistoryTrainer:
         return {"policy_total": policy_total, "value_total": cfg.value_coef * value_loss,
                 "policy_loss": surrogate, "value_loss": value_loss, "entropy": entropy.mean(),
                 "approx_kl": approx_kl, "clip_fraction": clip_fraction,
-                "ratio_deviation": ratio_deviation}
+                "ratio_deviation": ratio_deviation, **response_stats}
 
     def learn(self) -> dict[str, Any]:
         cfg = self.config
@@ -452,7 +519,7 @@ class HistoryTrainer:
                                             - self.started)
         rng = rng_state(self.rng)
         rng["sampler"] = self.generator.get_state()
-        rng["sampler_device"] = self.device.type
+        rng["sampler_device"] = self.rollout_device.type
         payload = checkpoint_payload(
             self.actor, self.critic, lineage=self.lineage, seed=self.config.seed,
             optimizer={"actor": self.actor_optimizer.state_dict(),
@@ -496,6 +563,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--heads", type=int, default=4)
     parser.add_argument("--window", type=int, default=0)
     parser.add_argument("--max-rounds", type=int, default=16)
+    parser.add_argument("--response-mode", choices=("none", "auxiliary", "explicit"), default="none")
+    parser.add_argument("--response-coef", type=float, default=0.1)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--critic-lr", type=float, default=None)
     parser.add_argument("--clip", type=float, default=0.2)
@@ -514,6 +583,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--causal-sdpa", action="store_true")
     parser.add_argument("--rollout-kv-cache", action="store_true")
     parser.add_argument("--profile-collection", action="store_true")
+    parser.add_argument("--rollout-device", choices=("cpu", "cuda"), default=None)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--resume", default=None)
     return parser

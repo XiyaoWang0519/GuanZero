@@ -6,6 +6,20 @@ history Transformer through self-play RL. Old MLPs are evaluation-only.
 
 ## Implementation status and entrypoints
 
+T7 connection ablation is implemented with `response_mode=none|auxiliary|explicit`;
+the default remains `none`. The [three-arm plan](reports/history-response-plan-2026-09-26.md)
+defines the public response target, paired seeds, fixed endpoints and approved
+compute cap. `python -m infra.history_response_experiment prepare --output DIR`
+creates reviewable kits only. The $6 cloud campaign was corrected after same-host device measurements:
+CPU environment simulation with CUDA model inference and learning delivered
+1.80x concurrent decision throughput versus CPU (`--rollout-device` is optional;
+default shares the learner device).
+[Device-placement report](reports/history-device-placement-2026-09-26.md).
+The three-seed comparison finished on September 27 UTC ($3.84 of $6):
+`auxiliary` beat PPO-only by about +0.3 levels per round (exploratory, three
+seeds), `explicit` was not better than `auxiliary`, and all endpoints still lose
+to B11. [Results](reports/history-response-results-2026-09-27.md).
+
 The history-RL route completed a bounded RTX 4090 cold-start/resume/population
 pilot on September 26 UTC. The [T4 receipt](reports/history-t4-pilot-2026-09-26.md)
 records its measured configuration and limits. Larger runs still need their
