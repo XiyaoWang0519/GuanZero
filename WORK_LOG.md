@@ -1,3 +1,12 @@
+# Lineage continuation with actor ranks — September 28, 2026
+
+- Continued the overnight large lineage from update 675 to 844 (55.3M
+  decisions) on one Vast RTX 4090, $1.16. Four DDP ranks on one GPU with
+  `--ddp-global-minibatch` (same batch, tier 2): 3,324 vs 1,871 decisions/s
+  (1.78x), GPU 82% vs 55%, 21.5 GB. Snapshot cadence 8 (tier 3, separate
+  branch to update 919): +13% more, residents 5-6 vs 14-17. No strength
+  evaluation yet. [Report](docs/reports/history-actor-ranks-2026-09-28.md).
+
 # Overnight large-model run, 1,024 envs — September 28, 2026
 
 - w128/L4/H8 from scratch, large_recent recipe, 1,024 envs, 7.3 h on one Vast
