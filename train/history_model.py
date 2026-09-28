@@ -256,6 +256,10 @@ class HistoryActor(nn.Module):
         # Opt-in with batched attention: one q/out projection over all rows.
         # Same FP32 math; only the GEMM reduction order may differ (not bitwise).
         self.wide_private_projection = False
+        # Opt-in: several decisions per match (the learner's minibatches) in
+        # one padded attention call instead of a per-match loop with a device
+        # nonzero each. Same FP32 math; reduction order may differ (not bitwise).
+        self.batched_match_attention = False
         width = config.width
         self.public = nn.Linear(TOKEN_DIM, width)
         self.round_embedding = nn.Embedding(config.max_rounds, width)
@@ -396,6 +400,33 @@ class HistoryActor(nn.Module):
         out = out[:, :, 0].reshape(count, width)
         return project(self.out_proj, out)
 
+    def _attend_by_match(self, query: Tensor, keys: Tensor, values: Tensor,
+                         match_index: Tensor, prefix: Tensor) -> Tensor:
+        """All matches' decisions in one padded SDPA call, [n, w].
+
+        Decisions are placed at (match, rank within match); padding slots see
+        position 0 only, so no row is fully masked, and are never read back.
+        """
+        count, matches = len(query), keys.shape[0]
+        width, heads = self.config.width, self.config.heads
+        depth = width // heads
+        per_match = torch.bincount(match_index, minlength=matches)
+        slots = int(per_match.max())            # the only host synchronization
+        order = torch.argsort(match_index, stable=True)
+        starts = torch.cumsum(per_match, 0) - per_match
+        rank = torch.empty_like(match_index)
+        rank[order] = torch.arange(count, device=query.device) - starts[match_index[order]]
+        q = self.q_proj(query).view(count, heads, depth)
+        padded = q.new_zeros(matches, slots, heads, depth).index_put((match_index, rank), q)
+        visible = prefix.new_zeros(matches, slots).index_put((match_index, rank), prefix)
+        allowed = torch.arange(keys.shape[1], device=keys.device)[None, None] <= visible[..., None]
+        k = keys.view(matches, keys.shape[1], heads, depth).transpose(1, 2)
+        v = values.view(matches, values.shape[1], heads, depth).transpose(1, 2)
+        out = F.scaled_dot_product_attention(padded.transpose(1, 2), k, v,
+                                             attn_mask=allowed[:, None])
+        out = out.transpose(1, 2)[match_index, rank].reshape(count, width)
+        return self.out_proj(out)
+
     def decision_states(self, encoded: Tensor | None, inputs: DecisionInputs) -> Tensor:
         """One state per decision from its private query and visible prefix.
 
@@ -418,6 +449,10 @@ class HistoryActor(nn.Module):
                     and len(query) > 1):
                 allowed = positions[None] <= inputs.prefix[:, None]
                 attended = self._attend_independent(query, keys, values, allowed)
+            elif (self.batched_match_attention and not inputs.one_decision_per_stream
+                  and len(query) > 1):
+                attended = self._attend_by_match(query, keys, values, inputs.match_index,
+                                                 inputs.prefix)
             else:
                 attended = torch.empty_like(query)
                 for b in range(encoded.shape[0]):

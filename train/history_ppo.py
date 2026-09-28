@@ -90,6 +90,7 @@ class HistoryPPOConfig:
     rollout_batched_attention: bool = False  # opt-in; target-device bitwise acceptance required
     rollout_wide_projection: bool = False  # with batched attention: one q/out GEMM; FP32, not bitwise
     rollout_private_graphs: bool = False  # bounded CUDA inference graphs; sampling stays eager
+    learner_batched_attention: bool = False  # one padded attention call per minibatch; FP32, not bitwise
     rollout_graph_budget_mb: int = 512
     rollout_graph_policy_budget_mb: int = 128  # per-policy cap inside the total budget
     rollout_triton_cache: bool = False  # lossless KV update/packing; requires Triton
@@ -242,6 +243,7 @@ class HistoryTrainer:
         self.actor.causal_sdpa = config.causal_sdpa
         self.actor.batched_private_attention = config.rollout_batched_attention
         self.actor.wide_private_projection = config.rollout_wide_projection
+        self.actor.batched_match_attention = config.learner_batched_attention
         self.critic = critic.to(self.device).train()
         critic_lr = config.critic_lr if config.critic_lr is not None else config.lr
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=config.lr)
@@ -349,6 +351,7 @@ class HistoryTrainer:
                           "rollout_batched_attention": self.rollout_actor.batched_private_attention,
                           "rollout_wide_projection": self.rollout_actor.wide_private_projection,
                           "rollout_private_graphs": self.collector.private_graphs,
+                          "learner_batched_attention": self.actor.batched_match_attention,
                           "rollout_graph_budget_mb": self.config.rollout_graph_budget_mb,
                           "rollout_graph_policy_budget_mb": self.config.rollout_graph_policy_budget_mb,
                           "rollout_triton_cache": self.collector.triton_cache,
@@ -682,6 +685,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="with --rollout-batched-attention: one q/out projection over all "
                              "rows (FP32; reduction order differs, not bitwise)")
     parser.add_argument("--rollout-private-graphs", action="store_true")
+    parser.add_argument("--learner-batched-attention", action="store_true",
+                        help="learner: all matches of a minibatch in one padded attention "
+                             "call (FP32; reduction order differs, not bitwise)")
     parser.add_argument("--rollout-graph-budget-mb", type=int, default=512)
     parser.add_argument("--rollout-graph-policy-budget-mb", type=int, default=128,
                         help="per-policy private-graph cap within the total budget")
