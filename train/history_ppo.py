@@ -54,6 +54,7 @@ from train.history_model import (STAGE, TOKEN_SCHEMA_VERSION,
 from train.history_rollout import (HistoryCollector, MatchEventStore, SequenceRolloutBuffer)
 from train.history_population import HistoryPopulation
 from train.history_response import RESPONSE_SCHEMA, opponent_response_labels
+from train.history_transfers import runtime_settings
 from train.logs import TOKEN_DIM
 
 REWARD_SEMANTICS = {
@@ -86,6 +87,11 @@ class HistoryPPOConfig:
     seed: int = 0
     causal_sdpa: bool = False           # opt-in until same-device CUDA A/B acceptance
     rollout_kv_cache: bool = False      # public-only, invalidated across learner updates
+    rollout_batched_attention: bool = False  # opt-in; target-device bitwise acceptance required
+    rollout_private_graphs: bool = False  # bounded CUDA inference graphs; sampling stays eager
+    rollout_graph_budget_mb: int = 512
+    rollout_triton_cache: bool = False  # lossless KV update/packing; requires Triton
+    rollout_triton_min_batch: int = 1
     profile_collection: bool = False   # synchronized phase timings; diagnostic only
     rollout_device: str | None = None  # None shares the learner device
     # learner
@@ -117,6 +123,12 @@ class HistoryPPOConfig:
     snapshot_probability: float = 0.5
 
     def __post_init__(self) -> None:
+        if self.rollout_graph_budget_mb < 1:
+            raise ValueError('rollout graph memory budget must be positive')
+        if self.rollout_triton_min_batch < 1:
+            raise ValueError('rollout Triton minimum batch must be positive')
+        if (self.rollout_private_graphs or self.rollout_triton_cache) and not self.rollout_kv_cache:
+            raise ValueError('CUDA rollout optimizations require rollout_kv_cache')
         if self.rollout_device not in (None, 'cpu', 'cuda'):
             raise ValueError('rollout_device must be cpu, cuda, or None')
         if min(self.num_envs, self.steps_per_update, self.epochs, self.minibatch_matches,
@@ -224,6 +236,7 @@ class HistoryTrainer:
         # behaviour log-probabilities and the learner's recomputation.
         self.actor = actor.to(self.device).train()
         self.actor.causal_sdpa = config.causal_sdpa
+        self.actor.batched_private_attention = config.rollout_batched_attention
         self.critic = critic.to(self.device).train()
         critic_lr = config.critic_lr if config.critic_lr is not None else config.lr
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=config.lr)
@@ -268,6 +281,10 @@ class HistoryTrainer:
                                           resolve_policy=self.resolve_rollout_policy,
                                           assignment_log=self.population_event,
                                           kv_cache=config.rollout_kv_cache,
+                                          private_graphs=config.rollout_private_graphs,
+                                          private_graph_budget_mb=config.rollout_graph_budget_mb,
+                                          triton_cache=config.rollout_triton_cache,
+                                          triton_min_batch=config.rollout_triton_min_batch,
                                           profile=config.profile_collection,
                                           temperature=config.rollout_temperature,
                                           epsilon=config.rollout_epsilon)
@@ -320,8 +337,15 @@ class HistoryTrainer:
                            "archive_size": self.config.population_archive_size,
                            "archive_share": self.config.population_archive_share,
                            "guaranteed_learner_seats": 1},
-            "inference": {"causal_sdpa": self.config.causal_sdpa,
-                          "rollout_kv_cache": self.config.rollout_kv_cache,
+            "inference": {**runtime_settings(self.rollout_device),
+                          "causal_sdpa": self.rollout_actor.causal_sdpa,
+                          "rollout_kv_cache": self.collector.kv_cache,
+                          "rollout_batched_attention": self.rollout_actor.batched_private_attention,
+                          "rollout_private_graphs": self.collector.private_graphs,
+                          "rollout_graph_budget_mb": self.config.rollout_graph_budget_mb,
+                          "rollout_triton_cache": self.collector.triton_cache,
+                          "rollout_triton_min_batch": self.collector.triton_min_batch,
+                          "reuse_cache_lengths": self.collector.reuse_cache_lengths,
                           "cache_boundary": "public-only; separate policy/env/match; learner invalidated before learn"},
             "resume": "restore optimizer/RNG/population; discard partial rounds and assignments; "
                       "restart environments and public histories; no persistent cache",
@@ -550,6 +574,8 @@ class HistoryTrainer:
             "cache_bytes": self.collector.cache_metrics()["bytes"],
             "cache": self.collector.cache_metrics(),
             "collection_cache": collection_cache,
+            "private_graphs": self.collector.graph_metrics(),
+            "cache_transfers": self.collector.transfer_metrics(),
             "collection_phase_seconds": collected.phase_seconds,
             "collection_profile_synchronized": self.config.profile_collection,
             "collection_policy_batches": collected.policy_batches,
@@ -643,6 +669,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--population-archive-share", type=float, default=0.5)
     parser.add_argument("--causal-sdpa", action="store_true")
     parser.add_argument("--rollout-kv-cache", action="store_true")
+    parser.add_argument("--rollout-batched-attention", action="store_true")
+    parser.add_argument("--rollout-private-graphs", action="store_true")
+    parser.add_argument("--rollout-graph-budget-mb", type=int, default=512)
+    parser.add_argument("--rollout-triton-cache", action="store_true")
+    parser.add_argument("--rollout-triton-min-batch", type=int, default=1)
     parser.add_argument("--profile-collection", action="store_true")
     parser.add_argument("--rollout-device", choices=("cpu", "cuda"), default=None)
     parser.add_argument("--device", default="cpu")

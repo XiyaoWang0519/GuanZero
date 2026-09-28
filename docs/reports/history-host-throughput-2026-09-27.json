@@ -1,0 +1,977 @@
+{
+  "schema": 1,
+  "baseline_revision": "42f70a49032273827a5f36bc71d7d72f765068d4",
+  "claim": "Local CPU frozen-policy collection only; CUDA equality and throughput pending; 5-10x target not reached.",
+  "rounds": {
+    "exploratory": {
+      "results": [
+        {
+          "case": "current",
+          "variant": "baseline",
+          "order": 0,
+          "path": "/Users/xiyaowang/Developer/Projects/GuanZero-throughput/.work/throughput-2026-09-27/current-0-baseline",
+          "exact_sha256": "601aaa2c4daca2a19dd2684bd7e0f093eea5f37bbb1eae25f69a4230f203cbd1",
+          "summary": {
+            "measured_chunks": 6,
+            "collect_seconds": 3.7850241659907624,
+            "decisions": 12288,
+            "decisions_per_second": 3246.478611790715,
+            "inference_decisions": 11817,
+            "policy_batches": 384,
+            "mean_policy_batch": 30.7734375,
+            "max_prefix": 1015,
+            "phase_seconds": {}
+          },
+          "source": {
+            "revision": "42f70a49032273827a5f36bc71d7d72f765068d4",
+            "source_sha256": "c3178df3e24d3484d581a8ad57d927d584487f2ff0a5a2ec7bb23ee59207d27c",
+            "engine_source_sha256": "606ff1e735823cefb9968a974991bfc5ca325c2ef1cb8ea5a5540f174ce84096",
+            "engine_binary_sha256": "f7b7af5a34fd4c2e0b5c3c2cc7ed53bec31f3149c477daf63b81ebdfb85911fe"
+          }
+        },
+        {
+          "case": "current",
+          "variant": "optimized",
+          "order": 1,
+          "path": "/Users/xiyaowang/Developer/Projects/GuanZero-throughput/.work/throughput-2026-09-27/current-1-optimized",
+          "exact_sha256": "601aaa2c4daca2a19dd2684bd7e0f093eea5f37bbb1eae25f69a4230f203cbd1",
+          "summary": {
+            "measured_chunks": 6,
+            "collect_seconds": 3.5502815829822794,
+            "decisions": 12288,
+            "decisions_per_second": 3461.1339165041472,
+            "inference_decisions": 11817,
+            "policy_batches": 384,
+            "mean_policy_batch": 30.7734375,
+            "max_prefix": 1015,
+            "phase_seconds": {}
+          },
+          "source": {
+            "revision": "42f70a49032273827a5f36bc71d7d72f765068d4",
+            "source_sha256": "4ef094d639b082b4ef34fb931d10303da227b376c4d05761008f39b9d5388c1c",
+            "engine_source_sha256": "606ff1e735823cefb9968a974991bfc5ca325c2ef1cb8ea5a5540f174ce84096",
+            "engine_binary_sha256": "f7b7af5a34fd4c2e0b5c3c2cc7ed53bec31f3149c477daf63b81ebdfb85911fe"
+          }
+        },
+        {
+          "case": "current",
+          "variant": "optimized",
+          "order": 2,
+          "path": "/Users/xiyaowang/Developer/Projects/GuanZero-throughput/.work/throughput-2026-09-27/current-2-optimized",
+          "exact_sha256": "601aaa2c4daca2a19dd2684bd7e0f093eea5f37bbb1eae25f69a4230f203cbd1",
+          "summary": {
+            "measured_chunks": 6,
+            "collect_seconds": 3.6472753351554275,
+            "decisions": 12288,
+            "decisions_per_second": 3369.09031285853,
+            "inference_decisions": 11817,
+            "policy_batches": 384,
+            "mean_policy_batch": 30.7734375,
+            "max_prefix": 1015,
+            "phase_seconds": {}
+          },
+          "source": {
+            "revision": "42f70a49032273827a5f36bc71d7d72f765068d4",
+            "source_sha256": "4ef094d639b082b4ef34fb931d10303da227b376c4d05761008f39b9d5388c1c",
+            "engine_source_sha256": "606ff1e735823cefb9968a974991bfc5ca325c2ef1cb8ea5a5540f174ce84096",
+            "engine_binary_sha256": "f7b7af5a34fd4c2e0b5c3c2cc7ed53bec31f3149c477daf63b81ebdfb85911fe"
+          }
+        },
+        {
+          "case": "current",
+          "variant": "baseline",
+          "order": 3,
+          "path": "/Users/xiyaowang/Developer/Projects/GuanZero-throughput/.work/throughput-2026-09-27/current-3-baseline",
+          "exact_sha256": "601aaa2c4daca2a19dd2684bd7e0f093eea5f37bbb1eae25f69a4230f203cbd1",
+          "summary": {
+            "measured_chunks": 6,
+            "collect_seconds": 3.739177291165106,
+            "decisions": 12288,
+            "decisions_per_second": 3286.284399788685,
+            "inference_decisions": 11817,
+            "policy_batches": 384,
+            "mean_policy_batch": 30.7734375,
+            "max_prefix": 1015,
+            "phase_seconds": {}
+          },
+          "source": {
+            "revision": "42f70a49032273827a5f36bc71d7d72f765068d4",
+            "source_sha256": "c3178df3e24d3484d581a8ad57d927d584487f2ff0a5a2ec7bb23ee59207d27c",
+            "engine_source_sha256": "606ff1e735823cefb9968a974991bfc5ca325c2ef1cb8ea5a5540f174ce84096",
+            "engine_binary_sha256": "f7b7af5a34fd4c2e0b5c3c2cc7ed53bec31f3149c477daf63b81ebdfb85911fe"
+          }
+        },
+        {
+          "case": "recent",
+          "variant": "baseline",
+          "order": 0,
+          "path": "/Users/xiyaowang/Developer/Projects/GuanZero-throughput/.work/throughput-2026-09-27/recent-0-baseline",
+          "exact_sha256": "9d268c2e964a744ba15285728166139734e204c6a199c8a0d3cc61815174a6f7",
+          "summary": {
+            "measured_chunks": 6,
+            "collect_seconds": 5.559861252084374,
+            "decisions": 12288,
+            "decisions_per_second": 2210.127095418661,
+            "inference_decisions": 11876,
+            "policy_batches": 1862,
+            "mean_policy_batch": 6.378088077336198,
+            "max_prefix": 989,
+            "phase_seconds": {}
+          },
+          "source": {
+            "revision": "42f70a49032273827a5f36bc71d7d72f765068d4",
+            "source_sha256": "c3178df3e24d3484d581a8ad57d927d584487f2ff0a5a2ec7bb23ee59207d27c",
+            "engine_source_sha256": "606ff1e735823cefb9968a974991bfc5ca325c2ef1cb8ea5a5540f174ce84096",
+            "engine_binary_sha256": "f7b7af5a34fd4c2e0b5c3c2cc7ed53bec31f3149c477daf63b81ebdfb85911fe"
+          }
+        },
+        {
+          "case": "recent",
+          "variant": "optimized",
+          "order": 1,
+          "path": "/Users/xiyaowang/Developer/Projects/GuanZero-throughput/.work/throughput-2026-09-27/recent-1-optimized",
+          "exact_sha256": "9d268c2e964a744ba15285728166139734e204c6a199c8a0d3cc61815174a6f7",
+          "summary": {
+            "measured_chunks": 6,
+            "collect_seconds": 5.670840501203202,
+            "decisions": 12288,
+            "decisions_per_second": 2166.8745572006146,
+            "inference_decisions": 11876,
+            "policy_batches": 1862,
+            "mean_policy_batch": 6.378088077336198,
+            "max_prefix": 989,
+            "phase_seconds": {}
+          },
+          "source": {
+            "revision": "42f70a49032273827a5f36bc71d7d72f765068d4",
+            "source_sha256": "8d67b5c120de3a70a1f4acb58300f42d34ade83bc5f8368d1f46ee30a7281f7c",
+            "engine_source_sha256": "606ff1e735823cefb9968a974991bfc5ca325c2ef1cb8ea5a5540f174ce84096",
+            "engine_binary_sha256": "f7b7af5a34fd4c2e0b5c3c2cc7ed53bec31f3149c477daf63b81ebdfb85911fe"
+          }
+        },
+        {
+          "case": "recent",
+          "variant": "optimized",
+          "order": 2,
+          "path": "/Users/xiyaowang/Developer/Projects/GuanZero-throughput/.work/throughput-2026-09-27/recent-2-optimized",
+          "exact_sha256": "9d268c2e964a744ba15285728166139734e204c6a199c8a0d3cc61815174a6f7",
+          "summary": {
+            "measured_chunks": 6,
+            "collect_seconds": 5.6438532510073856,
+            "decisions": 12288,
+            "decisions_per_second": 2177.235915516883,
+            "inference_decisions": 11876,
+            "policy_batches": 1862,
+            "mean_policy_batch": 6.378088077336198,
+            "max_prefix": 989,
+            "phase_seconds": {}
+          },
+          "source": {
+            "revision": "42f70a49032273827a5f36bc71d7d72f765068d4",
+            "source_sha256": "8d67b5c120de3a70a1f4acb58300f42d34ade83bc5f8368d1f46ee30a7281f7c",
+            "engine_source_sha256": "606ff1e735823cefb9968a974991bfc5ca325c2ef1cb8ea5a5540f174ce84096",
+            "engine_binary_sha256": "f7b7af5a34fd4c2e0b5c3c2cc7ed53bec31f3149c477daf63b81ebdfb85911fe"
+          }
+        },
+        {
+          "case": "recent",
+          "variant": "baseline",
+          "order": 3,
+          "path": "/Users/xiyaowang/Developer/Projects/GuanZero-throughput/.work/throughput-2026-09-27/recent-3-baseline",
+          "exact_sha256": "9d268c2e964a744ba15285728166139734e204c6a199c8a0d3cc61815174a6f7",
+          "summary": {
+            "measured_chunks": 6,
+            "collect_seconds": 6.024564334074967,
+            "decisions": 12288,
+            "decisions_per_second": 2039.6495611307541,
+            "inference_decisions": 11876,
+            "policy_batches": 1862,
+            "mean_policy_batch": 6.378088077336198,
+            "max_prefix": 989,
+            "phase_seconds": {}
+          },
+          "source": {
+            "revision": "42f70a49032273827a5f36bc71d7d72f765068d4",
+            "source_sha256": "c3178df3e24d3484d581a8ad57d927d584487f2ff0a5a2ec7bb23ee59207d27c",
+            "engine_source_sha256": "606ff1e735823cefb9968a974991bfc5ca325c2ef1cb8ea5a5540f174ce84096",
+            "engine_binary_sha256": "f7b7af5a34fd4c2e0b5c3c2cc7ed53bec31f3149c477daf63b81ebdfb85911fe"
+          }
+        },
+        {
+          "case": "wide",
+          "variant": "baseline",
+          "order": 0,
+          "path": "/Users/xiyaowang/Developer/Projects/GuanZero-throughput/.work/throughput-2026-09-27/wide-0-baseline",
+          "exact_sha256": "0424fea16eabe07e43105e8549afef8c0d0c6e078813029ca3671ce6231eb44c",
+          "summary": {
+            "measured_chunks": 6,
+            "collect_seconds": 6.744708626065403,
+            "decisions": 12288,
+            "decisions_per_second": 1821.8726236018788,
+            "inference_decisions": 11892,
+            "policy_batches": 3245,
+            "mean_policy_batch": 3.664714946070878,
+            "max_prefix": 955,
+            "phase_seconds": {}
+          },
+          "source": {
+            "revision": "42f70a49032273827a5f36bc71d7d72f765068d4",
+            "source_sha256": "c3178df3e24d3484d581a8ad57d927d584487f2ff0a5a2ec7bb23ee59207d27c",
+            "engine_source_sha256": "606ff1e735823cefb9968a974991bfc5ca325c2ef1cb8ea5a5540f174ce84096",
+            "engine_binary_sha256": "f7b7af5a34fd4c2e0b5c3c2cc7ed53bec31f3149c477daf63b81ebdfb85911fe"
+          }
+        },
+        {
+          "case": "wide",
+          "variant": "optimized",
+          "order": 1,
+          "path": "/Users/xiyaowang/Developer/Projects/GuanZero-throughput/.work/throughput-2026-09-27/wide-1-optimized",
+          "exact_sha256": "0424fea16eabe07e43105e8549afef8c0d0c6e078813029ca3671ce6231eb44c",
+          "summary": {
+            "measured_chunks": 6,
+            "collect_seconds": 6.035169415990822,
+            "decisions": 12288,
+            "decisions_per_second": 2036.0654611354637,
+            "inference_decisions": 11892,
+            "policy_batches": 3245,
+            "mean_policy_batch": 3.664714946070878,
+            "max_prefix": 955,
+            "phase_seconds": {}
+          },
+          "source": {
+            "revision": "42f70a49032273827a5f36bc71d7d72f765068d4",
+            "source_sha256": "b4b4565b42f6983586b7d033780901e7d6f0c73578529b1e123036bfe0ad6e40",
+            "engine_source_sha256": "606ff1e735823cefb9968a974991bfc5ca325c2ef1cb8ea5a5540f174ce84096",
+            "engine_binary_sha256": "f7b7af5a34fd4c2e0b5c3c2cc7ed53bec31f3149c477daf63b81ebdfb85911fe"
+          }
+        },
+        {
+          "case": "wide",
+          "variant": "optimized",
+          "order": 2,
+          "path": "/Users/xiyaowang/Developer/Projects/GuanZero-throughput/.work/throughput-2026-09-27/wide-2-optimized",
+          "exact_sha256": "0424fea16eabe07e43105e8549afef8c0d0c6e078813029ca3671ce6231eb44c",
+          "summary": {
+            "measured_chunks": 6,
+            "collect_seconds": 5.934431750210933,
+            "decisions": 12288,
+            "decisions_per_second": 2070.6279079817937,
+            "inference_decisions": 11892,
+            "policy_batches": 3245,
+            "mean_policy_batch": 3.664714946070878,
+            "max_prefix": 955,
+            "phase_seconds": {}
+          },
+          "source": {
+            "revision": "42f70a49032273827a5f36bc71d7d72f765068d4",
+            "source_sha256": "b4b4565b42f6983586b7d033780901e7d6f0c73578529b1e123036bfe0ad6e40",
+            "engine_source_sha256": "606ff1e735823cefb9968a974991bfc5ca325c2ef1cb8ea5a5540f174ce84096",
+            "engine_binary_sha256": "f7b7af5a34fd4c2e0b5c3c2cc7ed53bec31f3149c477daf63b81ebdfb85911fe"
+          }
+        },
+        {
+          "case": "wide",
+          "variant": "baseline",
+          "order": 3,
+          "path": "/Users/xiyaowang/Developer/Projects/GuanZero-throughput/.work/throughput-2026-09-27/wide-3-baseline",
+          "exact_sha256": "0424fea16eabe07e43105e8549afef8c0d0c6e078813029ca3671ce6231eb44c",
+          "summary": {
+            "measured_chunks": 6,
+            "collect_seconds": 6.604697000933811,
+            "decisions": 12288,
+            "decisions_per_second": 1860.4941298991687,
+            "inference_decisions": 11892,
+            "policy_batches": 3245,
+            "mean_policy_batch": 3.664714946070878,
+            "max_prefix": 955,
+            "phase_seconds": {}
+          },
+          "source": {
+            "revision": "42f70a49032273827a5f36bc71d7d72f765068d4",
+            "source_sha256": "c3178df3e24d3484d581a8ad57d927d584487f2ff0a5a2ec7bb23ee59207d27c",
+            "engine_source_sha256": "606ff1e735823cefb9968a974991bfc5ca325c2ef1cb8ea5a5540f174ce84096",
+            "engine_binary_sha256": "f7b7af5a34fd4c2e0b5c3c2cc7ed53bec31f3149c477daf63b81ebdfb85911fe"
+          }
+        }
+      ],
+      "summary": {
+        "current": {
+          "median_dps": {
+            "baseline": 3266.3815057897,
+            "optimized": 3415.1121146813384
+          },
+          "speedup": 1.0455337530622224,
+          "exact_match": true
+        },
+        "recent": {
+          "median_dps": {
+            "baseline": 2124.8883282747074,
+            "optimized": 2172.0552363587485
+          },
+          "speedup": 1.0221973585418196,
+          "exact_match": true
+        },
+        "wide": {
+          "median_dps": {
+            "baseline": 1841.1833767505236,
+            "optimized": 2053.3466845586286
+          },
+          "speedup": 1.115232035269919,
+          "exact_match": true
+        }
+      }
+    },
+    "clean_repeat": {
+      "results": [
+        {
+          "case": "current",
+          "variant": "baseline",
+          "order": 0,
+          "path": "/Users/xiyaowang/Developer/Projects/GuanZero-throughput/.work/throughput-2026-09-27/clean-repeat/current-0-baseline",
+          "exact_sha256": "601aaa2c4daca2a19dd2684bd7e0f093eea5f37bbb1eae25f69a4230f203cbd1",
+          "summary": {
+            "measured_chunks": 6,
+            "collect_seconds": 4.107171208015643,
+            "decisions": 12288,
+            "decisions_per_second": 2991.8402174271373,
+            "inference_decisions": 11817,
+            "policy_batches": 384,
+            "mean_policy_batch": 30.7734375,
+            "max_prefix": 1015,
+            "phase_seconds": {}
+          },
+          "source": {
+            "revision": "42f70a49032273827a5f36bc71d7d72f765068d4",
+            "source_sha256": "c3178df3e24d3484d581a8ad57d927d584487f2ff0a5a2ec7bb23ee59207d27c",
+            "engine_source_sha256": "606ff1e735823cefb9968a974991bfc5ca325c2ef1cb8ea5a5540f174ce84096",
+            "engine_binary_sha256": "f7b7af5a34fd4c2e0b5c3c2cc7ed53bec31f3149c477daf63b81ebdfb85911fe"
+          }
+        },
+        {
+          "case": "current",
+          "variant": "optimized",
+          "order": 1,
+          "path": "/Users/xiyaowang/Developer/Projects/GuanZero-throughput/.work/throughput-2026-09-27/clean-repeat/current-1-optimized",
+          "exact_sha256": "601aaa2c4daca2a19dd2684bd7e0f093eea5f37bbb1eae25f69a4230f203cbd1",
+          "summary": {
+            "measured_chunks": 6,
+            "collect_seconds": 4.139090123819187,
+            "decisions": 12288,
+            "decisions_per_second": 2968.768408613852,
+            "inference_decisions": 11817,
+            "policy_batches": 384,
+            "mean_policy_batch": 30.7734375,
+            "max_prefix": 1015,
+            "phase_seconds": {}
+          },
+          "source": {
+            "revision": "42f70a49032273827a5f36bc71d7d72f765068d4",
+            "source_sha256": "b4b4565b42f6983586b7d033780901e7d6f0c73578529b1e123036bfe0ad6e40",
+            "engine_source_sha256": "606ff1e735823cefb9968a974991bfc5ca325c2ef1cb8ea5a5540f174ce84096",
+            "engine_binary_sha256": "f7b7af5a34fd4c2e0b5c3c2cc7ed53bec31f3149c477daf63b81ebdfb85911fe"
+          }
+        },
+        {
+          "case": "current",
+          "variant": "optimized",
+          "order": 2,
+          "path": "/Users/xiyaowang/Developer/Projects/GuanZero-throughput/.work/throughput-2026-09-27/clean-repeat/current-2-optimized",
+          "exact_sha256": "601aaa2c4daca2a19dd2684bd7e0f093eea5f37bbb1eae25f69a4230f203cbd1",
+          "summary": {
+            "measured_chunks": 6,
+            "collect_seconds": 3.9572505441028625,
+            "decisions": 12288,
+            "decisions_per_second": 3105.1862557228555,
+            "inference_decisions": 11817,
+            "policy_batches": 384,
+            "mean_policy_batch": 30.7734375,
+            "max_prefix": 1015,
+            "phase_seconds": {}
+          },
+          "source": {
+            "revision": "42f70a49032273827a5f36bc71d7d72f765068d4",
+            "source_sha256": "b4b4565b42f6983586b7d033780901e7d6f0c73578529b1e123036bfe0ad6e40",
+            "engine_source_sha256": "606ff1e735823cefb9968a974991bfc5ca325c2ef1cb8ea5a5540f174ce84096",
+            "engine_binary_sha256": "f7b7af5a34fd4c2e0b5c3c2cc7ed53bec31f3149c477daf63b81ebdfb85911fe"
+          }
+        },
+        {
+          "case": "current",
+          "variant": "baseline",
+          "order": 3,
+          "path": "/Users/xiyaowang/Developer/Projects/GuanZero-throughput/.work/throughput-2026-09-27/clean-repeat/current-3-baseline",
+          "exact_sha256": "601aaa2c4daca2a19dd2684bd7e0f093eea5f37bbb1eae25f69a4230f203cbd1",
+          "summary": {
+            "measured_chunks": 6,
+            "collect_seconds": 4.022711624973454,
+            "decisions": 12288,
+            "decisions_per_second": 3054.655949910675,
+            "inference_decisions": 11817,
+            "policy_batches": 384,
+            "mean_policy_batch": 30.7734375,
+            "max_prefix": 1015,
+            "phase_seconds": {}
+          },
+          "source": {
+            "revision": "42f70a49032273827a5f36bc71d7d72f765068d4",
+            "source_sha256": "c3178df3e24d3484d581a8ad57d927d584487f2ff0a5a2ec7bb23ee59207d27c",
+            "engine_source_sha256": "606ff1e735823cefb9968a974991bfc5ca325c2ef1cb8ea5a5540f174ce84096",
+            "engine_binary_sha256": "f7b7af5a34fd4c2e0b5c3c2cc7ed53bec31f3149c477daf63b81ebdfb85911fe"
+          }
+        },
+        {
+          "case": "recent",
+          "variant": "baseline",
+          "order": 0,
+          "path": "/Users/xiyaowang/Developer/Projects/GuanZero-throughput/.work/throughput-2026-09-27/clean-repeat/recent-0-baseline",
+          "exact_sha256": "9d268c2e964a744ba15285728166139734e204c6a199c8a0d3cc61815174a6f7",
+          "summary": {
+            "measured_chunks": 6,
+            "collect_seconds": 6.113883874146268,
+            "decisions": 12288,
+            "decisions_per_second": 2009.851716674268,
+            "inference_decisions": 11876,
+            "policy_batches": 1862,
+            "mean_policy_batch": 6.378088077336198,
+            "max_prefix": 989,
+            "phase_seconds": {}
+          },
+          "source": {
+            "revision": "42f70a49032273827a5f36bc71d7d72f765068d4",
+            "source_sha256": "c3178df3e24d3484d581a8ad57d927d584487f2ff0a5a2ec7bb23ee59207d27c",
+            "engine_source_sha256": "606ff1e735823cefb9968a974991bfc5ca325c2ef1cb8ea5a5540f174ce84096",
+            "engine_binary_sha256": "f7b7af5a34fd4c2e0b5c3c2cc7ed53bec31f3149c477daf63b81ebdfb85911fe"
+          }
+        },
+        {
+          "case": "recent",
+          "variant": "optimized",
+          "order": 1,
+          "path": "/Users/xiyaowang/Developer/Projects/GuanZero-throughput/.work/throughput-2026-09-27/clean-repeat/recent-1-optimized",
+          "exact_sha256": "9d268c2e964a744ba15285728166139734e204c6a199c8a0d3cc61815174a6f7",
+          "summary": {
+            "measured_chunks": 6,
+            "collect_seconds": 5.51687558402773,
+            "decisions": 12288,
+            "decisions_per_second": 2227.3476740305327,
+            "inference_decisions": 11876,
+            "policy_batches": 1862,
+            "mean_policy_batch": 6.378088077336198,
+            "max_prefix": 989,
+            "phase_seconds": {}
+          },
+          "source": {
+            "revision": "42f70a49032273827a5f36bc71d7d72f765068d4",
+            "source_sha256": "b4b4565b42f6983586b7d033780901e7d6f0c73578529b1e123036bfe0ad6e40",
+            "engine_source_sha256": "606ff1e735823cefb9968a974991bfc5ca325c2ef1cb8ea5a5540f174ce84096",
+            "engine_binary_sha256": "f7b7af5a34fd4c2e0b5c3c2cc7ed53bec31f3149c477daf63b81ebdfb85911fe"
+          }
+        },
+        {
+          "case": "recent",
+          "variant": "optimized",
+          "order": 2,
+          "path": "/Users/xiyaowang/Developer/Projects/GuanZero-throughput/.work/throughput-2026-09-27/clean-repeat/recent-2-optimized",
+          "exact_sha256": "9d268c2e964a744ba15285728166139734e204c6a199c8a0d3cc61815174a6f7",
+          "summary": {
+            "measured_chunks": 6,
+            "collect_seconds": 5.507868833024986,
+            "decisions": 12288,
+            "decisions_per_second": 2230.9899477492254,
+            "inference_decisions": 11876,
+            "policy_batches": 1862,
+            "mean_policy_batch": 6.378088077336198,
+            "max_prefix": 989,
+            "phase_seconds": {}
+          },
+          "source": {
+            "revision": "42f70a49032273827a5f36bc71d7d72f765068d4",
+            "source_sha256": "b4b4565b42f6983586b7d033780901e7d6f0c73578529b1e123036bfe0ad6e40",
+            "engine_source_sha256": "606ff1e735823cefb9968a974991bfc5ca325c2ef1cb8ea5a5540f174ce84096",
+            "engine_binary_sha256": "f7b7af5a34fd4c2e0b5c3c2cc7ed53bec31f3149c477daf63b81ebdfb85911fe"
+          }
+        },
+        {
+          "case": "recent",
+          "variant": "baseline",
+          "order": 3,
+          "path": "/Users/xiyaowang/Developer/Projects/GuanZero-throughput/.work/throughput-2026-09-27/clean-repeat/recent-3-baseline",
+          "exact_sha256": "9d268c2e964a744ba15285728166139734e204c6a199c8a0d3cc61815174a6f7",
+          "summary": {
+            "measured_chunks": 6,
+            "collect_seconds": 6.158789960085414,
+            "decisions": 12288,
+            "decisions_per_second": 1995.1971214536404,
+            "inference_decisions": 11876,
+            "policy_batches": 1862,
+            "mean_policy_batch": 6.378088077336198,
+            "max_prefix": 989,
+            "phase_seconds": {}
+          },
+          "source": {
+            "revision": "42f70a49032273827a5f36bc71d7d72f765068d4",
+            "source_sha256": "c3178df3e24d3484d581a8ad57d927d584487f2ff0a5a2ec7bb23ee59207d27c",
+            "engine_source_sha256": "606ff1e735823cefb9968a974991bfc5ca325c2ef1cb8ea5a5540f174ce84096",
+            "engine_binary_sha256": "f7b7af5a34fd4c2e0b5c3c2cc7ed53bec31f3149c477daf63b81ebdfb85911fe"
+          }
+        },
+        {
+          "case": "wide",
+          "variant": "baseline",
+          "order": 0,
+          "path": "/Users/xiyaowang/Developer/Projects/GuanZero-throughput/.work/throughput-2026-09-27/clean-repeat/wide-0-baseline",
+          "exact_sha256": "0424fea16eabe07e43105e8549afef8c0d0c6e078813029ca3671ce6231eb44c",
+          "summary": {
+            "measured_chunks": 6,
+            "collect_seconds": 6.466181749943644,
+            "decisions": 12288,
+            "decisions_per_second": 1900.3486872460855,
+            "inference_decisions": 11892,
+            "policy_batches": 3245,
+            "mean_policy_batch": 3.664714946070878,
+            "max_prefix": 955,
+            "phase_seconds": {}
+          },
+          "source": {
+            "revision": "42f70a49032273827a5f36bc71d7d72f765068d4",
+            "source_sha256": "c3178df3e24d3484d581a8ad57d927d584487f2ff0a5a2ec7bb23ee59207d27c",
+            "engine_source_sha256": "606ff1e735823cefb9968a974991bfc5ca325c2ef1cb8ea5a5540f174ce84096",
+            "engine_binary_sha256": "f7b7af5a34fd4c2e0b5c3c2cc7ed53bec31f3149c477daf63b81ebdfb85911fe"
+          }
+        },
+        {
+          "case": "wide",
+          "variant": "optimized",
+          "order": 1,
+          "path": "/Users/xiyaowang/Developer/Projects/GuanZero-throughput/.work/throughput-2026-09-27/clean-repeat/wide-1-optimized",
+          "exact_sha256": "0424fea16eabe07e43105e8549afef8c0d0c6e078813029ca3671ce6231eb44c",
+          "summary": {
+            "measured_chunks": 6,
+            "collect_seconds": 6.061619833228178,
+            "decisions": 12288,
+            "decisions_per_second": 2027.1809084166696,
+            "inference_decisions": 11892,
+            "policy_batches": 3245,
+            "mean_policy_batch": 3.664714946070878,
+            "max_prefix": 955,
+            "phase_seconds": {}
+          },
+          "source": {
+            "revision": "42f70a49032273827a5f36bc71d7d72f765068d4",
+            "source_sha256": "b4b4565b42f6983586b7d033780901e7d6f0c73578529b1e123036bfe0ad6e40",
+            "engine_source_sha256": "606ff1e735823cefb9968a974991bfc5ca325c2ef1cb8ea5a5540f174ce84096",
+            "engine_binary_sha256": "f7b7af5a34fd4c2e0b5c3c2cc7ed53bec31f3149c477daf63b81ebdfb85911fe"
+          }
+        },
+        {
+          "case": "wide",
+          "variant": "optimized",
+          "order": 2,
+          "path": "/Users/xiyaowang/Developer/Projects/GuanZero-throughput/.work/throughput-2026-09-27/clean-repeat/wide-2-optimized",
+          "exact_sha256": "0424fea16eabe07e43105e8549afef8c0d0c6e078813029ca3671ce6231eb44c",
+          "summary": {
+            "measured_chunks": 6,
+            "collect_seconds": 5.862673249212094,
+            "decisions": 12288,
+            "decisions_per_second": 2095.9721747500475,
+            "inference_decisions": 11892,
+            "policy_batches": 3245,
+            "mean_policy_batch": 3.664714946070878,
+            "max_prefix": 955,
+            "phase_seconds": {}
+          },
+          "source": {
+            "revision": "42f70a49032273827a5f36bc71d7d72f765068d4",
+            "source_sha256": "b4b4565b42f6983586b7d033780901e7d6f0c73578529b1e123036bfe0ad6e40",
+            "engine_source_sha256": "606ff1e735823cefb9968a974991bfc5ca325c2ef1cb8ea5a5540f174ce84096",
+            "engine_binary_sha256": "f7b7af5a34fd4c2e0b5c3c2cc7ed53bec31f3149c477daf63b81ebdfb85911fe"
+          }
+        },
+        {
+          "case": "wide",
+          "variant": "baseline",
+          "order": 3,
+          "path": "/Users/xiyaowang/Developer/Projects/GuanZero-throughput/.work/throughput-2026-09-27/clean-repeat/wide-3-baseline",
+          "exact_sha256": "0424fea16eabe07e43105e8549afef8c0d0c6e078813029ca3671ce6231eb44c",
+          "summary": {
+            "measured_chunks": 6,
+            "collect_seconds": 6.408171333023347,
+            "decisions": 12288,
+            "decisions_per_second": 1917.551725977741,
+            "inference_decisions": 11892,
+            "policy_batches": 3245,
+            "mean_policy_batch": 3.664714946070878,
+            "max_prefix": 955,
+            "phase_seconds": {}
+          },
+          "source": {
+            "revision": "42f70a49032273827a5f36bc71d7d72f765068d4",
+            "source_sha256": "c3178df3e24d3484d581a8ad57d927d584487f2ff0a5a2ec7bb23ee59207d27c",
+            "engine_source_sha256": "606ff1e735823cefb9968a974991bfc5ca325c2ef1cb8ea5a5540f174ce84096",
+            "engine_binary_sha256": "f7b7af5a34fd4c2e0b5c3c2cc7ed53bec31f3149c477daf63b81ebdfb85911fe"
+          }
+        }
+      ],
+      "summary": {
+        "current": {
+          "median_dps": {
+            "baseline": 3023.2480836689065,
+            "optimized": 3036.9773321683538
+          },
+          "speedup": 1.004541224576842,
+          "exact_match": true
+        },
+        "recent": {
+          "median_dps": {
+            "baseline": 2002.5244190639542,
+            "optimized": 2229.168810889879
+          },
+          "speedup": 1.1131793398713539,
+          "exact_match": true
+        },
+        "wide": {
+          "median_dps": {
+            "baseline": 1908.9502066119132,
+            "optimized": 2061.5765415833584
+          },
+          "speedup": 1.0799530204836159,
+          "exact_match": true
+        }
+      }
+    }
+  },
+  "profiles": {
+    "baseline": {
+      "summary": {
+        "measured_chunks": 6,
+        "collect_seconds": 7.597126832115464,
+        "decisions": 12288,
+        "decisions_per_second": 1617.4535810110117,
+        "inference_decisions": 11892,
+        "policy_batches": 3245,
+        "mean_policy_batch": 3.664714946070878,
+        "max_prefix": 955,
+        "phase_seconds": {
+          "env_pending": 0.028057706425897777,
+          "events_and_rounds": 0.1758966736961156,
+          "metadata_and_assignment": 0.0451109652640298,
+          "input_indexing": 0.1107278629206121,
+          "public_cache_or_collation": 5.133655926212668,
+          "decision_upload": 0.08024671964813024,
+          "actor_and_sampling": 1.9215757177444175,
+          "decision_download": 0.044424648862332106,
+          "buffer_and_counters": 0.0478265059646219,
+          "env_step": 0.005300611141137779
+        }
+      },
+      "exact_sha256": "0424fea16eabe07e43105e8549afef8c0d0c6e078813029ca3671ce6231eb44c",
+      "host": {
+        "platform": "macOS-27.0-arm64-arm-64bit",
+        "cpu_model": null,
+        "cpu_count": 14,
+        "affinity_cpus": 14,
+        "cgroup_cpu_max": null,
+        "cgroup_quota_cpus": null,
+        "cgroup_cpu_stat": null,
+        "usable_cpus": 14,
+        "loadavg": [
+          8.630859375,
+          11.26953125,
+          12.0048828125
+        ],
+        "omp_num_threads": "1",
+        "gpu": null
+      }
+    },
+    "optimized": {
+      "summary": {
+        "measured_chunks": 6,
+        "collect_seconds": 6.996909624082036,
+        "decisions": 12288,
+        "decisions_per_second": 1756.20390432185,
+        "inference_decisions": 11892,
+        "policy_batches": 3245,
+        "mean_policy_batch": 3.664714946070878,
+        "max_prefix": 955,
+        "phase_seconds": {
+          "env_pending": 0.029055802151560783,
+          "events_and_rounds": 0.17934007768053561,
+          "metadata_and_assignment": 0.024913219269365072,
+          "input_indexing": 0.10907289572060108,
+          "public_cache_or_collation": 4.722563096438535,
+          "decision_upload": 0.09925847267732024,
+          "actor_and_sampling": 1.7175037757260725,
+          "decision_download": 0.05701632960699499,
+          "buffer_and_counters": 0.04817892366554588,
+          "env_step": 0.005488836555741727
+        }
+      },
+      "exact_sha256": "0424fea16eabe07e43105e8549afef8c0d0c6e078813029ca3671ce6231eb44c",
+      "host": {
+        "platform": "macOS-27.0-arm64-arm-64bit",
+        "cpu_model": null,
+        "cpu_count": 14,
+        "affinity_cpus": 14,
+        "cgroup_cpu_max": null,
+        "cgroup_quota_cpus": null,
+        "cgroup_cpu_stat": null,
+        "usable_cpus": 14,
+        "loadavg": [
+          8.3125,
+          11.1123046875,
+          11.93994140625
+        ],
+        "omp_num_threads": "1",
+        "gpu": null
+      }
+    }
+  },
+  "factorial_tail_timings": [
+    {
+      "seed": 2026092721,
+      "arm": "small_wide",
+      "updates": 2048,
+      "tail_updates": 512,
+      "source_files": [
+        "/Users/xiyaowang/Developer/Projects/GuanZero/.work/history-factorial-2026-09-27/screen-2026092721/local/results/small_wide/train/metrics.jsonl",
+        "/Users/xiyaowang/Developer/Projects/GuanZero/.work/history-factorial-2026-09-27/screen-2026092721-r1/local/results/small_wide/train/metrics.jsonl"
+      ],
+      "collect_seconds": 5.243626923049305,
+      "learn_seconds": 0.9258688374211488,
+      "collection_policy_batches": 625.11328125,
+      "mean_prefix": 588.5365922339429
+    },
+    {
+      "seed": 2026092721,
+      "arm": "large_recent",
+      "updates": 2048,
+      "tail_updates": 512,
+      "source_files": [
+        "/Users/xiyaowang/Developer/Projects/GuanZero/.work/history-factorial-2026-09-27/screen-2026092721/local/results/large_recent/train/metrics.jsonl",
+        "/Users/xiyaowang/Developer/Projects/GuanZero/.work/history-factorial-2026-09-27/screen-2026092721-r1/local/results/large_recent/train/metrics.jsonl"
+      ],
+      "collect_seconds": 4.8626450744814065,
+      "learn_seconds": 1.2167071103831404,
+      "collection_policy_batches": 469.375,
+      "mean_prefix": 565.9949104727624
+    },
+    {
+      "seed": 2026092721,
+      "arm": "large_wide",
+      "updates": 2048,
+      "tail_updates": 512,
+      "source_files": [
+        "/Users/xiyaowang/Developer/Projects/GuanZero/.work/history-factorial-2026-09-27/screen-2026092721/local/results/large_wide/train/metrics.jsonl",
+        "/Users/xiyaowang/Developer/Projects/GuanZero/.work/history-factorial-2026-09-27/screen-2026092721-r1/local/results/large_wide/train/metrics.jsonl"
+      ],
+      "collect_seconds": 4.936604860278749,
+      "learn_seconds": 1.0214578503109806,
+      "collection_policy_batches": 622.080078125,
+      "mean_prefix": 581.8919277968844
+    },
+    {
+      "seed": 2026092722,
+      "arm": "small_wide",
+      "updates": 2048,
+      "tail_updates": 512,
+      "source_files": [
+        "/Users/xiyaowang/Developer/Projects/GuanZero/.work/history-factorial-2026-09-27/screen-2026092722/local/results/small_wide/train/metrics.jsonl"
+      ],
+      "collect_seconds": 5.021110984507686,
+      "learn_seconds": 0.9036477697554801,
+      "collection_policy_batches": 629.89453125,
+      "mean_prefix": 592.2767805669762
+    },
+    {
+      "seed": 2026092722,
+      "arm": "large_recent",
+      "updates": 2048,
+      "tail_updates": 512,
+      "source_files": [
+        "/Users/xiyaowang/Developer/Projects/GuanZero/.work/history-factorial-2026-09-27/screen-2026092722/local/results/large_recent/train/metrics.jsonl"
+      ],
+      "collect_seconds": 4.627280878677993,
+      "learn_seconds": 1.174867692981934,
+      "collection_policy_batches": 470.705078125,
+      "mean_prefix": 586.3675239730986
+    },
+    {
+      "seed": 2026092722,
+      "arm": "large_wide",
+      "updates": 2048,
+      "tail_updates": 512,
+      "source_files": [
+        "/Users/xiyaowang/Developer/Projects/GuanZero/.work/history-factorial-2026-09-27/screen-2026092722/local/results/large_wide/train/metrics.jsonl"
+      ],
+      "collect_seconds": 4.679221056136157,
+      "learn_seconds": 0.9832942319662834,
+      "collection_policy_batches": 624.369140625,
+      "mean_prefix": 571.5509387445405
+    },
+    {
+      "seed": 2026092723,
+      "arm": "small_wide",
+      "updates": 2048,
+      "tail_updates": 512,
+      "source_files": [
+        "/Users/xiyaowang/Developer/Projects/GuanZero/.work/history-factorial-2026-09-27/screen-2026092723-r1/local/results/small_wide/train/metrics.jsonl",
+        "/Users/xiyaowang/Developer/Projects/GuanZero/.work/history-factorial-2026-09-27/screen-2026092723/local/results/small_wide/train/metrics.jsonl"
+      ],
+      "collect_seconds": 4.921800665420051,
+      "learn_seconds": 0.9470939115262809,
+      "collection_policy_batches": 612.45703125,
+      "mean_prefix": 577.1014102868012
+    },
+    {
+      "seed": 2026092723,
+      "arm": "large_recent",
+      "updates": 2048,
+      "tail_updates": 512,
+      "source_files": [
+        "/Users/xiyaowang/Developer/Projects/GuanZero/.work/history-factorial-2026-09-27/screen-2026092723-r1/local/results/large_recent/train/metrics.jsonl",
+        "/Users/xiyaowang/Developer/Projects/GuanZero/.work/history-factorial-2026-09-27/screen-2026092723/local/results/large_recent/train/metrics.jsonl"
+      ],
+      "collect_seconds": 4.596679643803327,
+      "learn_seconds": 1.1852430793160238,
+      "collection_policy_batches": 464.982421875,
+      "mean_prefix": 589.0144804012004
+    },
+    {
+      "seed": 2026092723,
+      "arm": "large_wide",
+      "updates": 2048,
+      "tail_updates": 512,
+      "source_files": [
+        "/Users/xiyaowang/Developer/Projects/GuanZero/.work/history-factorial-2026-09-27/screen-2026092723-r1/local/results/large_wide/train/metrics.jsonl",
+        "/Users/xiyaowang/Developer/Projects/GuanZero/.work/history-factorial-2026-09-27/screen-2026092723/local/results/large_wide/train/metrics.jsonl"
+      ],
+      "collect_seconds": 4.606003897108167,
+      "learn_seconds": 1.0693835843121633,
+      "collection_policy_batches": 618.20703125,
+      "mean_prefix": 592.0223056136367
+    }
+  ],
+  "verification": {
+    "passed": 803,
+    "skipped": 33,
+    "sandbox_first_passed": 790,
+    "sandbox_blocked_cases": 13,
+    "process_permission_retry_passed": 13,
+    "logs": [
+      ".work/throughput-2026-09-27/pytest-full.log",
+      ".work/throughput-2026-09-27/pytest-process-retry.log"
+    ]
+  },
+  "runtime_files": {
+    "train/history_model.py": "dcc01aa03b8e4be728da889f20bdc10fbf8e81248d0c52d71ad3b91e43aa1d51",
+    "train/history_inference.py": "c30185b3f00e37fd971daa6de262f9d907e385d43291073d9473449de61d6a9d",
+    "train/history_rollout.py": "7d03cab02aef0231ee6479e69a1ba3ce1b3117590a0988f3e4a547e609f607fc",
+    "bench/history_host.py": "9233643847593cd47bc544eedb704c730f0c234c6e5232a14ea5cfdbc979efb3"
+  },
+  "artifacts": [
+    {
+      "path": ".work/throughput-2026-09-27/clean-repeat/current-0-baseline/result.json",
+      "sha256": "d6aa358bf0ad06691f256878643f7c57cf2701b0c6892e84a0f3a26372b3d777"
+    },
+    {
+      "path": ".work/throughput-2026-09-27/clean-repeat/current-1-optimized/result.json",
+      "sha256": "6fa757809764e6eefff306a47064fd8aa9bf2b04f3fe9ba14f5aa219ef23c890"
+    },
+    {
+      "path": ".work/throughput-2026-09-27/clean-repeat/current-2-optimized/result.json",
+      "sha256": "5205fbb9f641fe4636339f13256e9d987d8790dba1cc161f949ea949cdde76fd"
+    },
+    {
+      "path": ".work/throughput-2026-09-27/clean-repeat/current-3-baseline/result.json",
+      "sha256": "a2aae5ac3eef70b9797f859ab95808331b08f1bf6f3410d92357eadf95c83d09"
+    },
+    {
+      "path": ".work/throughput-2026-09-27/clean-repeat/recent-0-baseline/result.json",
+      "sha256": "2a498d1eefca1e8cb89ff5e5ddc73266c71adc4a8fee84df8c7a1f5252c8cb6c"
+    },
+    {
+      "path": ".work/throughput-2026-09-27/clean-repeat/recent-1-optimized/result.json",
+      "sha256": "afc8ba9f7ebb86c3b827a02a8518c675df0b5336c3a51048631a0d92dfd99daf"
+    },
+    {
+      "path": ".work/throughput-2026-09-27/clean-repeat/recent-2-optimized/result.json",
+      "sha256": "c3192aa8504d47e18bbb57546f36eeb0158173261667d9f7dda7341d152fc19a"
+    },
+    {
+      "path": ".work/throughput-2026-09-27/clean-repeat/recent-3-baseline/result.json",
+      "sha256": "64f6a8714015b6f0123062c747aa4e9d3c5bc13abd00be6a8519f574520a0c31"
+    },
+    {
+      "path": ".work/throughput-2026-09-27/clean-repeat/wide-0-baseline/result.json",
+      "sha256": "f87406033704f3e47b6fad74fcb1395445157e7ece9ac563b88216848c249662"
+    },
+    {
+      "path": ".work/throughput-2026-09-27/clean-repeat/wide-1-optimized/result.json",
+      "sha256": "a22126a7fc5f158fcc538dc7c0d5a46d51baec85c9a0c1efe0f5e151a2baaa89"
+    },
+    {
+      "path": ".work/throughput-2026-09-27/clean-repeat/wide-2-optimized/result.json",
+      "sha256": "af81de4bfb468d0c8f96660c452552004fe349a2970e4e3ecaea35490efeefb4"
+    },
+    {
+      "path": ".work/throughput-2026-09-27/clean-repeat/wide-3-baseline/result.json",
+      "sha256": "19250111a47bc307888c91a4d19ceee13b33688598c4a8b019432aabba5beefc"
+    },
+    {
+      "path": ".work/throughput-2026-09-27/current-0-baseline/result.json",
+      "sha256": "f81fc0d8329021db06f5f2b9b4cb6aecf3d16e6273902fc72973ede2514a8d68"
+    },
+    {
+      "path": ".work/throughput-2026-09-27/current-1-optimized/result.json",
+      "sha256": "b1363e97bfc14adce131cac7c792fc53a2fb2c5ab62a6f9bc5ab1e8c24a5b6a9"
+    },
+    {
+      "path": ".work/throughput-2026-09-27/current-2-optimized/result.json",
+      "sha256": "4d41b6b327420378f46a822ba6416608e96b27b00b11241aa6a606ee36d1e7f5"
+    },
+    {
+      "path": ".work/throughput-2026-09-27/current-3-baseline/result.json",
+      "sha256": "47a74474dfb4978ffd94712ef19d129719a9736ddb921c269a317b3a9eab8b2b"
+    },
+    {
+      "path": ".work/throughput-2026-09-27/profile-baseline-wide/result.json",
+      "sha256": "f76ebb71828ac47d006a50ea97d799dcf37133ffead66c8cba035f60cff29f0d"
+    },
+    {
+      "path": ".work/throughput-2026-09-27/profile-optimized-wide/result.json",
+      "sha256": "10a1df1144017993218356a941331441d38bcd36bbf67e0b797a8b800ccc50e2"
+    },
+    {
+      "path": ".work/throughput-2026-09-27/recent-0-baseline/result.json",
+      "sha256": "0d495e053e27fd911077af50941db50edca0145eacc8f71e7b4d4057fef2819b"
+    },
+    {
+      "path": ".work/throughput-2026-09-27/recent-1-optimized/result.json",
+      "sha256": "b65ca4bc18c9accd52f152b813b9ad0406f9730f15518f1e3123522473847417"
+    },
+    {
+      "path": ".work/throughput-2026-09-27/recent-2-optimized/result.json",
+      "sha256": "4552abe83b18364b52c496f9eff65e70934897b2b6efc41d2d6f8b8bb20f3d0d"
+    },
+    {
+      "path": ".work/throughput-2026-09-27/recent-3-baseline/result.json",
+      "sha256": "4c58b6a2079284882aa8253264b673503babd0549be5f327f1b226bd66561b78"
+    },
+    {
+      "path": ".work/throughput-2026-09-27/wide-0-baseline/result.json",
+      "sha256": "39e566528b6fe4a473759eead54f5929e9a25d53ce249ad04926fc987d4339de"
+    },
+    {
+      "path": ".work/throughput-2026-09-27/wide-1-optimized/result.json",
+      "sha256": "e63167920032309c71c9f484a3d6c705bb9af489a89a0e3fa46da49fd36fdd44"
+    },
+    {
+      "path": ".work/throughput-2026-09-27/wide-2-optimized/result.json",
+      "sha256": "b96fa93a827fa2e5f5b23dcacff4df2f880806e280379160a3fc776dab5f9ae4"
+    },
+    {
+      "path": ".work/throughput-2026-09-27/wide-3-baseline/result.json",
+      "sha256": "f65c2c3ff68652680012fa6cdf3d6b1e3a76d26359c8d0a48036ab6b5fefe4aa"
+    }
+  ]
+}

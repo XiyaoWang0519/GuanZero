@@ -20,6 +20,8 @@ def small_config(**overrides) -> HistoryPPOConfig:
 
 
 def test_single_rank_matches_base_trainer(tmp_path):
+    previous = (torch.are_deterministic_algorithms_enabled(),
+                torch.is_deterministic_algorithms_warn_only_enabled())
     torch.use_deterministic_algorithms(True)
     try:
         base = HistoryTrainer(small_config(), tmp_path / "base")
@@ -31,7 +33,7 @@ def test_single_rank_matches_base_trainer(tmp_path):
         for p, q in zip(base.actor.state_dict().values(), ddp.actor.state_dict().values()):
             assert torch.equal(p, q)
     finally:
-        torch.use_deterministic_algorithms(False)
+        torch.use_deterministic_algorithms(previous[0], warn_only=previous[1])
 
 
 def _worker(rank, world, port, root, queue):
