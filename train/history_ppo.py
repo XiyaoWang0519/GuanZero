@@ -97,6 +97,13 @@ class HistoryPPOConfig:
     rollout_triton_min_batch: int = 1
     profile_collection: bool = False   # synchronized phase timings; diagnostic only
     profile_collection_warmup: int = 0  # unprofiled updates of this process before profiling
+    # All snapshot identities' play rows of a vector step in one merged actor call
+    # (train/history_snapshot_batch.py): same distribution, FP32 reduction-order
+    # noise on snapshot seats only; learner rows, sampling and generator unchanged.
+    batch_snapshot_policies: bool = False
+    # Diagnostic A/B inside one process: "N:on,M:off,..." blocks of this process's
+    # updates; the last block's arm persists. Empty: batch_snapshot_policies throughout.
+    batch_snapshot_policies_schedule: str = ""
     rollout_device: str | None = None  # None shares the learner device
     # learner
     lr: float = 3e-4
@@ -136,6 +143,11 @@ class HistoryPPOConfig:
             raise ValueError('rollout Triton minimum batch must be positive')
         if self.profile_collection_warmup < 0:
             raise ValueError('profile_collection_warmup must not be negative')
+        parse_arm_schedule(self.batch_snapshot_policies_schedule)
+        if (self.batch_snapshot_policies or self.batch_snapshot_policies_schedule) and (
+                self.window or self.response_mode == "explicit"):
+            raise ValueError("batch_snapshot_policies requires full history and no explicit "
+                             "response bridge")
         if (self.rollout_private_graphs or self.rollout_triton_cache) and not self.rollout_kv_cache:
             raise ValueError('CUDA rollout optimizations require rollout_kv_cache')
         if self.rollout_wide_projection and not self.rollout_batched_attention:
@@ -181,15 +193,28 @@ class HistoryPPOConfig:
         return cls(**values)
 
 
+def parse_arm_schedule(schedule: str) -> list[tuple[int, bool]]:
+    """``"N:on,M:off"`` to ``[(N, True), (M, False)]``; empty gives ``[]``."""
+    blocks = []
+    for item in [part.strip() for part in schedule.split(",") if part.strip()]:
+        count, sep, arm = item.partition(":")
+        if not sep or arm not in ("on", "off") or not count.isdigit() or int(count) < 1:
+            raise ValueError("batch_snapshot_policies_schedule takes N:on|off blocks, N >= 1")
+        blocks.append((int(count), arm == "on"))
+    return blocks
+
+
 # Config fields a resume may change (``--resume-set``): the layout of the batch over
 # processes and threads, checkpoint cadence and graph budgets (the per-update batch
 # stays num_envs x world size), the diagnostic collection profile (timing only),
+# merged snapshot inference (tier 2: frozen snapshot seats' float-order noise only),
 # plus snapshot_updates, which changes dynamics.
 RESUME_OVERRIDES = frozenset({"num_envs", "num_threads", "minibatch_matches", "torch_threads",
                               "checkpoint_updates", "ddp_global_minibatch",
                               "rollout_graph_budget_mb", "rollout_graph_policy_budget_mb",
                               "rollout_triton_min_batch", "snapshot_updates",
-                              "profile_collection", "profile_collection_warmup"})
+                              "profile_collection", "profile_collection_warmup",
+                              "batch_snapshot_policies", "batch_snapshot_policies_schedule"})
 
 
 def parse_resume_overrides(items: list[str] | None) -> dict[str, Any]:
@@ -205,6 +230,8 @@ def parse_resume_overrides(items: list[str] | None) -> dict[str, Any]:
             if raw.lower() not in ("true", "false", "1", "0"):
                 raise ValueError(f"{key} needs true/false")
             values[key] = raw.lower() in ("true", "1")
+        elif str(types[key]) == "str":
+            values[key] = raw
         else:
             values[key] = int(raw)
     return values
@@ -368,7 +395,20 @@ class HistoryTrainer:
                                 triton_min_batch=config.rollout_triton_min_batch,
                                 profile=self.collection_profiled(),
                                 temperature=config.rollout_temperature,
-                                epsilon=config.rollout_epsilon)
+                                epsilon=config.rollout_epsilon,
+                                batch_snapshot_policies=self.snapshot_batching())
+
+    def snapshot_batching(self) -> bool:
+        """Merged snapshot inference for this update (the schedule's block, if any)."""
+        blocks = parse_arm_schedule(self.config.batch_snapshot_policies_schedule)
+        if not blocks:
+            return self.config.batch_snapshot_policies
+        done = int(self.progress["updates"]) - self.session_first_update
+        for count, arm in blocks:
+            if done < count:
+                return arm
+            done -= count
+        return blocks[-1][1]
 
     def collection_profiled(self) -> bool:
         """Profile this update's collection: on, after this process's warmup updates."""
@@ -422,6 +462,12 @@ class HistoryTrainer:
                           "rollout_graph_policy_budget_mb": self.config.rollout_graph_policy_budget_mb,
                           "rollout_triton_cache": self.collector.triton_cache,
                           "rollout_triton_min_batch": self.collector.triton_min_batch,
+                          "batch_snapshot_policies": self.config.batch_snapshot_policies,
+                          "batch_snapshot_policies_schedule":
+                              self.config.batch_snapshot_policies_schedule,
+                          "snapshot_batching": "merged head over stacked snapshot weights; "
+                                               "per-identity public KV cache; snapshot seats "
+                                               "bypass private graphs",
                           "reuse_cache_lengths": self.collector.reuse_cache_lengths,
                           "cache_boundary": "public-only; separate policy/env/match; learner invalidated before learn"},
             "resume": "restore optimizer/RNG/population; discard partial rounds and assignments; "
@@ -609,6 +655,9 @@ class HistoryTrainer:
         # Profiling only adds synchronized timings and counters; it never changes
         # what is collected, so switching it between updates is safe.
         self.collector.profile = self.collection_profiled()
+        # Merged snapshot inference changes only how frozen snapshot seats are
+        # evaluated (tier 2), so it may switch between updates as well.
+        self.collector.batch_snapshot_policies = self.snapshot_batching()
         t0 = time.perf_counter()
         collected = self.collect()
         if self.device.type == "cuda":
@@ -666,6 +715,8 @@ class HistoryTrainer:
                                             for group, sizes in collected.policy_call_rows.items()},
             "collection_policy_batches": collected.policy_batches,
             "collection_steps": collected.steps,
+            "rollout_batch_snapshot_policies": self.collector.batch_snapshot_policies,
+            "snapshot_heads": self.collector.snapshot_head_metrics(),
             "rollout_epsilon_pick_fraction": (collected.epsilon_picks / collected.learner_rows
                                               if collected.learner_rows else None),
             "rollout_behaviour_entropy": (collected.behaviour_entropy_sum / collected.learner_rows
@@ -774,6 +825,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="per-policy private-graph cap within the total budget")
     parser.add_argument("--rollout-triton-cache", action="store_true")
     parser.add_argument("--rollout-triton-min-batch", type=int, default=1)
+    parser.add_argument("--batch-snapshot-policies", action="store_true",
+                        help="all snapshot identities' rows of a vector step in one merged "
+                             "actor call (FP32; snapshot seats' reduction order differs)")
+    parser.add_argument("--batch-snapshot-policies-schedule", default="",
+                        help="diagnostic A/B: N:on|off blocks of this process's updates")
     parser.add_argument("--profile-collection", action="store_true")
     parser.add_argument("--profile-collection-warmup", type=int, default=0,
                         help="with --profile-collection: unprofiled updates of this process "

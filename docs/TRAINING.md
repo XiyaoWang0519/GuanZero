@@ -122,6 +122,13 @@ The cache is public-only and partitioned by
 policy/environment/match; learner updates invalidate it and PPO retains full
 gradient recomputation. `--profile-collection` enables synchronized diagnostic
 phase timers, which must be excluded from ordinary throughput comparisons.
+`--batch-snapshot-policies` (off by default; `--resume-set` may switch it and
+records the change) evaluates every frozen snapshot identity's rows of a
+vector step in one merged actor call over stacked head weights. It is
+acceptance tier 2 for snapshot seats only (FP32 reduction-order noise; the
+same uniforms from the same generator in the same order); learner rows and
+sampling are unchanged and snapshot seats bypass private graphs. CPU tests
+pass; CUDA correctness and speed are not yet measured.
 `bench.history_stack` alternates dense/SDPA/KV cases with fixed learning rules
 and records full-update throughput/memory. CPU mode requires `--collect-only`
 and charges a learner-cache rebuild each chunk unless explicitly disabled for
