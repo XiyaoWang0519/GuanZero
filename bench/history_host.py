@@ -27,7 +27,8 @@ from infra.cpu_budget import host_facts
 from infra.history_artifacts import ROOT, engine_digest, sha256, source_files
 from train.history_model import HistoryActor, HistoryPolicyConfig
 from train.history_population import HistoryPopulation, weights_digest
-from train.history_rollout import HistoryCollector, MatchEventStore, SequenceRolloutBuffer
+from train.history_rollout import (PROFILE_STATS, HistoryCollector, MatchEventStore,
+                                   SequenceRolloutBuffer)
 from train.history_transfers import runtime_settings
 
 
@@ -139,7 +140,7 @@ def chunk_hashes(collector, stats, population):
     parts["population"] = digest.hexdigest()
 
     digest = ExactDigest()
-    digest.json("stats", {k: v for k, v in asdict(stats).items() if k != "phase_seconds"})
+    digest.json("stats", {k: v for k, v in asdict(stats).items() if k not in PROFILE_STATS})
     parts["stats"] = digest.hexdigest()
     digest = ExactDigest()
     digest.json("parts", parts)

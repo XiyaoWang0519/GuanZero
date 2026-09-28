@@ -430,6 +430,11 @@ def all_learner(env_id: int, match_id: int) -> Sequence[int]:
     return (LEARNER,) * NUM_SEATS
 
 
+# CollectStats fields written only in profile mode (timings and call shapes);
+# everything else must be identical with profiling on and off.
+PROFILE_STATS = ("phase_seconds", "group_phase_seconds", "policy_call_rows")
+
+
 @dataclass
 class CollectStats:
     steps: int = 0
@@ -442,6 +447,10 @@ class CollectStats:
     prefix_sum: int = 0
     prefix_max: int = 0
     phase_seconds: dict[str, float] = field(default_factory=dict)
+    # Profile mode only: the per-call phases split by identity group ("learner",
+    # "snapshot") and a histogram {rows per policy call: calls} per group.
+    group_phase_seconds: dict[str, dict[str, float]] = field(default_factory=dict)
+    policy_call_rows: dict[str, dict[int, int]] = field(default_factory=dict)
     policy_batches: int = 0
     epsilon_picks: int = 0      # learner rows chosen by the exploration floor's uniform branch
     behaviour_entropy_sum: float = 0.0  # sum over learner rows of the entropy of pi_b
@@ -616,13 +625,16 @@ class HistoryCollector:
         """One vector step. Returns the number of pending rows stepped."""
         stats = stats if stats is not None else CollectStats()
         stamp = time.perf_counter() if self.profile else 0.0
-        def mark(name):
+        def mark(name, group=None):
             nonlocal stamp
             if self.profile:
                 if self.device.type == "cuda":
                     torch.cuda.synchronize(self.device)
                 now = time.perf_counter()
                 stats.phase_seconds[name] = stats.phase_seconds.get(name, 0.0) + now - stamp
+                if group is not None:
+                    split = stats.group_phase_seconds.setdefault(group, {})
+                    split[name] = split.get(name, 0.0) + now - stamp
                 stamp = now
         env = self.env
         if not self.started:
@@ -693,6 +705,7 @@ class HistoryCollector:
         pending_downloads = []
         for group_index, group in enumerate(groups):
             identity, rows = group.identity, group.rows
+            label = "learner" if identity == LEARNER else "snapshot"
             fields = uploaded[7 * group_index:7 * (group_index + 1)]
             actor = self.actor if identity == LEARNER else self.resolve_policy(int(identity))
             encoded = None
@@ -718,7 +731,7 @@ class HistoryCollector:
                 stream_batch, encoded = cache.encode(group.keys, group.streams, **lengths_hint)
             else:
                 stream_batch = StreamBatch.from_streams(group.streams, self.device)
-            mark("public_cache_or_collation")
+            mark("public_cache_or_collation", label)
             inputs = DecisionInputs(
                 streams=stream_batch,
                 match_index=fields[0], prefix=fields[1], obs=fields[2], seat=fields[3],
@@ -738,10 +751,13 @@ class HistoryCollector:
                 choice, chosen_logp = actor.act(inputs, self.generator, encoded=encoded,
                                                max_candidates=group.max_candidates, **inference)
                 downloads = (choice, chosen_logp.float())
-            mark("actor_and_sampling")
+            mark("actor_and_sampling", label)
             pending_downloads.append((int(identity), rows, downloads))
             self.policy_decisions[int(identity)] = self.policy_decisions.get(int(identity), 0) + len(rows)
             stats.policy_batches += 1
+            if self.profile:
+                sizes = stats.policy_call_rows.setdefault(label, {})
+                sizes[len(rows)] = sizes.get(len(rows), 0) + 1
         # Policies do not depend on one another's actions until env.step().
         # Preserve their sampling order, then synchronize once for the whole
         # vector step instead of stalling after each identity's inference.

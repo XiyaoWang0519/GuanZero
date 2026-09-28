@@ -96,6 +96,7 @@ class HistoryPPOConfig:
     rollout_triton_cache: bool = False  # lossless KV update/packing; requires Triton
     rollout_triton_min_batch: int = 1
     profile_collection: bool = False   # synchronized phase timings; diagnostic only
+    profile_collection_warmup: int = 0  # unprofiled updates of this process before profiling
     rollout_device: str | None = None  # None shares the learner device
     # learner
     lr: float = 3e-4
@@ -133,6 +134,8 @@ class HistoryPPOConfig:
             raise ValueError('rollout graph memory budget must be positive')
         if self.rollout_triton_min_batch < 1:
             raise ValueError('rollout Triton minimum batch must be positive')
+        if self.profile_collection_warmup < 0:
+            raise ValueError('profile_collection_warmup must not be negative')
         if (self.rollout_private_graphs or self.rollout_triton_cache) and not self.rollout_kv_cache:
             raise ValueError('CUDA rollout optimizations require rollout_kv_cache')
         if self.rollout_wide_projection and not self.rollout_batched_attention:
@@ -180,11 +183,13 @@ class HistoryPPOConfig:
 
 # Config fields a resume may change (``--resume-set``): the layout of the batch over
 # processes and threads, checkpoint cadence and graph budgets (the per-update batch
-# stays num_envs x world size), plus snapshot_updates, which changes dynamics.
+# stays num_envs x world size), the diagnostic collection profile (timing only),
+# plus snapshot_updates, which changes dynamics.
 RESUME_OVERRIDES = frozenset({"num_envs", "num_threads", "minibatch_matches", "torch_threads",
                               "checkpoint_updates", "ddp_global_minibatch",
                               "rollout_graph_budget_mb", "rollout_graph_policy_budget_mb",
-                              "rollout_triton_min_batch", "snapshot_updates"})
+                              "rollout_triton_min_batch", "snapshot_updates",
+                              "profile_collection", "profile_collection_warmup"})
 
 
 def parse_resume_overrides(items: list[str] | None) -> dict[str, Any]:
@@ -323,6 +328,7 @@ class HistoryTrainer:
                 raise ValueError("population-enabled resume requires saved population state")
             restore_rng(rng, self.rng)
             self.generator.set_state(rng["sampler"].cpu())
+        self.session_first_update = int(self.progress["updates"])
         self.env = gd.VecEnv(num_envs=config.num_envs, num_threads=config.num_threads,
                              seed=config.seed + 1000 * self.progress["updates"],
                              log_public_actions=True, log_env_limit=config.num_envs)
@@ -360,9 +366,14 @@ class HistoryTrainer:
                                 private_graph_policy_budget_mb=config.rollout_graph_policy_budget_mb,
                                 triton_cache=config.rollout_triton_cache,
                                 triton_min_batch=config.rollout_triton_min_batch,
-                                profile=config.profile_collection,
+                                profile=self.collection_profiled(),
                                 temperature=config.rollout_temperature,
                                 epsilon=config.rollout_epsilon)
+
+    def collection_profiled(self) -> bool:
+        """Profile this update's collection: on, after this process's warmup updates."""
+        return (self.config.profile_collection and int(self.progress["updates"])
+                - self.session_first_update >= self.config.profile_collection_warmup)
 
     def population_event(self, event: dict) -> None:
         with (self.output / "population.jsonl").open("a") as stream:
@@ -595,6 +606,9 @@ class HistoryTrainer:
         if self.device.type == "cuda":
             torch.cuda.synchronize(self.device)
             torch.cuda.reset_peak_memory_stats(self.device)
+        # Profiling only adds synchronized timings and counters; it never changes
+        # what is collected, so switching it between updates is safe.
+        self.collector.profile = self.collection_profiled()
         t0 = time.perf_counter()
         collected = self.collect()
         if self.device.type == "cuda":
@@ -645,8 +659,13 @@ class HistoryTrainer:
             "private_graphs": self.collector.graph_metrics(),
             "cache_transfers": self.collector.transfer_metrics(),
             "collection_phase_seconds": collected.phase_seconds,
-            "collection_profile_synchronized": self.config.profile_collection,
+            "collection_profile_synchronized": self.collector.profile,
+            "collection_group_phase_seconds": collected.group_phase_seconds,
+            "collection_policy_call_rows": {group: {str(size): count for size, count
+                                                    in sorted(sizes.items())}
+                                            for group, sizes in collected.policy_call_rows.items()},
             "collection_policy_batches": collected.policy_batches,
+            "collection_steps": collected.steps,
             "rollout_epsilon_pick_fraction": (collected.epsilon_picks / collected.learner_rows
                                               if collected.learner_rows else None),
             "rollout_behaviour_entropy": (collected.behaviour_entropy_sum / collected.learner_rows
@@ -756,6 +775,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rollout-triton-cache", action="store_true")
     parser.add_argument("--rollout-triton-min-batch", type=int, default=1)
     parser.add_argument("--profile-collection", action="store_true")
+    parser.add_argument("--profile-collection-warmup", type=int, default=0,
+                        help="with --profile-collection: unprofiled updates of this process "
+                             "before profiling starts (resident snapshots and histories "
+                             "need ~25 updates to reach steady state after a resume)")
     parser.add_argument("--rollout-device", choices=("cpu", "cuda"), default=None)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--resume", default=None)
