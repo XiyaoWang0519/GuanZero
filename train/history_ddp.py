@@ -54,11 +54,13 @@ RANK_ENV_STRIDE = 10_000_000
 class HistoryDDPTrainer(HistoryTrainer):
     def __init__(self, config: HistoryPPOConfig, output: str | Path, device: str = "cpu",
                  rank: int = 0, world_size: int = 1, resume: str | Path | None = None,
-                 allow_source_change: bool = False) -> None:
+                 allow_source_change: bool = False,
+                 resume_overrides: dict[str, Any] | None = None) -> None:
         if world_size > 1 and not dist.is_initialized():
             raise RuntimeError("initialize torch.distributed before building a multi-rank trainer")
         super().__init__(config, output, device=device, resume=resume,
-                         allow_source_change=allow_source_change)
+                         allow_source_change=allow_source_change,
+                         resume_overrides=resume_overrides)
         self.rank, self.world_size = int(rank), int(world_size)
         if self.world_size == 1:
             return
@@ -228,16 +230,25 @@ class HistoryDDPTrainer(HistoryTrainer):
     def extend_metrics(self, line: dict[str, Any]) -> None:
         if self.world_size == 1:
             return
-        totals = torch.tensor([line["update_samples"], line["step_decisions"],
-                               line["step_rounds"], line["decisions"]], dtype=torch.float64)
+        # Lineage counters count every rank's data, so that a checkpoint (rank 0)
+        # and a resume with another world size continue the same totals.
+        local = torch.tensor([line["update_samples"], line["step_decisions"],
+                              line["step_rounds"], line["step_learner_rows"],
+                              line["step_matches"]], dtype=torch.float64)
+        totals = local.clone()
         dist.all_reduce(totals)
+        for key, index in (("samples", 0), ("decisions", 1), ("rounds", 2),
+                           ("learner_rows", 3), ("matches", 4)):
+            self.progress[key] += int(totals[index]) - int(local[index])
+        line.update(decisions=self.progress["decisions"], rounds=self.progress["rounds"],
+                    matches=self.progress["matches"])
         slowest = torch.tensor([line["collect_seconds"], line["learn_seconds"]],
                                dtype=torch.float64)
         dist.all_reduce(slowest, op=dist.ReduceOp.MAX)
         line["global_update_samples"] = int(totals[0])
         line["global_step_decisions"] = int(totals[1])
         line["global_step_rounds"] = int(totals[2])
-        line["global_decisions"] = int(totals[3])
+        line["global_decisions"] = self.progress["decisions"]
         line["global_collect_seconds"] = float(slowest[0])
         line["global_learn_seconds"] = float(slowest[1])
         line["global_decisions_per_sec"] = float(totals[1]) / max(float(slowest[0]), 1e-9)
@@ -293,7 +304,9 @@ def _rank_main(rank: int, world: int, port: int, argv: list[str]) -> None:
         trainer = HistoryDDPTrainer(config_from_args(args), rank_output(args.output, rank),
                                     device=args.device, rank=rank, world_size=world,
                                     resume=args.resume,
-                                    allow_source_change=args.allow_source_change)
+                                    allow_source_change=args.allow_source_change,
+                                    resume_overrides=history_ppo.parse_resume_overrides(
+                                        args.resume_set))
 
         def stop(signum, frame):
             trainer.stop_requested = True

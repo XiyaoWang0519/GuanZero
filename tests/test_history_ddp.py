@@ -236,3 +236,49 @@ def test_launcher_sigterm_stops_all_ranks_and_saves(tmp_path):
     rank1 = (output / "rank-1" / "metrics.jsonl").read_text().splitlines()
     assert len(rank0) == len(rank1) < 1000
     assert (output / "latest.pt").exists()
+
+
+def test_resume_overrides_change_layout_and_are_recorded(tmp_path):
+    from train.history_ppo import parse_resume_overrides
+    first = HistoryTrainer(small_config(), tmp_path / "a")
+    first.update()
+    path = first.save(tmp_path / "a.pt")
+    with pytest.raises(ValueError):
+        HistoryTrainer(small_config(), tmp_path / "b", resume=path, resume_overrides={"lr": 1.0})
+    with pytest.raises(ValueError):
+        parse_resume_overrides(["entropy=0.1"])
+    overrides = parse_resume_overrides(["num_envs=2", "minibatch-matches=1",
+                                        "ddp_global_minibatch=true"])
+    assert overrides == dict(num_envs=2, minibatch_matches=1, ddp_global_minibatch=True)
+    second = HistoryTrainer(small_config(), tmp_path / "b", resume=path, resume_overrides=overrides)
+    assert second.config.num_envs == 2 and second.env.num_envs == 2
+    assert second.config_changes == [dict(at_update=1, changes=dict(
+        ddp_global_minibatch=[False, True], minibatch_matches=[2, 1], num_envs=[4, 2]))]
+    second.update()
+    third = HistoryTrainer(small_config(), tmp_path / "c", resume=second.save(tmp_path / "b.pt"))
+    assert third.config.num_envs == 2 and len(third.config_changes) == 1
+
+
+def test_launcher_continues_single_process_lineage_with_global_counters(tmp_path):
+    import json
+    from train.history_ddp import main
+    base = HistoryTrainer(small_config(num_envs=4), tmp_path / "base")
+    base.update()
+    path = base.save(tmp_path / "base.pt")
+    before = dict(base.progress)
+    output = tmp_path / "run"
+    code = main(["--output", str(output), "--world-size", "2", "--resume", str(path),
+                 "--updates", "3", "--resume-set", "num_envs=2",
+                 "--resume-set", "minibatch_matches=1",
+                 "--resume-set", "ddp_global_minibatch=true", "--torch-threads", "1"])
+    assert code == 0
+    lines = [json.loads(l) for l in (output / "metrics.jsonl").read_text().splitlines()]
+    other = [json.loads(l) for l in (output / "rank-1" / "metrics.jsonl").read_text().splitlines()]
+    assert [l["update"] for l in lines] == [2, 3]
+    steps = sum(a["step_decisions"] + b["step_decisions"] for a, b in zip(lines, other))
+    assert lines[-1]["decisions"] == other[-1]["decisions"] == before["decisions"] + steps
+    payload = torch.load(output / "latest.pt", map_location="cpu", weights_only=False)
+    assert payload["progress"]["decisions"] == lines[-1]["decisions"]
+    assert payload["lineage"] == base.lineage
+    assert payload["config"]["num_envs"] == 2 and payload["config"]["ddp_global_minibatch"]
+    assert payload["config_changes"][0]["changes"]["num_envs"] == [4, 2]

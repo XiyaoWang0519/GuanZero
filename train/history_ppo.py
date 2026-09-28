@@ -178,6 +178,33 @@ class HistoryPPOConfig:
         return cls(**values)
 
 
+# Config fields a resume may change (``--resume-set``): the layout of the batch over
+# processes and threads, checkpoint cadence and graph budgets (the per-update batch
+# stays num_envs x world size), plus snapshot_updates, which changes dynamics.
+RESUME_OVERRIDES = frozenset({"num_envs", "num_threads", "minibatch_matches", "torch_threads",
+                              "checkpoint_updates", "ddp_global_minibatch",
+                              "rollout_graph_budget_mb", "rollout_graph_policy_budget_mb",
+                              "rollout_triton_min_batch", "snapshot_updates"})
+
+
+def parse_resume_overrides(items: list[str] | None) -> dict[str, Any]:
+    """``KEY=VALUE`` strings to typed HistoryPPOConfig values."""
+    types = {f.name: f.type for f in fields(HistoryPPOConfig)}
+    values: dict[str, Any] = {}
+    for item in items or []:
+        key, sep, raw = item.partition("=")
+        key = key.strip().replace("-", "_")
+        if not sep or key not in RESUME_OVERRIDES:
+            raise ValueError(f"--resume-set takes KEY=VALUE with KEY in {sorted(RESUME_OVERRIDES)}")
+        if "bool" in str(types[key]):
+            if raw.lower() not in ("true", "false", "1", "0"):
+                raise ValueError(f"{key} needs true/false")
+            values[key] = raw.lower() in ("true", "1")
+        else:
+            values[key] = int(raw)
+    return values
+
+
 def segment_entropy(log_probs: torch.Tensor, rows: torch.Tensor, count: int) -> torch.Tensor:
     """Entropy of each decision's full candidate distribution, ``[count]``."""
     terms = -(log_probs.exp() * log_probs)
@@ -204,7 +231,8 @@ class HistoryTrainer:
     advantage_moments: tuple[float, float] | None = None
 
     def __init__(self, config: HistoryPPOConfig, output: str | Path, device: str = "cpu",
-                 resume: str | Path | None = None, allow_source_change: bool = False) -> None:
+                 resume: str | Path | None = None, allow_source_change: bool = False,
+                 resume_overrides: dict[str, Any] | None = None) -> None:
         self.output = Path(output)
         self.output.mkdir(parents=True, exist_ok=True)
         self.device = torch.device(device)
@@ -215,7 +243,13 @@ class HistoryTrainer:
         payload: dict[str, Any] | None = None
         if resume is not None:
             actor, critic, payload = load_history_checkpoint(resume, self.device)
-            config = HistoryPPOConfig.from_payload(payload["config"], updates=config.updates)
+            saved_config = HistoryPPOConfig.from_payload(payload["config"], updates=config.updates)
+            overrides = dict(resume_overrides or {})
+            unknown = set(overrides) - RESUME_OVERRIDES
+            if unknown:
+                raise ValueError(f"resume cannot change {sorted(unknown)}")
+            config = HistoryPPOConfig.from_payload(payload["config"], updates=config.updates,
+                                                   **overrides)
             self.lineage = str(payload["lineage"])
         else:
             actor, critic = fresh_player(config.policy_config(), config.seed)
@@ -241,6 +275,16 @@ class HistoryTrainer:
                 previous_revision=saved.get("source", {}).get("revision"),
                 source_sha256=self.run_identity["source"]["source_sha256"],
                 revision=self.run_identity["source"]["revision"]))
+        # Resume may change how the batch is laid out over processes (and, on
+        # request, the snapshot cadence); every change is recorded in the lineage.
+        self.config_changes = list(payload.get("config_changes", [])) if payload else []
+        if payload is not None:
+            changed = {k: [getattr(saved_config, k), getattr(config, k)]
+                       for k in sorted(RESUME_OVERRIDES)
+                       if getattr(saved_config, k) != getattr(config, k)}
+            if changed:
+                self.config_changes.append(dict(at_update=int(payload["progress"]["updates"]),
+                                                changes=changed))
         # Dropout is zero, so train mode is the same policy as eval mode; staying
         # in train mode keeps the encoder on one kernel path for both the
         # behaviour log-probabilities and the learner's recomputation.
@@ -335,6 +379,7 @@ class HistoryTrainer:
             "engine_digest": self.run_identity["engine_digest"],
             "source": self.run_identity["source"],
             "source_changes": self.source_changes,
+            "config_changes": self.config_changes,
             "engine_binary_sha256": sha256(Path(gd._gd_core.__file__)),
             "token_schema": {"version": TOKEN_SCHEMA_VERSION, "dim": int(TOKEN_DIM),
                              "forced_bit": False, "private_tribute_flags": False},
@@ -579,7 +624,7 @@ class HistoryTrainer:
             "update": self.progress["updates"], "decisions": self.progress["decisions"],
             "rounds": self.progress["rounds"], "matches": self.progress["matches"],
             "step_decisions": collected.decisions, "step_learner_rows": collected.learner_rows,
-            "step_rounds": collected.rounds,
+            "step_rounds": collected.rounds, "step_matches": collected.matches,
             "round_gain": collected.gain / collected.rounds if collected.rounds else None,
             "decisions_per_sec": collected.decisions / max(t1 - t0, 1e-9),
             "collect_seconds": t1 - t0, "learn_seconds": t2 - t1,
@@ -634,7 +679,8 @@ class HistoryTrainer:
                        "critic": self.critic_optimizer.state_dict()},
             config=asdict(self.config), progress=dict(self.progress), rng=rng)
         payload.update(population=self.population.state_dict(), run_identity=self.run_identity,
-                       resume_count=self.resume_count, source_changes=self.source_changes)
+                       resume_count=self.resume_count, source_changes=self.source_changes,
+                       config_changes=self.config_changes)
         return payload
 
     def save(self, path: str | Path | None = None) -> Path:
@@ -715,6 +761,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--resume", default=None)
     parser.add_argument("--allow-source-change", action="store_true",
                         help="resume under different trainer source (same engine and token schema)")
+    parser.add_argument("--resume-set", action="append", default=[], metavar="KEY=VALUE",
+                        help="with --resume: change a batch-layout field (recorded); "
+                             "see RESUME_OVERRIDES")
     return parser
 
 
@@ -727,7 +776,8 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config = config_from_args(args)
     trainer = HistoryTrainer(config, args.output, device=args.device, resume=args.resume,
-                             allow_source_change=args.allow_source_change)
+                             allow_source_change=args.allow_source_change,
+                             resume_overrides=parse_resume_overrides(args.resume_set))
     def stop(signum, frame):
         trainer.stop_requested = True
     signal.signal(signal.SIGTERM, stop)
