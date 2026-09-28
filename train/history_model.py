@@ -253,6 +253,9 @@ class HistoryActor(nn.Module):
         # Opt-in until the host-equivalence checks also pass on the target GPU.
         # Keep each projection's original row shape when batching attention.
         self.batched_private_attention = False
+        # Opt-in with batched attention: one q/out projection over all rows.
+        # Same FP32 math; only the GEMM reduction order may differ (not bitwise).
+        self.wide_private_projection = False
         width = config.width
         self.public = nn.Linear(TOKEN_DIM, width)
         self.round_embedding = nn.Embedding(config.max_rounds, width)
@@ -377,17 +380,21 @@ class HistoryActor(nn.Module):
         reductions. CPU uses equivalent one-row batched matrix multiplies;
         CUDA retains the individual linear calls. Both batch the independent
         SDPA problems, with exact checks required on the target backend.
+        ``wide_private_projection`` instead runs each projection as one linear
+        call over all rows: O(1) launches, FP32 kept, reduction order may differ.
         """
         count = len(query)
         width, heads = self.config.width, self.config.heads
         depth = width // heads
-        q = self._project_independent(self.q_proj, query)
+        project = ((lambda layer, value: layer(value)) if self.wide_private_projection
+                   else self._project_independent)
+        q = project(self.q_proj, query)
         q = q.view(count, heads, depth)[:, :, None]
         k = keys.view(count, keys.shape[1], heads, depth).transpose(1, 2)
         v = values.view(count, values.shape[1], heads, depth).transpose(1, 2)
         out = F.scaled_dot_product_attention(q, k, v, attn_mask=allowed[:, None, None])
         out = out[:, :, 0].reshape(count, width)
-        return self._project_independent(self.out_proj, out)
+        return project(self.out_proj, out)
 
     def decision_states(self, encoded: Tensor | None, inputs: DecisionInputs) -> Tensor:
         """One state per decision from its private query and visible prefix.

@@ -88,6 +88,7 @@ class HistoryPPOConfig:
     causal_sdpa: bool = False           # opt-in until same-device CUDA A/B acceptance
     rollout_kv_cache: bool = False      # public-only, invalidated across learner updates
     rollout_batched_attention: bool = False  # opt-in; target-device bitwise acceptance required
+    rollout_wide_projection: bool = False  # with batched attention: one q/out GEMM; FP32, not bitwise
     rollout_private_graphs: bool = False  # bounded CUDA inference graphs; sampling stays eager
     rollout_graph_budget_mb: int = 512
     rollout_triton_cache: bool = False  # lossless KV update/packing; requires Triton
@@ -129,6 +130,8 @@ class HistoryPPOConfig:
             raise ValueError('rollout Triton minimum batch must be positive')
         if (self.rollout_private_graphs or self.rollout_triton_cache) and not self.rollout_kv_cache:
             raise ValueError('CUDA rollout optimizations require rollout_kv_cache')
+        if self.rollout_wide_projection and not self.rollout_batched_attention:
+            raise ValueError('rollout_wide_projection requires rollout_batched_attention')
         if self.rollout_device not in (None, 'cpu', 'cuda'):
             raise ValueError('rollout_device must be cpu, cuda, or None')
         if min(self.num_envs, self.steps_per_update, self.epochs, self.minibatch_matches,
@@ -237,6 +240,7 @@ class HistoryTrainer:
         self.actor = actor.to(self.device).train()
         self.actor.causal_sdpa = config.causal_sdpa
         self.actor.batched_private_attention = config.rollout_batched_attention
+        self.actor.wide_private_projection = config.rollout_wide_projection
         self.critic = critic.to(self.device).train()
         critic_lr = config.critic_lr if config.critic_lr is not None else config.lr
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=config.lr)
@@ -341,6 +345,7 @@ class HistoryTrainer:
                           "causal_sdpa": self.rollout_actor.causal_sdpa,
                           "rollout_kv_cache": self.collector.kv_cache,
                           "rollout_batched_attention": self.rollout_actor.batched_private_attention,
+                          "rollout_wide_projection": self.rollout_actor.wide_private_projection,
                           "rollout_private_graphs": self.collector.private_graphs,
                           "rollout_graph_budget_mb": self.config.rollout_graph_budget_mb,
                           "rollout_triton_cache": self.collector.triton_cache,
@@ -670,6 +675,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--causal-sdpa", action="store_true")
     parser.add_argument("--rollout-kv-cache", action="store_true")
     parser.add_argument("--rollout-batched-attention", action="store_true")
+    parser.add_argument("--rollout-wide-projection", action="store_true",
+                        help="with --rollout-batched-attention: one q/out projection over all "
+                             "rows (FP32; reduction order differs, not bitwise)")
     parser.add_argument("--rollout-private-graphs", action="store_true")
     parser.add_argument("--rollout-graph-budget-mb", type=int, default=512)
     parser.add_argument("--rollout-triton-cache", action="store_true")

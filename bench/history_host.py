@@ -55,11 +55,13 @@ class ExactDigest:
         return self.digest.hexdigest()
 
 
-def initialized_actor(config, seed, causal_sdpa, device="cpu", batched_attention=False):
+def initialized_actor(config, seed, causal_sdpa, device="cpu", batched_attention=False,
+                      wide_projection=False):
     torch.manual_seed(seed)
     actor = HistoryActor(config).float().train().requires_grad_(False)
     actor.causal_sdpa = causal_sdpa
     actor.batched_private_attention = batched_attention
+    actor.wide_private_projection = wide_projection
     return actor.to(device)
 
 
@@ -67,7 +69,10 @@ def make_population(args, config):
     """Use the normal assignment algorithm with reproducible distinct weights."""
     device = getattr(args, "device", "cpu")
     batched_attention = getattr(args, "batched_private_attention", False)
-    actor = initialized_actor(config, args.seed, args.causal_sdpa, device, batched_attention)
+    wide = getattr(args, "wide_private_projection", False)
+    if wide and not batched_attention:
+        raise ValueError("--wide-private-projection requires --batched-private-attention")
+    actor = initialized_actor(config, args.seed, args.causal_sdpa, device, batched_attention, wide)
     count = args.identities
     if count is None:
         count = {"current": 0, "recent": 4, "wide": 16}[args.case]
@@ -85,7 +90,7 @@ def make_population(args, config):
     for index in range(1, count + 1):
         identity = population.snapshot(index)
         seeded = initialized_actor(config, args.seed + 100003 * index, args.causal_sdpa,
-                                   device, batched_attention)
+                                   device, batched_attention, wide)
         population.models[identity].load_state_dict(seeded.state_dict())
         initial[identity] = weights_digest(population.models[identity].state_dict())
         population.metadata[identity]["sha256"] = initial[identity]
@@ -253,6 +258,7 @@ def run_case(args):
         inference=dict(runtime_settings(collector.device), causal_sdpa=actor.causal_sdpa,
                        rollout_kv_cache=collector.kv_cache,
                        rollout_batched_attention=actor.batched_private_attention,
+                       rollout_wide_projection=actor.wide_private_projection,
                        rollout_private_graphs=collector.private_graphs,
                        rollout_triton_cache=collector.triton_cache,
                        rollout_triton_min_batch=collector.triton_min_batch,
@@ -287,6 +293,8 @@ def main(argv=None):
     parser.add_argument("--case", choices=("current", "recent", "wide"), default="recent")
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--batched-private-attention", action="store_true")
+    parser.add_argument("--wide-private-projection", action="store_true",
+                        help="one q/out projection over all rows (FP32, not bitwise)")
     parser.add_argument("--private-graphs", action="store_true")
     parser.add_argument("--triton-cache", action="store_true")
     parser.add_argument("--triton-min-batch", type=int, default=1)
