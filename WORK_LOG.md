@@ -1,3 +1,12 @@
+# Overnight large-model run, 1,024 envs — September 28, 2026
+
+- w128/L4/H8 from scratch, large_recent recipe, 1,024 envs, 7.3 h on one Vast
+  RTX 4090, 44.2M decisions, ~2,200 decisions/s (about 6.5x the 2x2 arms).
+  Endpoint on 256 duplicate deals: vs B11 -0.36 [-0.53, -0.20] (22% match
+  wins), vs segment-2 -0.70, vs M1 +0.87 (89%). Curve flattens near -0.55
+  after ~20M decisions. $6.00 (night total ~$6.56, including the failed
+  sweep). [Report](docs/reports/history-overnight-large-2026-09-28.md).
+
 # RTX 4090 throughput optimization completed — September 28, 2026 UTC
 
 - Added optional private CUDA Graphs, batched private attention, and Triton
