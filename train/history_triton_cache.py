@@ -32,27 +32,30 @@ except ImportError:  # CPU probe and original cache remain usable without Triton
 
 if triton is not None:
     @triton.jit(do_not_specialize=[
-        "BATCH", "CAPACITY", "LAYER", "STACK_MODE", "K0", "K1", "K2", "K3",
+        "BATCH", "ROW_BASE", "CAPACITY", "LAYER", "STACK_MODE", "K0", "K1", "K2", "K3",
         "V0", "V1", "V2", "V3",
     ])
     def _update_and_pack(
         NEW_K, NEW_V, PACKED_K, PACKED_V, POINTERS, RANGES,
-        BATCH, CAPACITY, LAYER, STACK_MODE,
+        BATCH, ROW_BASE, CAPACITY, LAYER, STACK_MODE,
         K0, K1, K2, K3, V0, V1, V2, V3,
         HEADS: tl.constexpr, DEPTH: tl.constexpr, BLOCK: tl.constexpr,
     ):
+        # NEW_*/PACKED_* start at this launch's first row; the pointer and range
+        # tables cover the whole append, so they are read at ROW_BASE + row.
         row = tl.program_id(1)
+        table_row = ROW_BASE + row
         index = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
         valid = index < HEADS * CAPACITY * DEPTH
         head = index // (CAPACITY * DEPTH)
         position = index // DEPTH % CAPACITY
         depth = index % DEPTH
-        own_capacity = tl.load(POINTERS + row)
-        start = tl.load(RANGES + row)
-        count = tl.load(RANGES + BATCH + row)
+        own_capacity = tl.load(POINTERS + table_row)
+        start = tl.load(RANGES + table_row)
+        count = tl.load(RANGES + BATCH + table_row)
         end = start + count
-        entry_k = tl.load(POINTERS + (1 + 2 * LAYER) * BATCH + row)
-        entry_v = tl.load(POINTERS + (2 + 2 * LAYER) * BATCH + row)
+        entry_k = tl.load(POINTERS + (1 + 2 * LAYER) * BATCH + table_row)
+        entry_v = tl.load(POINTERS + (2 + 2 * LAYER) * BATCH + table_row)
         entry_k = entry_k.to(tl.pointer_type(tl.uint32))
         entry_v = entry_v.to(tl.pointer_type(tl.uint32))
         # Strides are element strides of potentially non-contiguous QKV views.
@@ -79,6 +82,30 @@ if triton is not None:
         packed_offset = row * HEADS * CAPACITY * DEPTH + index
         tl.store(packed_k + packed_offset, k_bits, mask=valid)
         tl.store(packed_v + packed_offset, v_bits, mask=valid)
+
+
+INT32_LIMIT = 2**31 - 1
+MAX_GRID_ROWS = 65535    # CUDA grid dimension y
+
+
+def rows_per_launch(batch: int, span: int, views) -> int:
+    """Rows per kernel launch keeping every in-kernel element offset in int32.
+
+    ``span`` is one packed row (``width * capacity`` elements); ``views`` are the
+    new K/V views as ``(row_stride, in_row_extent)``. Every offset is at most
+    ``row * row_stride + extent`` for a launch-local ``row``. Chunking only
+    splits the grid; each launch copies the same bits.
+    """
+    extent = max([span, *(int(e) for _, e in views)])
+    per_row = max([span, *(int(r) for r, _ in views)])
+    if span <= 0 or extent > INT32_LIMIT:
+        return 0
+    rows = (INT32_LIMIT - extent) // per_row + 1
+    return max(0, min(batch, rows, MAX_GRID_ROWS))
+
+
+def _view(tensor):
+    return tensor.stride(0), sum((n - 1) * st for n, st in zip(tensor.shape[1:], tensor.stride()[1:]))
 
 
 def _storage_bytes(tensors):
@@ -112,14 +139,23 @@ class TritonHistoryCache(BatchedHistoryCache):
     reused across every layer, then released. Pointer/capacity metadata is only
     uploaded when its exact ordered composition changes. Both uploads share one
     pinned slab on a table miss; the async transfer owns an immutable host slab.
+    ``copy_stats`` counts every eager fallback by reason (``fallback_*`` and
+    ``eager_packs``), Triton launches and chunked packs.
     """
+    max_rows_per_launch = None   # tests force chunking; production uses the int32 bound
 
-    def __init__(self, actor, chunk_size=128, *, enabled=True, min_batch=1, max_batch=128,
-                 max_table_bytes=128 << 10, max_packed_bytes=256 << 20, block=256):
+    def __init__(self, actor, chunk_size=128, *, enabled=True, min_batch=1, max_batch=None,
+                 max_table_bytes=None, max_packed_bytes=None, block=256):
+        # None = no limit. Batch size is unbounded: launches are chunked so every
+        # in-kernel offset stays int32, and the pointer table is one small H2D
+        # upload per composition (8 * (2L + 3) bytes per stream). Packed K/V has
+        # exactly the eager path's size, so capping it only forced eager copies.
         super().__init__(actor, chunk_size)
         if enabled and actor.bos.device.type == "cuda" and triton is None:
             raise RuntimeError("Triton is required when the CUDA Triton KV cache is enabled")
-        if min(min_batch, max_batch, max_table_bytes, max_packed_bytes) < 1 or min_batch > max_batch:
+        limits = [value for value in (max_batch, max_table_bytes, max_packed_bytes)
+                  if value is not None]
+        if min([min_batch, *limits]) < 1 or (max_batch is not None and min_batch > max_batch):
             raise ValueError("positive Triton cache limits required")
         if block not in (128, 256, 512, 1024):
             raise ValueError("block must be a supported power of two")
@@ -182,14 +218,28 @@ class TritonHistoryCache(BatchedHistoryCache):
     def _supported_entries(self, entries, counts):
         actor, cfg = self.actor, self.actor.config
         batch = len(entries)
-        if (not self.enabled or triton is None or actor.bos.device.type != "cuda"
-                or actor.bos.dtype != torch.float32 or not self.min_batch <= batch <= self.max_batch
-                or len(counts) != batch or len({id(e) for e in entries}) != batch
-                or (2 * cfg.layers + 5) * batch * 8 > self.max_table_bytes):
+        reason = None
+        if not self.enabled or triton is None or actor.bos.device.type != "cuda":
+            reason = "fallback_disabled"
+        elif actor.bos.dtype != torch.float32:
+            reason = "fallback_dtype"
+        elif batch < self.min_batch:
+            reason = "fallback_below_min_batch"
+        elif self.max_batch is not None and batch > self.max_batch:
+            reason = "fallback_above_max_batch"
+        elif len(counts) != batch or len({id(e) for e in entries}) != batch:
+            reason = "fallback_entry_layout"
+        elif (self.max_table_bytes is not None
+              and (2 * cfg.layers + 5) * batch * 8 > self.max_table_bytes):
+            reason = "fallback_table_bytes"
+        elif not all(0 <= entry.length < entry.length + count <= entry.capacity
+                     and len(entry.keys) == len(entry.values) == cfg.layers
+                     for entry, count in zip(entries, counts)):
+            reason = "fallback_entry_layout"
+        if reason is not None:
+            self.copy_stats[reason] += 1
             return False
-        return all(0 <= entry.length < entry.length + count <= entry.capacity
-                   and len(entry.keys) == len(entry.values) == cfg.layers
-                   for entry, count in zip(entries, counts))
+        return True
 
     def _metadata(self, entries, counts):
         device, cfg = self.actor.bos.device, self.actor.config
@@ -276,9 +326,13 @@ class TritonHistoryCache(BatchedHistoryCache):
         context = self._copy_context
         if context is None:
             context = self._metadata(entries, counts)
+        rows = (rows_per_launch(batch, cfg.width * capacity, (_view(new_k), _view(new_v)))
+                if new_k.ndim == new_v.ndim == 4 else 0)
         supported = (context is not None and 0 <= layer_index < cfg.layers
                      and capacity >= max(e.length + n for e, n in zip(entries, counts))
-                     and 2 * batch * cfg.width * capacity * 4 <= self.max_packed_bytes
+                     and (self.max_packed_bytes is None
+                          or 2 * batch * cfg.width * capacity * 4 <= self.max_packed_bytes)
+                     and rows >= 1
                      and new_k.dtype == new_v.dtype == torch.float32
                      and new_k.device == new_v.device == self.actor.bos.device
                      and new_k.shape == new_v.shape
@@ -288,6 +342,8 @@ class TritonHistoryCache(BatchedHistoryCache):
                      and min(*new_k.stride(), *new_v.stride()) >= 0)
         if not supported:
             self.copy_stats["eager_packs"] += 1
+            if context is not None:
+                self.copy_stats["fallback_pack_shape"] += 1
             return super()._pack_keys_values(entries, counts, layer_index, new_k, new_v, capacity)
         if (tuple(id(entry) for entry in entries) != tuple(id(entry) for entry in context.entries)
                 or tuple(counts) != context.counts):
@@ -296,17 +352,24 @@ class TritonHistoryCache(BatchedHistoryCache):
             raise RuntimeError("Triton KV pack changed CUDA stream during append")
         packed_k, packed_v = new_k.new_empty(shape), new_v.new_empty(shape)
         stack_mode = int(all(entry.capacity >= capacity for entry in entries))
-        grid = (triton.cdiv(cfg.width * capacity, self.block), batch)
+        rows = min(rows, self.max_rows_per_launch or rows)
         started = time.perf_counter()
         with torch.cuda.device(new_k.device):
-            _update_and_pack[grid](
-                new_k, new_v, packed_k, packed_v, context.table.pointers, context.ranges,
-                batch, capacity, layer_index, stack_mode, *new_k.stride(), *new_v.stride(),
-                HEADS=cfg.heads, DEPTH=cfg.width // cfg.heads, BLOCK=self.block,
-                num_warps=4,
-            )
+            for base in range(0, batch, rows):
+                end = min(batch, base + rows)
+                grid = (triton.cdiv(cfg.width * capacity, self.block), end - base)
+                _update_and_pack[grid](
+                    new_k[base:end], new_v[base:end], packed_k[base:end], packed_v[base:end],
+                    context.table.pointers, context.ranges,
+                    batch, base, capacity, layer_index, stack_mode,
+                    *new_k.stride(), *new_v.stride(),
+                    HEADS=cfg.heads, DEPTH=cfg.width // cfg.heads, BLOCK=self.block,
+                    num_warps=4,
+                )
+                self.copy_stats["triton_launches"] += 1
         self.launch_host_seconds += time.perf_counter() - started
         self.copy_stats["triton_packs"] += 1
+        self.copy_stats["chunked_packs"] += int(rows < batch)
         self.copy_stats["removed_entry_copy_calls"] += 2 * batch
         self.copy_stats["insufficient_capacity_packs"] += 1 - stack_mode
         return packed_k, packed_v

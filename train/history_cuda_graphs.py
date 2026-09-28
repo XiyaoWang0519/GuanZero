@@ -172,7 +172,7 @@ class PrivateDecisionGraphs:
         self.stream = torch.cuda.current_stream(self.device)
         self.side = torch.cuda.Stream(device=self.device)
         self.stats = dict(hits=0, misses=0, captures=0, evictions=0, invalidations=0,
-                          budget_fallbacks=0, eager_fallbacks=0, admission_fallbacks=0,
+                          budget_fallbacks=0, size_skips=0, eager_fallbacks=0, admission_fallbacks=0,
                           observed_evictions=0, inplace_refreshes=0, intervals=0, interval_ends=0,
                           interval_forwards=0, full_refreshes=0)
 
@@ -276,6 +276,16 @@ class PrivateDecisionGraphs:
             graph.reset()
             raise
 
+    def minimum_entry_bytes(self, values: tuple[Tensor, ...]) -> int:
+        """Lower bound of a captured entry: its static input copies plus the
+        ``kv_proj(encoded)`` activation ([N, S, 2 * width] FP32), which must be
+        allocated inside the graph's private pool during capture."""
+        encoded = values[0]
+        inputs = sum(value.numel() * value.element_size() for value in values)
+        keys_values = (encoded.shape[0] * encoded.shape[1] * 2 * self.actor.config.width
+                       * encoded.element_size())
+        return inputs + keys_values
+
     def _key(self, values: tuple[Tensor, ...]) -> tuple:
         layouts = []
         for index, value in enumerate(values):
@@ -310,8 +320,10 @@ class PrivateDecisionGraphs:
         entry = self.entries.get(key)
         if entry is None:
             self.stats["misses"] += 1
-            if sum(value.numel() * value.element_size() for value in values) > self.max_bytes:
+            if self.minimum_entry_bytes(values) > self.max_bytes:
+                # Cannot fit: skip before admission, warm-up and capture.
                 self.stats["budget_fallbacks"] += 1
+                self.stats["size_skips"] = self.stats.get("size_skips", 0) + 1
                 return self._eager(inputs, encoded)
             count = self._observe(key)
             if count < 0:

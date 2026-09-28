@@ -490,7 +490,8 @@ class HistoryCollector:
                  kv_cache: bool = False, profile: bool = False,
                  temperature: float = 1.0, epsilon: float = 0.0,
                  reuse_cache_lengths: bool = True, private_graphs: bool = False,
-                 private_graph_budget_mb: int = 512, triton_cache: bool = False,
+                 private_graph_budget_mb: int = 512, private_graph_policy_budget_mb: int = 128,
+                 triton_cache: bool = False,
                  triton_min_batch: int = 1) -> None:
         self.env = env
         self.actor = actor
@@ -509,12 +510,13 @@ class HistoryCollector:
             raise ValueError("Triton cache copies require CUDA rollout and the full-history KV cache")
         if triton_min_batch < 1:
             raise ValueError("Triton minimum batch must be positive")
-        if private_graph_budget_mb < 1:
+        if private_graph_budget_mb < 1 or private_graph_policy_budget_mb < 1:
             raise ValueError("private graph memory budget must be positive")
         self.kv_cache = kv_cache
         self.reuse_cache_lengths = reuse_cache_lengths
         self.private_graphs = private_graphs
         self.private_graph_budget_bytes = private_graph_budget_mb << 20
+        self.private_graph_policy_budget_bytes = private_graph_policy_budget_mb << 20
         self.decision_graphs = {}
         self._graph_collecting = False
         self.triton_cache = triton_cache
@@ -565,7 +567,8 @@ class HistoryCollector:
             self.decision_graphs.pop(identity).clear()
             graph = None
         other_bytes = sum(g.bytes for key, g in self.decision_graphs.items() if key != identity)
-        available = min(128 << 20, self.private_graph_budget_bytes - other_bytes)
+        available = min(self.private_graph_policy_budget_bytes,
+                        self.private_graph_budget_bytes - other_bytes)
         if available < 1:
             return actor.candidate_log_probs(inputs, encoded=encoded)
         if graph is None:

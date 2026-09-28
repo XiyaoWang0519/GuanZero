@@ -238,6 +238,26 @@ def test_forward_admission_budget_retry_and_owned_outputs(cache, monkeypatch):
     assert gradient_modes and not any(gradient_modes)  # Graph API is inference-only.
 
 
+def test_shapes_that_cannot_fit_skip_before_admission_and_capture(cache, monkeypatch):
+    # inputs 2*4*32*4 + 3*16 = 1072 bytes; kv_proj(encoded) = 2*4*64*4 = 2048 bytes.
+    encoded = torch.zeros(2, 4, 32)
+    inputs = SimpleNamespace(decisions=2, one_decision_per_stream=True,
+                             obs=torch.zeros(2, 8, dtype=torch.uint8),
+                             seat=torch.zeros(2, dtype=torch.int64),
+                             prefix=torch.ones(2, dtype=torch.int64))
+    values = cache._values(inputs, encoded)
+    assert cache.minimum_entry_bytes(values) == 1072 + 2048
+    monkeypatch.setattr(cache, "_eager", lambda inputs, encoded: encoded[:, 0])
+    capture = Mock(side_effect=AssertionError("must not capture"))
+    monkeypatch.setattr(cache, "_capture", capture)
+    cache.max_bytes = 3000         # inputs fit (the old check), inputs + K/V do not
+    for _ in range(4):
+        cache.forward(inputs, encoded)
+    capture.assert_not_called()
+    assert cache.stats["size_skips"] == 4 and cache.stats["budget_fallbacks"] == 4
+    assert cache.stats["admission_fallbacks"] == 0 and not cache.observed
+
+
 class FakeGraphs:
     """No CUDA execution; collector must honor the real graph lifecycle API."""
     def __init__(self, actor, **options):
@@ -377,6 +397,27 @@ def test_collector_shared_budget_fallback_and_per_policy_cap(collector, monkeypa
     eager.assert_called_once_with(None, encoded=None)
     collector._graph_log_probs(0, collector.actor, None, None)
     assert first.budgets[-1] == 130  # Exclude its own reservation from availability.
+
+
+def test_per_policy_cap_follows_configuration(collector):
+    collector.private_graph_policy_budget_bytes = 300 << 20
+    collector.private_graph_budget_bytes = 1000 << 20
+    collector._graph_log_probs(0, collector.actor, None, None)
+    assert collector.decision_graphs[0].max_bytes == 300 << 20
+    collector.decision_graphs[0].bytes = 900 << 20
+    collector._graph_log_probs(1, collector.actor, None, None)
+    assert collector.decision_graphs[1].max_bytes == 100 << 20   # total minus others
+
+
+def test_trainer_config_passes_graph_budgets():
+    from train.history_ppo import HistoryPPOConfig, build_parser, config_from_args
+    assert HistoryPPOConfig().rollout_graph_policy_budget_mb == 128
+    args = build_parser().parse_args(["--output", "x", "--rollout-graph-budget-mb", "2048",
+                                      "--rollout-graph-policy-budget-mb", "1024"])
+    config = config_from_args(args)
+    assert (config.rollout_graph_budget_mb, config.rollout_graph_policy_budget_mb) == (2048, 1024)
+    with pytest.raises(ValueError):
+        HistoryPPOConfig(rollout_graph_policy_budget_mb=0)
 
 
 def test_learner_invalidation_keeps_private_graphs_for_next_interval(collector):

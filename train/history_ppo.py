@@ -91,6 +91,7 @@ class HistoryPPOConfig:
     rollout_wide_projection: bool = False  # with batched attention: one q/out GEMM; FP32, not bitwise
     rollout_private_graphs: bool = False  # bounded CUDA inference graphs; sampling stays eager
     rollout_graph_budget_mb: int = 512
+    rollout_graph_policy_budget_mb: int = 128  # per-policy cap inside the total budget
     rollout_triton_cache: bool = False  # lossless KV update/packing; requires Triton
     rollout_triton_min_batch: int = 1
     profile_collection: bool = False   # synchronized phase timings; diagnostic only
@@ -124,7 +125,7 @@ class HistoryPPOConfig:
     snapshot_probability: float = 0.5
 
     def __post_init__(self) -> None:
-        if self.rollout_graph_budget_mb < 1:
+        if self.rollout_graph_budget_mb < 1 or self.rollout_graph_policy_budget_mb < 1:
             raise ValueError('rollout graph memory budget must be positive')
         if self.rollout_triton_min_batch < 1:
             raise ValueError('rollout Triton minimum batch must be positive')
@@ -287,6 +288,7 @@ class HistoryTrainer:
                                           kv_cache=config.rollout_kv_cache,
                                           private_graphs=config.rollout_private_graphs,
                                           private_graph_budget_mb=config.rollout_graph_budget_mb,
+                                          private_graph_policy_budget_mb=config.rollout_graph_policy_budget_mb,
                                           triton_cache=config.rollout_triton_cache,
                                           triton_min_batch=config.rollout_triton_min_batch,
                                           profile=config.profile_collection,
@@ -348,6 +350,7 @@ class HistoryTrainer:
                           "rollout_wide_projection": self.rollout_actor.wide_private_projection,
                           "rollout_private_graphs": self.collector.private_graphs,
                           "rollout_graph_budget_mb": self.config.rollout_graph_budget_mb,
+                          "rollout_graph_policy_budget_mb": self.config.rollout_graph_policy_budget_mb,
                           "rollout_triton_cache": self.collector.triton_cache,
                           "rollout_triton_min_batch": self.collector.triton_min_batch,
                           "reuse_cache_lengths": self.collector.reuse_cache_lengths,
@@ -680,6 +683,8 @@ def build_parser() -> argparse.ArgumentParser:
                              "rows (FP32; reduction order differs, not bitwise)")
     parser.add_argument("--rollout-private-graphs", action="store_true")
     parser.add_argument("--rollout-graph-budget-mb", type=int, default=512)
+    parser.add_argument("--rollout-graph-policy-budget-mb", type=int, default=128,
+                        help="per-policy private-graph cap within the total budget")
     parser.add_argument("--rollout-triton-cache", action="store_true")
     parser.add_argument("--rollout-triton-min-batch", type=int, default=1)
     parser.add_argument("--profile-collection", action="store_true")

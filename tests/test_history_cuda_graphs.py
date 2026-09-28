@@ -88,6 +88,43 @@ def test_private_graph_observes_updated_weights_and_owns_outputs(cuda_backend, b
         graph.clear()
 
 
+@pytest.mark.parametrize("wide", [False, True])
+@pytest.mark.parametrize("streams,length", [(512, 96), (1024, 33)])
+def test_private_graph_large_batch_matches_eager_bits(cuda_backend, streams, length, wide):
+    """>= 512 one-decision streams with batched attention, graph vs eager bitwise."""
+    actor, _ = fresh_player(HistoryPolicyConfig(width=64, layers=2, heads=4), 8)
+    actor.cuda().train()
+    actor.batched_private_attention = True
+    actor.wide_private_projection = wide
+    generator = torch.Generator(device="cuda").manual_seed(streams + length)
+    encoded = torch.randn(streams, length, 64, generator=generator, device="cuda")
+    from train.history_model import DecisionInputs
+    inputs = DecisionInputs(
+        streams=None, match_index=torch.arange(streams, device="cuda"),
+        prefix=torch.randint(length, (streams,), generator=generator, device="cuda"),
+        obs=torch.randint(0, 2, (streams, actor.config.obs_dim), generator=generator,
+                          device="cuda", dtype=torch.uint8),
+        seat=torch.randint(0, 4, (streams,), generator=generator, device="cuda"),
+        cand=None, offsets=None, one_decision_per_stream=True)
+    graph = PrivateDecisionGraphs(actor, admit_after=1, max_entries=2, max_bytes=2 << 30)
+    try:
+        with torch.no_grad():
+            expected = actor.decision_states(encoded, inputs)
+        first = graph.forward(inputs, encoded)
+        again = graph.forward(inputs, encoded)
+        assert graph.stats["captures"] == 1 and graph.stats["hits"] == 1
+        bits(first, expected)
+        bits(again, expected)
+        small = PrivateDecisionGraphs(actor, admit_after=1, max_bytes=encoded.numel() * 4 * 2)
+        try:
+            bits(small.forward(inputs, encoded), expected)
+            assert small.stats["size_skips"] == 1 and small.stats["captures"] == 0
+        finally:
+            small.clear()
+    finally:
+        graph.clear()
+
+
 @pytest.mark.parametrize("triton", [False, True])
 def test_private_graph_trainer_update_resume_and_recomputation(cuda_backend, tmp_path, triton):
     if triton:

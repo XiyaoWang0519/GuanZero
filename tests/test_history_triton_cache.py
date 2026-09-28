@@ -7,7 +7,7 @@ import torch
 
 from train.history_inference import BatchedHistoryCache, Entry
 from train.history_model import HistoryActor, HistoryPolicyConfig, PublicStream
-from train.history_triton_cache import TritonHistoryCache, triton
+from train.history_triton_cache import INT32_LIMIT, TritonHistoryCache, rows_per_launch, triton
 from test_history_host_cache import append
 
 
@@ -44,15 +44,18 @@ def actor_on(device):
     return HistoryActor(HistoryPolicyConfig(width=32, layers=2, heads=4)).float().to(device)
 
 
+@pytest.mark.parametrize("forced_rows", [None, 1, 2])
 @pytest.mark.parametrize("capacities,starts,counts,capacity", [
     ([32], [0], [1], 32), ([64], [17], [7], 32),
     ([32, 64, 128], [10, 31, 69], [3, 5, 11], 128),
     ([64, 64, 64], [25, 20, 9], [7, 9, 11], 32),
     ([128, 256], [61, 120], [65, 9], 256),
 ])
-def test_packing_copies_arbitrary_bits_and_strides(device, capacities, starts, counts, capacity):
+def test_packing_copies_arbitrary_bits_and_strides(device, capacities, starts, counts, capacity,
+                                                   forced_rows):
     actor = actor_on(device)
     fast, eager = TritonHistoryCache(actor), BatchedHistoryCache(actor)
+    fast.max_rows_per_launch = forced_rows
     entries, originals = [], []
     for row, (own, start) in enumerate(zip(capacities, starts)):
         shape = (4, own, 8)
@@ -182,9 +185,69 @@ def test_encode_rejects_other_stream_before_unchanged_or_growing_entry(device, m
 
 def test_limits_are_validated():
     actor = actor_on("cpu")
-    for kwargs in ({"min_batch": 0}, {"min_batch": 3, "max_batch": 2}, {"max_table_bytes": 0}):
+    for kwargs in ({"min_batch": 0}, {"min_batch": 3, "max_batch": 2}, {"max_table_bytes": 0},
+                   {"max_packed_bytes": 0}):
         with pytest.raises(ValueError):
             TritonHistoryCache(actor, **kwargs)
+    # Defaults no longer cap batch, table or packed size (large rollouts stay on Triton).
+    cache = TritonHistoryCache(actor)
+    assert cache.max_batch is cache.max_table_bytes is cache.max_packed_bytes is None
+
+
+def test_rows_per_launch_keeps_int32_offsets():
+    # Small problems: one launch.
+    assert rows_per_launch(4096, 64 * 2048, [(3 * 64 * 128, 64 * 128)]) == 4096
+    # Large model, 4096 streams, capacity 4096: one row short of the int32 bound.
+    span = 128 * 4096
+    rows = rows_per_launch(4096, span, [(span, span)])
+    assert rows == 4095 and (rows - 1) * span + span <= INT32_LIMIT < rows * span + span
+    # A wide row stride in the new K/V view tightens the bound.
+    rows = rows_per_launch(4096, 1024, [(1 << 20, 1 << 19)])
+    assert (rows - 1) * (1 << 20) + (1 << 19) <= INT32_LIMIT < rows * (1 << 20) + (1 << 19)
+    # Grid y is capped; a single row beyond int32 cannot launch (eager fallback).
+    assert rows_per_launch(100000, 32, [(32, 31)]) == 65535
+    assert rows_per_launch(8, INT32_LIMIT + 1, []) == 0
+
+
+def test_fallback_reasons_are_counted_on_cpu():
+    actor = actor_on("cpu")
+    cache = TritonHistoryCache(actor, min_batch=4)
+    stream = PublicStream(0)
+    append(stream, 5)
+    cache.encode([(0, 0)], [stream])
+    assert cache.copy_stats["fallback_disabled"] >= 1   # CPU: never Triton
+    assert cache.copy_stats["triton_packs"] == 0
+
+
+@pytest.mark.parametrize("streams,forced_rows", [(520, None), (520, 97), (1100, None)])
+def test_large_batch_encode_matches_eager_bits(device, streams, forced_rows):
+    """>= 512 streams (the old max_batch was 128), with and without forced chunking."""
+    if device != "cuda":
+        pytest.skip("Triton launches are CUDA-only")
+    actor = actor_on(device)
+    reference_actor = copy.deepcopy(actor)
+    fast = TritonHistoryCache(actor, chunk_size=64, min_batch=1)
+    fast.max_rows_per_launch = forced_rows
+    eager = BatchedHistoryCache(reference_actor, chunk_size=64)
+    rng = np.random.default_rng(streams)
+    histories = [PublicStream(i) for i in range(streams)]
+    keys = [(i, i) for i in range(streams)]
+    for round_index in range(3):
+        for stream in histories:
+            append(stream, int(rng.integers(0, 90)))
+        meta, actual = fast.encode(keys, histories)
+        expected_meta, expected = eager.encode(keys, histories)
+        bits(actual, expected)
+        bits(meta.lengths, expected_meta.lengths)
+    for key in keys[:: max(1, streams // 64)]:
+        a, b = fast.entries[key], eager.entries[key]
+        for x, y in zip(a.keys + a.values + [a.memory], b.keys + b.values + [b.memory]):
+            bits(x, y)
+    assert fast.copy_stats["triton_packs"] > 0
+    assert fast.copy_stats["fallback_above_max_batch"] == 0 and fast.copy_stats["eager_packs"] == 0
+    if forced_rows:
+        assert fast.copy_stats["chunked_packs"] > 0
+        assert fast.copy_stats["triton_launches"] > fast.copy_stats["triton_packs"]
 
 
 def test_explicit_cuda_backend_requires_triton(device, monkeypatch):
