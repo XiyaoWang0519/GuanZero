@@ -124,6 +124,9 @@ class HistoryPPOConfig:
     population_archive_share: float = 0.5
     population_recent: int = 4
     snapshot_probability: float = 0.5
+    # data parallel (train/history_ddp.py): normalize advantages and weight the
+    # loss over the union of the ranks' minibatches, as one minibatch would be
+    ddp_global_minibatch: bool = False
 
     def __post_init__(self) -> None:
         if self.rollout_graph_budget_mb < 1 or self.rollout_graph_policy_budget_mb < 1:
@@ -197,6 +200,8 @@ class HistoryTrainer:
                  "ratio_deviation", "actor_grad_norm", "encoder_grad_norm", "critic_grad_norm",
                  "response_loss", "response_accuracy", "response_event_fraction",
                  "behaviour_weight_mean", "behaviour_weight_cap_fraction")
+    # (mean, std) of the whole data-parallel minibatch's advantages, else None
+    advantage_moments: tuple[float, float] | None = None
 
     def __init__(self, config: HistoryPPOConfig, output: str | Path, device: str = "cpu",
                  resume: str | Path | None = None, allow_source_change: bool = False) -> None:
@@ -282,20 +287,7 @@ class HistoryTrainer:
         self.rollout_actor = (self.actor if self.rollout_device == self.device else
                               copy.deepcopy(self.actor).to(self.rollout_device).requires_grad_(False))
         self.rollout_snapshots: dict[int, Any] = {}
-        self.collector = HistoryCollector(self.env, self.rollout_actor, self.store, self.buffer,
-                                          self.generator, self.rollout_device,
-                                          seat_policy=self.population.assignment,
-                                          resolve_policy=self.resolve_rollout_policy,
-                                          assignment_log=self.population_event,
-                                          kv_cache=config.rollout_kv_cache,
-                                          private_graphs=config.rollout_private_graphs,
-                                          private_graph_budget_mb=config.rollout_graph_budget_mb,
-                                          private_graph_policy_budget_mb=config.rollout_graph_policy_budget_mb,
-                                          triton_cache=config.rollout_triton_cache,
-                                          triton_min_batch=config.rollout_triton_min_batch,
-                                          profile=config.profile_collection,
-                                          temperature=config.rollout_temperature,
-                                          epsilon=config.rollout_epsilon)
+        self.collector = self.make_collector()
         self.prior_elapsed = float(self.progress["elapsed_seconds"])
         self.started = time.monotonic()
         self.metrics_path = self.output / "metrics.jsonl"
@@ -309,6 +301,24 @@ class HistoryTrainer:
                                    cache="ephemeral; rebuilt from raw public histories" if config.rollout_kv_cache
                                          else "none; raw public histories restart with environments"))
         self.write_manifest()
+
+    def make_collector(self) -> HistoryCollector:
+        """The rollout collector over this trainer's env, store and buffer."""
+        config = self.config
+        return HistoryCollector(self.env, self.rollout_actor, self.store, self.buffer,
+                                self.generator, self.rollout_device,
+                                seat_policy=self.population.assignment,
+                                resolve_policy=self.resolve_rollout_policy,
+                                assignment_log=self.population_event,
+                                kv_cache=config.rollout_kv_cache,
+                                private_graphs=config.rollout_private_graphs,
+                                private_graph_budget_mb=config.rollout_graph_budget_mb,
+                                private_graph_policy_budget_mb=config.rollout_graph_policy_budget_mb,
+                                triton_cache=config.rollout_triton_cache,
+                                triton_min_batch=config.rollout_triton_min_batch,
+                                profile=config.profile_collection,
+                                temperature=config.rollout_temperature,
+                                epsilon=config.rollout_epsilon)
 
     def population_event(self, event: dict) -> None:
         with (self.output / "population.jsonl").open("a") as stream:
@@ -444,7 +454,9 @@ class HistoryTrainer:
         returns = torch.as_tensor(buffer.returns[rows], device=self.device)
         log_ratio = log_prob - old
         ratio = log_ratio.exp()
-        if cfg.normalize_advantages and len(advantage) > 1:
+        if self.advantage_moments is not None:   # data parallel: the cross-rank minibatch
+            advantage = (advantage - self.advantage_moments[0]) / (self.advantage_moments[1] + 1e-8)
+        elif cfg.normalize_advantages and len(advantage) > 1:
             advantage = (advantage - advantage.mean()) / (advantage.std() + 1e-8)
         # Exploration floor: rows were drawn from pi_b, so each advantage carries
         # the truncated per-action weight min(cap, pi_old / pi_b). It is applied
@@ -600,9 +612,13 @@ class HistoryTrainer:
             "cuda_allocation_retries": torch.cuda.memory_stats(self.device).get("num_alloc_retries", 0) if self.device.type == "cuda" else 0,
         }
         line.update(stats)
+        self.extend_metrics(line)
         with self.metrics_path.open("a") as stream:
             stream.write(json.dumps(line) + "\n")
         return line
+
+    def extend_metrics(self, line: dict[str, Any]) -> None:
+        """Hook for subclasses to add fields to the metrics line before it is written."""
 
     # -- checkpoints ------------------------------------------------------------
 

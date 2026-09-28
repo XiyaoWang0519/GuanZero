@@ -14,20 +14,38 @@ reward/GAE semantics and match-pinned own-lineage snapshots. The effective batch
 per update is ``world_size`` times larger, so this changes training dynamics and
 needs a development-curve A/B before it is used as evidence. ``world_size == 1``
 delegates to the base trainer unchanged; rank 0 uses the base seeds.
+
+Actor ranks on one GPU. To keep a single-process run's batch while spreading
+its host work over W processes, give each rank ``num_envs / W`` environments and
+``minibatch_matches / W`` matches and set ``ddp_global_minibatch``: each step's
+rank minibatches then act as one minibatch (advantages normalized over all of
+its rows, gradient = row mean over all of them). What still differs from one
+process is how the random streams split (per-rank environments, seat RNG and
+samplers) and that each minibatch draws the same number of matches from every
+rank's shard; the data distribution is the same. Collectives run on host copies
+over gloo, so any number of ranks may share a GPU. ``python -m train.history_ddp
+--world-size W ...`` launches the ranks; rank 0 writes checkpoints to ``--output``.
 """
 from __future__ import annotations
 
+import argparse
+import json
 import math
+import os
 from pathlib import Path
+import signal
+import socket
+import sys
 from typing import Any
 
 import gd
 import numpy as np
 import torch
 import torch.distributed as dist
+import torch.multiprocessing as mp
 
-from train.history_ppo import HistoryPPOConfig, HistoryTrainer, grad_norm
-from train.history_rollout import HistoryCollector
+from train import history_ppo
+from train.history_ppo import HistoryPPOConfig, HistoryTrainer, config_from_args, grad_norm
 
 RANK_SEED_STRIDE = 7919
 RANK_ENV_STRIDE = 10_000_000
@@ -35,10 +53,12 @@ RANK_ENV_STRIDE = 10_000_000
 
 class HistoryDDPTrainer(HistoryTrainer):
     def __init__(self, config: HistoryPPOConfig, output: str | Path, device: str = "cpu",
-                 rank: int = 0, world_size: int = 1, resume: str | Path | None = None) -> None:
+                 rank: int = 0, world_size: int = 1, resume: str | Path | None = None,
+                 allow_source_change: bool = False) -> None:
         if world_size > 1 and not dist.is_initialized():
             raise RuntimeError("initialize torch.distributed before building a multi-rank trainer")
-        super().__init__(config, output, device=device, resume=resume)
+        super().__init__(config, output, device=device, resume=resume,
+                         allow_source_change=allow_source_change)
         self.rank, self.world_size = int(rank), int(world_size)
         if self.world_size == 1:
             return
@@ -62,15 +82,7 @@ class HistoryDDPTrainer(HistoryTrainer):
                                  log_public_actions=True, log_env_limit=config.num_envs)
             self.store.__init__()
             self.buffer.__init__()
-            self.collector = HistoryCollector(self.env, self.actor, self.store, self.buffer,
-                                              self.generator, self.device,
-                                              seat_policy=self.population.assignment,
-                                              resolve_policy=self.population.resolve,
-                                              assignment_log=self.population_event,
-                                              kv_cache=config.rollout_kv_cache,
-                                              profile=config.profile_collection,
-                                              temperature=config.rollout_temperature,
-                                              epsilon=config.rollout_epsilon)
+            self.collector = self.make_collector()
         self.write_manifest()
         self.population_event(dict(event="ddp", rank=self.rank, world_size=self.world_size,
                                    lineage=self.lineage, resumed=resume is not None))
@@ -82,7 +94,7 @@ class HistoryDDPTrainer(HistoryTrainer):
         return [*self.actor.parameters(), *self.critic.parameters()]
 
     def check_synchronized(self) -> None:
-        local = torch.stack([p.detach().double().sum() for p in self.parameters_all()])
+        local = torch.stack([p.detach().double().sum() for p in self.parameters_all()]).cpu()
         high, low = local.clone(), local.clone()
         dist.all_reduce(high, op=dist.ReduceOp.MAX)
         dist.all_reduce(low, op=dist.ReduceOp.MIN)
@@ -95,17 +107,45 @@ class HistoryDDPTrainer(HistoryTrainer):
         flat = torch.cat([(p.grad if (real and p.grad is not None) else torch.zeros_like(p)).reshape(-1)
                           for p in params] + [torch.ones(1, dtype=params[0].dtype, device=params[0].device)
                                               * float(real)])
-        dist.all_reduce(flat)
-        count = int(round(float(flat[-1])))
+        # Reduced on a host copy: gloo on CUDA tensors is not relied upon, so
+        # several ranks can share one GPU.
+        host = flat.cpu()
+        dist.all_reduce(host)
+        count = int(round(float(host[-1])))
         if count == 0:
             return 0
-        flat = flat[:-1] / count
+        flat = host[:-1].to(flat.device) / count
         begin = 0
         for p in params:
             n = p.numel()
             p.grad = flat[begin:begin + n].view_as(p).clone()
             begin += n
         return count
+
+    def global_minibatch(self, rows: np.ndarray | None) -> float:
+        """With ``ddp_global_minibatch``, treat the union of this step's rank
+        minibatches as one minibatch: set the advantage moments over all of its
+        rows and return this rank's loss weight, so that the gradient average in
+        ``reduce_gradients`` equals the gradient of the row mean over the union.
+        Otherwise each rank normalizes locally and has weight 1. Every rank must
+        call this at every step (``rows`` is None on a rank without a minibatch).
+        """
+        if not self.config.ddp_global_minibatch:
+            return 1.0
+        local = np.zeros(4, np.float64)
+        if rows is not None:
+            advantage = self.buffer.advantage[rows].astype(np.float64)
+            local[:] = (len(advantage), advantage.sum(), np.square(advantage).sum(), 1.0)
+        total = torch.from_numpy(local)
+        dist.all_reduce(total)
+        n, first, second, ranks = (float(x) for x in total)
+        if rows is None or n == 0:
+            return 1.0
+        if self.config.normalize_advantages and n > 1:
+            mean = first / n
+            std = math.sqrt(max(second - n * mean * mean, 0.0) / (n - 1))
+            self.advantage_moments = (mean, std)
+        return len(rows) * ranks / n
 
     # -- learning -----------------------------------------------------------------
 
@@ -144,10 +184,14 @@ class HistoryDDPTrainer(HistoryTrainer):
                 real = index < len(batches)
                 self.actor_optimizer.zero_grad(set_to_none=True)
                 self.critic_optimizer.zero_grad(set_to_none=True)
+                scale = self.global_minibatch(batches[index] if real else None)
                 if real:
-                    terms = self.minibatch_loss(batches[index])
-                    terms["policy_total"].backward()
-                    terms["value_total"].backward()
+                    try:
+                        terms = self.minibatch_loss(batches[index])
+                    finally:
+                        self.advantage_moments = None
+                    (scale * terms["policy_total"]).backward()
+                    (scale * terms["value_total"]).backward()
                 if self.reduce_gradients(real) == 0:
                     continue
                 encoder = grad_norm(self.actor.stream.parameters())
@@ -179,10 +223,132 @@ class HistoryDDPTrainer(HistoryTrainer):
         line = super().update()
         if self.world_size > 1:
             self.check_synchronized()
-            totals = torch.tensor([line["update_samples"], line["step_decisions"],
-                                   line["step_rounds"]], dtype=torch.float64)
-            dist.all_reduce(totals)
-            line["global_update_samples"] = int(totals[0])
-            line["global_step_decisions"] = int(totals[1])
-            line["global_step_rounds"] = int(totals[2])
         return line
+
+    def extend_metrics(self, line: dict[str, Any]) -> None:
+        if self.world_size == 1:
+            return
+        totals = torch.tensor([line["update_samples"], line["step_decisions"],
+                               line["step_rounds"], line["decisions"]], dtype=torch.float64)
+        dist.all_reduce(totals)
+        slowest = torch.tensor([line["collect_seconds"], line["learn_seconds"]],
+                               dtype=torch.float64)
+        dist.all_reduce(slowest, op=dist.ReduceOp.MAX)
+        line["global_update_samples"] = int(totals[0])
+        line["global_step_decisions"] = int(totals[1])
+        line["global_step_rounds"] = int(totals[2])
+        line["global_decisions"] = int(totals[3])
+        line["global_collect_seconds"] = float(slowest[0])
+        line["global_learn_seconds"] = float(slowest[1])
+        line["global_decisions_per_sec"] = float(totals[1]) / max(float(slowest[0]), 1e-9)
+        line["world_size"] = self.world_size
+
+    def run(self) -> None:
+        if self.world_size == 1:
+            return super().run()
+        while self.progress["updates"] < self.config.updates:
+            # A stop seen by any rank stops every rank at the same update;
+            # otherwise the others would wait in a collective forever.
+            flag = torch.tensor([float(self.stop_requested)])
+            dist.all_reduce(flag, op=dist.ReduceOp.MAX)
+            if float(flag):
+                break
+            line = self.update()
+            if self.rank == 0:
+                print(json.dumps({k: line[k] for k in ("update", "global_decisions", "global_update_samples",
+                                                        "policy_loss", "entropy",
+                                                        "global_decisions_per_sec", "mean_prefix")}), flush=True)
+                if self.progress["updates"] % self.config.checkpoint_updates == 0:
+                    self.save()
+                    self.save(self.output / f"update-{self.progress['updates']:06d}.pt")
+        if self.rank == 0:
+            self.save()
+        dist.barrier()
+
+
+# ---- CLI: W ranks as local processes, e.g. several actor ranks on one GPU --------
+
+def rank_output(output: str | Path, rank: int) -> Path:
+    """Rank 0 writes checkpoints and metrics to ``output`` itself, so tools that
+    read a single-process run's directory work unchanged; rank r > 0 logs to
+    ``output/rank-r``."""
+    return Path(output) if rank == 0 else Path(output) / f"rank-{rank}"
+
+
+def cuda_index(device: str) -> int | None:
+    """The CUDA device index to select in a rank, or None (CPU, or bare "cuda"
+    on the default device; ``torch.cuda.set_device`` rejects an index-less device)."""
+    parsed = torch.device(device)
+    return parsed.index if parsed.type == "cuda" else None
+
+
+def _rank_main(rank: int, world: int, port: int, argv: list[str]) -> None:
+    args = build_parser().parse_args(argv)
+    os.environ.update(MASTER_ADDR="127.0.0.1", MASTER_PORT=str(port))
+    dist.init_process_group("gloo", rank=rank, world_size=world)
+    try:
+        index = cuda_index(args.device)
+        if index is not None:
+            torch.cuda.set_device(index)
+        trainer = HistoryDDPTrainer(config_from_args(args), rank_output(args.output, rank),
+                                    device=args.device, rank=rank, world_size=world,
+                                    resume=args.resume,
+                                    allow_source_change=args.allow_source_change)
+
+        def stop(signum, frame):
+            trainer.stop_requested = True
+        signal.signal(signal.SIGTERM, stop)
+        signal.signal(signal.SIGINT, stop)
+        trainer.run()
+    finally:
+        dist.destroy_process_group()
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = history_ppo.build_parser()
+    parser.description = ("History PPO over --world-size local ranks. --num-envs, "
+                          "--num-threads and --minibatch-matches are per rank.")
+    parser.add_argument("--world-size", type=int, default=1)
+    parser.add_argument("--ddp-global-minibatch", action="store_true",
+                        help="normalize advantages and weight the loss over the union of "
+                             "the ranks' minibatches, as one minibatch would be")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    args = build_parser().parse_args(argv)
+    if args.world_size < 1:
+        raise SystemExit("--world-size must be positive")
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    context = mp.get_context("spawn")
+    ranks = [context.Process(target=_rank_main, args=(r, args.world_size, port, argv),
+                             name=f"history-rank-{r}") for r in range(args.world_size)]
+    for process in ranks:
+        process.start()
+
+    def forward(signum, frame):
+        for process in ranks:
+            if process.is_alive():
+                os.kill(process.pid, signal.SIGTERM)
+    signal.signal(signal.SIGTERM, forward)
+    signal.signal(signal.SIGINT, forward)
+    # If any rank fails, the others would block in a collective: stop them all.
+    failed = False
+    while any(p.is_alive() for p in ranks):
+        for process in ranks:
+            process.join(timeout=1.0)
+            if process.exitcode not in (None, 0) and not failed:
+                failed = True
+                print(f"{process.name} exited with {process.exitcode}; terminating all ranks",
+                      file=sys.stderr, flush=True)
+                for other in ranks:
+                    if other.is_alive():
+                        other.kill()
+    return 0 if not failed and all(p.exitcode == 0 for p in ranks) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
