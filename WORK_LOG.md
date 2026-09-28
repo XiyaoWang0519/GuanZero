@@ -1,3 +1,11 @@
+# Capacity x opponent-pool 2x2 results — September 27, 2026
+
+- Entropy-0.03 recipe, three seeds, 2,048 updates. vs B11: capacity −0.081
+  [−0.202, +0.041], archive pool −0.095 [−0.210, +0.020]; vs segment-2 both ≈ 0.
+  No gain from a 3.7x larger encoder or the historical opponent archive at this
+  budget; the large model's late slope is not steeper. Training $9.52 (cap $12);
+  RunPod retired afterwards; Vast.ai chosen. [Report](docs/reports/history-factorial-2026-09-27.md).
+
 # History-budget screen results — September 27, 2026
 
 - All 9 screen runs reached exactly 2,048 updates; continuation reached its
