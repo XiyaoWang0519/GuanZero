@@ -1,3 +1,57 @@
+# RTX 4090 throughput optimization completed — September 28, 2026 UTC
+
+- Added optional private CUDA Graphs, batched private attention, and Triton
+  KV byte transfers while preserving FP32, full history and PPO semantics.
+- Same-host small-model matrix: current/recent/wide frozen collection reached
+  3.48x/1.58x/1.46x baseline throughput; all 30 full replay digests matched.
+  A separate five-process real PPO short probe matched models, Adam, buffers
+  and RNG exactly; raw whole-update throughput improved about 1.95x. This
+  does not establish long-run or mixed-pool training speed, or playing strength.
+- Final source9 full GPU suite: 1,192 passed, 11 skipped. Local suite:
+  1,019 passed, 198 skipped. Source8 performance code and source9 production
+  code are byte-identical; source9 only repairs three test-isolation files.
+- Vast instance 53083880 ran 1h56m57s, estimated compute/disk cost $1.5266.
+  All 800 artifact files verified before destruction; provider API and UI
+  confirm zero instances. Final displayed credit: $8.47.
+- Wide-pool batches remain fragmented (556 policy calls vs 64 for current
+  over 2,048 decisions). Prioritize batch sizing/cross-policy attention and
+  public-cache validation overhead next; final large-model matrix remains open.
+- [Report, evidence and usage](docs/reports/history-cuda-throughput-2026-09-28.md).
+  Changes retained uncommitted in this worktree; main checkout untouched.
+
+# Local history-collector throughput, rounds 2–3 — September 27, 2026
+
+- Reused zero-tailed KV/memory views, reduced cache signature overhead, packed
+  decision transfers across identities, and added opt-in private attention
+  with one-row batched projections. Preserved original sampling order.
+- Final CPU A–B–C–C–B–A: default current/recent throughput +10.0%/+11.5%;
+  attention opt-in +18.9%/+17.0%. Wide observed +16.1%/+29.8%, with material
+  host slowdown during the sequence; these wide gains are not stable estimates.
+  All 18 replay digests matched the original baseline exactly.
+- Full suite: 901 passed, 123 skipped. Separate cross-policy prototypes:
+  29 passed; rejected vmap/candidate padding after bit differences.
+- Frozen source, baseline and prototype GPU kit prepared. CUDA equality,
+  transfer/synchronization profiling and graph work require a NVIDIA GPU;
+  no cloud instance started. The 5–10x host-overhead target remains open.
+- [Current report](docs/reports/history-host-throughput-round3-2026-09-27.md).
+
+# Local history-collector throughput — September 27, 2026
+
+- Worked in `GuanZero-throughput` against `42f70a4`; preserved the main
+  checkout and its evaluation processes. Reused candidate row indices and
+  exact-shape position tables, removed per-stream `nonzero` in collection,
+  pruned caches only on assignment changes, and packed CUDA sampling outputs
+  without changing their bit patterns or reduction order.
+- Added frozen-policy CPU diagnostics with distinct snapshot weights and
+  complete replay hashes. Two A–B–B–A rounds matched the baseline exactly
+  for current/recent/wide populations. Wide collection improved 8.0–11.5%;
+  current had no stable gain and recent was noisy. The 5–10x target remains
+  open; CUDA equality and throughput still require the fixed Vast host.
+- Python suite: 803 passed, 33 skipped, including 13 process/IPC cases that
+  passed after retrying outside the restrictive sandbox. No engine changes.
+- [Report and reproduction](docs/reports/history-host-throughput-2026-09-27.md);
+  raw artifacts in `.work/throughput-2026-09-27/`.
+
 # History-budget screen results — September 27, 2026
 
 - All 9 screen runs reached exactly 2,048 updates; continuation reached its

@@ -14,6 +14,7 @@ from torch.nn import functional as F
 
 from train.history_attention import finish, project, validate
 from train.history_model import HistoryActor, PublicStream, StreamBatch, sinusoidal
+from train.history_transfers import upload_arrays
 from train.logs import TOKEN_DIM
 
 
@@ -43,13 +44,31 @@ class BatchedHistoryCache:
         self.signature = self._signature()
         self.encoded_tokens = 0
         self.rebuilds = 0
+        # Keep only the last exact shape. Rebuilding after a bucket change avoids
+        # assuming that differently sized sin/cos kernels are bitwise identical.
+        self._position_cache: tuple[tuple, Tensor, Tensor] | None = None
 
     def _signature(self) -> tuple:
         # .data mutation is unsupported, as with PyTorch autograd versioning.
-        return tuple((id(p), p._version, p.device, p.dtype) for p in self.actor.parameters())
+        # Walk live registries in parameters() order without constructing module
+        # names. Re-reading them still detects replaced parameters/submodules.
+        modules, parameters, stack, result = set(), set(), [self.actor], []
+        while stack:
+            module = stack.pop()
+            if module is None or id(module) in modules:
+                continue
+            modules.add(id(module))
+            for parameter in module._parameters.values():
+                if parameter is not None and id(parameter) not in parameters:
+                    parameters.add(id(parameter))
+                    result.append((id(parameter), parameter._version,
+                                   parameter.device, parameter.dtype))
+            stack.extend(reversed(tuple(module._modules.values())))
+        return tuple(result)
 
     def clear(self) -> None:
         self.entries.clear()
+        self._position_cache = None
         self.signature = self._signature()
 
     def prune(self, active: set[tuple[int, int]]) -> None:
@@ -59,8 +78,20 @@ class BatchedHistoryCache:
 
     @property
     def bytes(self) -> int:
-        return sum(t.numel() * t.element_size() for e in self.entries.values()
-                   for t in (*e.keys, *e.values, e.memory))
+        entry_bytes = sum(t.numel() * t.element_size() for e in self.entries.values()
+                          for t in (*e.keys, *e.values, e.memory))
+        position_bytes = (sum(t.numel() * t.element_size() for t in self._position_cache[1:])
+                          if self._position_cache is not None else 0)
+        return entry_bytes + position_bytes
+
+    def _position_buffers(self, capacity: int) -> tuple[Tensor, Tensor]:
+        prototype = self.actor.bos
+        key = (capacity, self.actor.config.width, prototype.device, prototype.dtype)
+        cached = self._position_cache
+        if cached is None or cached[0] != key:
+            cached = (key, sinusoidal(*key), torch.arange(capacity, device=prototype.device))
+            self._position_cache = cached
+        return cached[1], cached[2]
 
     def _entry(self, key: tuple[int, int], stream: PublicStream) -> Entry:
         size = stream.prefix + 1
@@ -75,9 +106,9 @@ class BatchedHistoryCache:
         cfg, prototype = self.actor.config, self.actor.bos
         shape = (cfg.heads, capacity, cfg.width // cfg.heads)
         result = Entry(stream, stream.generation, 0, capacity,
-                       [prototype.new_empty(shape) for _ in range(cfg.layers)],
-                       [prototype.new_empty(shape) for _ in range(cfg.layers)],
-                       prototype.new_empty(capacity, cfg.width))
+                       [prototype.new_zeros(shape) for _ in range(cfg.layers)],
+                       [prototype.new_zeros(shape) for _ in range(cfg.layers)],
+                       prototype.new_zeros(capacity, cfg.width))
         if old is not None:
             result.length = old.length
             for target, source in zip(result.keys + result.values, old.keys + old.values):
@@ -89,29 +120,78 @@ class BatchedHistoryCache:
         return result
 
     @torch.no_grad()
-    def encode(self, keys: list[tuple[int, int]], streams: list[PublicStream]
+    def encode(self, keys: list[tuple[int, int]], streams: list[PublicStream], *,
+               preuploaded_lengths: Tensor | None = None,
+               host_lengths: tuple[int, ...] | None = None
                ) -> tuple[StreamBatch, Tensor]:
+        """Encode streams, optionally reusing an already uploaded lengths tensor.
+
+        The caller must have uploaded ``host_lengths`` unchanged, in stream
+        order. Host values and tensor metadata are checked without a CUDA read;
+        the returned metadata shares the supplied tensor's storage.
+        """
         if not keys or len(keys) != len(streams) or len(set(keys)) != len(keys):
             raise ValueError("one distinct match key per public stream required")
+        targets = [s.prefix + 1 for s in streams]
+        if preuploaded_lengths is not None:
+            if host_lengths != tuple(n - 1 for n in targets):
+                raise ValueError("uploaded host lengths must match stream order and prefixes")
+            if (preuploaded_lengths.shape != (len(streams),)
+                    or preuploaded_lengths.dtype != torch.long
+                    or preuploaded_lengths.device != self.actor.bos.device):
+                raise ValueError("uploaded lengths must be int64 [streams] on the actor device")
+        elif host_lengths is not None:
+            raise ValueError("host lengths require an uploaded lengths tensor")
         if self._signature() != self.signature:
             self.clear()
         entries = [self._entry(key, stream) for key, stream in zip(keys, streams)]
-        targets = [s.prefix + 1 for s in streams]
         while any(e.length < n for e, n in zip(entries, targets)):
             indices = [i for i, (e, n) in enumerate(zip(entries, targets)) if e.length < n]
             self._append([entries[i] for i in indices],
                          [min(self.chunk_size, targets[i] - entries[i].length) for i in indices])
         # Power-of-two shapes reduce allocator churn without truncating history.
         size = bucket(max(targets))
-        memory = self.actor.bos.new_zeros(len(entries), size, self.actor.config.width)
-        for i, entry in enumerate(entries):
-            memory[i, :entry.length].copy_(entry.memory[:entry.length])
+        if all(entry.capacity >= size for entry in entries):
+            # Padding in each cache stays zero. stack also keeps the returned
+            # snapshot independent of later appends, including a single stream.
+            memory = torch.stack([entry.memory[:size] for entry in entries])
+        else:
+            memory = self.actor.bos.new_zeros(len(entries), size, self.actor.config.width)
+            for i, entry in enumerate(entries):
+                memory[i, :entry.length].copy_(entry.memory[:entry.length])
         device = memory.device
         metadata = StreamBatch(torch.empty(len(entries), 0, TOKEN_DIM, dtype=torch.uint8, device=device),
                                torch.empty(len(entries), 0, dtype=torch.long, device=device),
                                torch.empty(len(entries), 0, dtype=torch.long, device=device),
+                               preuploaded_lengths if preuploaded_lengths is not None else
                                torch.tensor([n - 1 for n in targets], device=device))
         return metadata, memory
+
+    def _pack_keys_values(self, entries: list[Entry], counts: list[int], layer_index: int,
+                          new_k: Tensor, new_v: Tensor, capacity: int
+                          ) -> tuple[Tensor, Tensor]:
+        if all(entry.capacity >= capacity for entry in entries):
+            for i, (entry, count) in enumerate(zip(entries, counts)):
+                start, end = entry.length, entry.length + count
+                entry.keys[layer_index][:, start:end].copy_(new_k[i, :, :count])
+                entry.values[layer_index][:, start:end].copy_(new_v[i, :, :count])
+            # Unwritten cache positions stay zero, so stacking these views gives
+            # exactly the old zero-filled packing without per-entry copy calls.
+            keys = [entry.keys[layer_index][:, :capacity] for entry in entries]
+            values = [entry.values[layer_index][:, :capacity] for entry in entries]
+            if len(entries) == 1 and entries[0].capacity == capacity:
+                return keys[0].unsqueeze(0), values[0].unsqueeze(0)
+            return torch.stack(keys), torch.stack(values)
+        cfg = self.actor.config
+        packed_k = new_k.new_zeros(len(entries), cfg.heads, capacity, cfg.width // cfg.heads)
+        packed_v = torch.zeros_like(packed_k)
+        for i, (entry, count) in enumerate(zip(entries, counts)):
+            start, end = entry.length, entry.length + count
+            entry.keys[layer_index][:, start:end].copy_(new_k[i, :, :count])
+            entry.values[layer_index][:, start:end].copy_(new_v[i, :, :count])
+            packed_k[i, :, :end].copy_(entry.keys[layer_index][:, :end])
+            packed_v[i, :, :end].copy_(entry.values[layer_index][:, :end])
+        return packed_k, packed_v
 
     def _append(self, entries: list[Entry], counts: list[int]) -> None:
         actor, cfg = self.actor, self.actor.config
@@ -132,28 +212,23 @@ class BatchedHistoryCache:
                 tokens[i, offset:offset+count] = np.stack(entry.stream.tokens[begin:end])
                 rounds[i, offset:offset+count] = entry.stream.rounds[begin:end]
                 phases[i, offset:offset+count] = entry.stream.phases[begin:end]
-        t = torch.as_tensor(tokens, device=device)
-        r, p = torch.as_tensor(rounds, device=device), torch.as_tensor(phases, device=device)
+        t, r, p, start_positions, end_positions = upload_arrays(
+            (tokens, rounds, phases, np.asarray(starts, dtype=np.int64),
+             np.asarray(ends, dtype=np.int64)), device)
         state = (actor.public(t.to(dtype)) + actor.round_embedding(r.clamp(0, cfg.max_rounds-1))
                  + actor.phase_embedding(p.clamp(0, 3)))
         for i, start in enumerate(starts):
             if start == 0:
                 state[i, 0] = actor.bos[0, 0]
-        positions = torch.tensor(starts, device=device)[:, None] + torch.arange(width, device=device)
-        state = state + sinusoidal(capacity, cfg.width, device, dtype)[positions.clamp(max=capacity-1)]
-        key_positions = torch.arange(capacity, device=device)
+        position_table, key_positions = self._position_buffers(capacity)
+        positions = start_positions[:, None] + key_positions[:width]
+        state = state + position_table[positions.clamp(max=capacity-1)]
         allowed = ((key_positions[None, None] <= positions[:, :, None])
-                   & (key_positions[None, None] < torch.tensor(ends, device=device)[:, None, None]))
+                   & (key_positions[None, None] < end_positions[:, None, None]))
         for layer_index, layer in enumerate(actor.stream.layers):
             q, new_k, new_v = project(layer, state)
-            packed_k = state.new_zeros(batch, cfg.heads, capacity, cfg.width // cfg.heads)
-            packed_v = torch.zeros_like(packed_k)
-            for i, (entry, count) in enumerate(zip(entries, counts)):
-                start, end = entry.length, entry.length + count
-                entry.keys[layer_index][:, start:end].copy_(new_k[i, :, :count])
-                entry.values[layer_index][:, start:end].copy_(new_v[i, :, :count])
-                packed_k[i, :, :end].copy_(entry.keys[layer_index][:, :end])
-                packed_v[i, :, :end].copy_(entry.values[layer_index][:, :end])
+            packed_k, packed_v = self._pack_keys_values(entries, counts, layer_index,
+                                                       new_k, new_v, capacity)
             attended = F.scaled_dot_product_attention(q, packed_k, packed_v,
                                                       attn_mask=allowed[:, None], dropout_p=0.0)
             state = finish(layer, state, attended)

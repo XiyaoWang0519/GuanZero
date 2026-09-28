@@ -182,6 +182,8 @@ class DecisionInputs:
     seat: Tensor          # int64 [n]
     cand: Tensor          # uint8 or float [sum_k, act_dim]
     offsets: Tensor       # int64 [n + 1]
+    candidate_rows: Tensor | None = None  # optional precomputed ragged integer index
+    one_decision_per_stream: bool = False  # rows match stream order; collector only
 
     @property
     def decisions(self) -> int:
@@ -193,6 +195,8 @@ class DecisionInputs:
 
     @property
     def rows(self) -> Tensor:
+        if self.candidate_rows is not None:
+            return self.candidate_rows
         return torch.repeat_interleave(torch.arange(self.decisions, device=self.obs.device),
                                        self.counts, output_size=len(self.cand))
 
@@ -246,6 +250,9 @@ class HistoryActor(nn.Module):
         self.config = config
         # Runtime backend only: checkpoint weights/architecture stay identical.
         self.causal_sdpa = False
+        # Opt-in until the host-equivalence checks also pass on the target GPU.
+        # Keep each projection's original row shape when batching attention.
+        self.batched_private_attention = False
         width = config.width
         self.public = nn.Linear(TOKEN_DIM, width)
         self.round_embedding = nn.Embedding(config.max_rounds, width)
@@ -350,6 +357,38 @@ class HistoryActor(nn.Module):
                 attn_mask=allowed[:, None, None])[:, :, 0]
         return self.out_proj(out.reshape(-1, width))
 
+    @staticmethod
+    def _project_independent(layer: nn.Linear, value: Tensor) -> Tensor:
+        """Batch independent one-row linear problems without widening GEMM M."""
+        if value.device.type == "cuda":
+            # CUDA baddbmm uses a different reduction from the original M=1
+            # linear call, even with deterministic algorithms and TF32 off.
+            # Keep those projections exact while batching the attention below.
+            return torch.cat([layer(value[index:index + 1])
+                              for index in range(len(value))])
+        weights = layer.weight.t()[None].expand(len(value), -1, -1)
+        return torch.baddbmm(layer.bias[None, None], value[:, None], weights)[:, 0]
+
+    def _attend_independent(self, query: Tensor, keys: Tensor, values: Tensor,
+                            allowed: Tensor) -> Tensor:
+        """Batch one query per public stream, retaining per-row projections.
+
+        Widening the linear layers' GEMM rows changes their floating-point
+        reductions. CPU uses equivalent one-row batched matrix multiplies;
+        CUDA retains the individual linear calls. Both batch the independent
+        SDPA problems, with exact checks required on the target backend.
+        """
+        count = len(query)
+        width, heads = self.config.width, self.config.heads
+        depth = width // heads
+        q = self._project_independent(self.q_proj, query)
+        q = q.view(count, heads, depth)[:, :, None]
+        k = keys.view(count, keys.shape[1], heads, depth).transpose(1, 2)
+        v = values.view(count, values.shape[1], heads, depth).transpose(1, 2)
+        out = F.scaled_dot_product_attention(q, k, v, attn_mask=allowed[:, None, None])
+        out = out[:, :, 0].reshape(count, width)
+        return self._project_independent(self.out_proj, out)
+
     def decision_states(self, encoded: Tensor | None, inputs: DecisionInputs) -> Tensor:
         """One state per decision from its private query and visible prefix.
 
@@ -368,18 +407,30 @@ class HistoryActor(nn.Module):
                 encoded = self.encode_batch(inputs.streams)
             keys, values = self.kv_proj(encoded).chunk(2, dim=-1)
             positions = torch.arange(encoded.shape[1], device=encoded.device)
-            attended = torch.empty_like(query)
-            for b in range(encoded.shape[0]):
-                rows = (inputs.match_index == b).nonzero(as_tuple=True)[0]
-                if not len(rows):
-                    continue
-                allowed = positions[None] <= inputs.prefix[rows][:, None]
-                attended[rows] = self._attend(query[rows], keys[b:b + 1], values[b:b + 1], allowed)
+            if (self.batched_private_attention and inputs.one_decision_per_stream
+                    and len(query) > 1):
+                allowed = positions[None] <= inputs.prefix[:, None]
+                attended = self._attend_independent(query, keys, values, allowed)
+            else:
+                attended = torch.empty_like(query)
+                for b in range(encoded.shape[0]):
+                    if inputs.one_decision_per_stream:
+                        # The collector already knows this layout on the host.
+                        # Keep the same per-match attention shapes, avoiding a
+                        # device nonzero (and its CUDA synchronization) per row.
+                        rows = slice(b, b + 1)
+                    else:
+                        rows = (inputs.match_index == b).nonzero(as_tuple=True)[0]
+                        if not len(rows):
+                            continue
+                    allowed = positions[None] <= inputs.prefix[rows][:, None]
+                    attended[rows] = self._attend(query[rows], keys[b:b + 1], values[b:b + 1], allowed)
         state = self.attention_norm(query + attended)
         return self.output_norm(state + self.feed_forward(state))
 
     def candidate_outputs(self, state: Tensor, cand: Tensor, offsets: Tensor,
-                          *, predict: bool = False) -> tuple[Tensor, Tensor | None]:
+                          *, predict: bool = False,
+                          rows: Tensor | None = None) -> tuple[Tensor, Tensor | None]:
         """Policy logits and optional response logits for every legal candidate.
 
         Prediction uses the observer state plus that candidate, without a
@@ -387,9 +438,10 @@ class HistoryActor(nn.Module):
         probabilities: PPO learns to use predictions, while the response head
         itself is supervised by actual public outcomes in both B and C.
         """
-        counts = offsets[1:] - offsets[:-1]
-        rows = torch.repeat_interleave(torch.arange(len(state), device=state.device), counts,
-                                       output_size=len(cand))
+        if rows is None:
+            counts = offsets[1:] - offsets[:-1]
+            rows = torch.repeat_interleave(torch.arange(len(state), device=state.device), counts,
+                                           output_size=len(cand))
         fused = torch.cat((state[rows], self.action_tower(cand.float())), dim=-1)
         response = None
         mode = self.config.response_mode
@@ -403,16 +455,18 @@ class HistoryActor(nn.Module):
             fused = fused + self.response_bridge(fused.new_zeros(len(cand), RESPONSE_CLASSES))
         return self.fusion(fused).squeeze(-1), response
 
-    def candidate_logits(self, state: Tensor, cand: Tensor, offsets: Tensor) -> Tensor:
+    def candidate_logits(self, state: Tensor, cand: Tensor, offsets: Tensor,
+                         *, rows: Tensor | None = None) -> Tensor:
         """One logit per concrete candidate of the full canonical set, [sum_k]."""
-        return self.candidate_outputs(state, cand, offsets)[0]
+        return self.candidate_outputs(state, cand, offsets, rows=rows)[0]
 
     def candidate_log_probs(self, inputs: DecisionInputs, encoded: Tensor | None = None
                             ) -> Tensor:
         """Log-probability of every candidate, ``[sum_k]``, softmax within each decision."""
         state = self.decision_states(encoded, inputs)
-        logits = self.candidate_logits(state, inputs.cand, inputs.offsets)
-        return segment_log_softmax(logits, inputs.rows, inputs.decisions)
+        rows = inputs.rows
+        logits = self.candidate_logits(state, inputs.cand, inputs.offsets, rows=rows)
+        return segment_log_softmax(logits, rows, inputs.decisions)
 
     def forward(self, inputs: DecisionInputs) -> Tensor:
         return self.candidate_log_probs(inputs)
@@ -420,7 +474,8 @@ class HistoryActor(nn.Module):
     @torch.no_grad()
     def act(self, inputs: DecisionInputs, generator: torch.Generator | None = None,
             greedy: bool = False, *, encoded: Tensor | None = None,
-            max_candidates: int | None = None) -> tuple[Tensor, Tensor]:
+            max_candidates: int | None = None,
+            inference_log_probs: Tensor | None = None) -> tuple[Tensor, Tensor]:
         """Sample (or take the argmax of) one candidate per decision.
 
         Returns ``(choice, log_prob)``: ``choice[i]`` is relative to the
@@ -428,28 +483,38 @@ class HistoryActor(nn.Module):
         ``choice[i]``; ``log_prob[i]`` is the behaviour log-probability under
         this actor, which PPO stores.
         """
-        table = self._log_prob_table(inputs, encoded, max_candidates)
+        table = self._log_prob_table(inputs, encoded, max_candidates, inference_log_probs)
         choice = table.argmax(1) if greedy else _gumbel_argmax(table, generator)
         chosen = table.gather(1, choice[:, None])[:, 0]
         return choice, chosen
 
     def _log_prob_table(self, inputs: DecisionInputs, encoded: Tensor | None,
-                        max_candidates: int | None) -> Tensor:
+                        max_candidates: int | None,
+                        inference_log_probs: Tensor | None = None) -> Tensor:
         """``[n, width]`` candidate log-probabilities, ``-inf`` past each count."""
-        log_probs = self.candidate_log_probs(inputs, encoded=encoded)
+        # A collector-owned inference cache may supply the same complete
+        # candidate vector. Sampling and its generator order remain here.
+        log_probs = (self.candidate_log_probs(inputs, encoded=encoded)
+                     if inference_log_probs is None else inference_log_probs)
+        if inference_log_probs is not None and (
+                log_probs.shape != (len(inputs.cand),) or log_probs.device != inputs.obs.device
+                or log_probs.dtype != torch.float32):
+            raise ValueError("cached inference must supply FP32 log probabilities for every candidate")
         counts = inputs.counts
         offsets = inputs.offsets
         longest = max_candidates if max_candidates is not None else (int(counts.max()) if len(counts) else 0)
         table = torch.full((inputs.decisions, max(longest, 1)), float("-inf"),
                            device=log_probs.device, dtype=log_probs.dtype)
-        local = torch.arange(len(log_probs), device=log_probs.device) - offsets[:-1][inputs.rows]
-        table[inputs.rows, local] = log_probs
+        rows = inputs.rows
+        local = torch.arange(len(log_probs), device=log_probs.device) - offsets[:-1][rows]
+        table[rows, local] = log_probs
         return table
 
     @torch.no_grad()
     def explore(self, inputs: DecisionInputs, generator: torch.Generator | None = None, *,
                 temperature: float = 1.0, epsilon: float = 0.0,
-                encoded: Tensor | None = None, max_candidates: int | None = None
+                encoded: Tensor | None = None, max_candidates: int | None = None,
+                inference_log_probs: Tensor | None = None
                 ) -> ExplorationSample:
         """Sample from pi_b = (1 - epsilon) softmax(logits / T) + epsilon / n_legal.
 
@@ -462,7 +527,7 @@ class HistoryActor(nn.Module):
         """
         if not temperature > 0 or not 0 <= epsilon <= 1:
             raise ValueError("temperature must be positive and epsilon in [0, 1]")
-        table = self._log_prob_table(inputs, encoded, max_candidates)
+        table = self._log_prob_table(inputs, encoded, max_candidates, inference_log_probs)
         counts = inputs.counts
         valid = torch.arange(table.shape[1], device=table.device)[None] < counts[:, None]
         behaviour = table if temperature == 1 else torch.log_softmax(table / temperature, 1)

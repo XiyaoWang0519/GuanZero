@@ -47,6 +47,9 @@ def test_cold_start_source_boundary(tmp_path, monkeypatch):
     assert manifest["init"] == "random" and manifest["teacher"] is None
     assert manifest["stage"] == "history_ppo" and manifest["token_schema"]["forced_bit"] is False
     assert len(manifest["engine_digest"]) == 64
+    for name, value in history_ppo.runtime_settings(trainer.rollout_device).items():
+        assert manifest["inference"][name] is value
+    assert manifest["inference"]["reuse_cache_lengths"] is trainer.collector.reuse_cache_lengths
     # An old-stage checkpoint is not a resume point.
     old = tmp_path / "old.pt"
     save_checkpoint(old, {"stage": "stage_b", "model_config": {}, "model": {}, "optimizer": {},

@@ -1,0 +1,1344 @@
+{
+  "schema": 1,
+  "status": "completed",
+  "accepted": true,
+  "source_sha256": "aec0c4fed31e034be978f638a7e8c7258b0eadb072a7a6b15cd3dcb7cc4c35d7",
+  "baseline_source_sha256": "4cf71f9690b8cd87df0627a7a3d74be3d5b1ee7d037ac03953ed1d02838521d3",
+  "engine": {
+    "package_file": "/workspace/shared/python/gd/__init__.py",
+    "engine_file": "/workspace/shared/python/gd/_gd_core.cpython-312-x86_64-linux-gnu.so",
+    "engine_binary_sha256": "3e2c9443bef716ce83a07b3daf7deddba8946b4d46373afeb4a9031311ee4834",
+    "shared_root": "/workspace/shared/python"
+  },
+  "runtime": {
+    "torch": "2.11.0+cu128",
+    "torch_cuda": "12.8",
+    "gpu_name": "NVIDIA GeForce RTX 4090",
+    "gpu_uuid": "7e30bbb6-0ab6-acac-4737-bca386cac52c",
+    "gpu_capability": [
+      8,
+      9
+    ],
+    "deterministic_algorithms": true,
+    "tf32_matmul": false,
+    "tf32_cudnn": false,
+    "pinned_upload": "0",
+    "cublas_workspace_config": ":4096:8"
+  },
+  "gate": {
+    "accepted": true,
+    "counts": {
+      "tests": 17,
+      "passed": 17
+    },
+    "junit_sha256": "cd37162550456258353183004278b9202cc1a3273652b7d09207fbdf93391e92",
+    "source_sha256": "aec0c4fed31e034be978f638a7e8c7258b0eadb072a7a6b15cd3dcb7cc4c35d7",
+    "receipt_path": "/workspace/experiment-production-small-08/ppo-receipt.json",
+    "receipt_sha256": "871bc95ae4d74f467c0ef1546f6688103d270bbe9aa981bbe76c7f95433ebe4a"
+  },
+  "small": {
+    "current": {
+      "raw_median_dps": {
+        "A": 1030.4029841565127,
+        "W": 3490.7518591596986,
+        "E": 1373.6377162005438,
+        "Q": 2823.9080153093164,
+        "V": 3590.6523878734583
+      },
+      "median_dps_including_invalidation": {
+        "A": 1030.1728914341777,
+        "W": 3487.299613803626,
+        "E": 1373.2758640795369,
+        "Q": 2822.4484050078536,
+        "V": 3587.4063150949787
+      },
+      "speedup_over_E": {
+        "A": 0.7501572833107861,
+        "W": 2.539402100495702,
+        "E": 1.0,
+        "Q": 2.0552668832490193,
+        "V": 2.6122983800487187
+      },
+      "speedup_over_A": {
+        "A": 1.0,
+        "W": 3.3851595618563652,
+        "E": 1.3330537771846247,
+        "Q": 2.739781281837576,
+        "V": 3.482334222657221
+      }
+    },
+    "recent": {
+      "raw_median_dps": {
+        "A": 610.6133612922799,
+        "W": 898.4932214418277,
+        "E": 783.5539638746422,
+        "Q": 967.2175768618313,
+        "V": 943.2596552418047
+      },
+      "median_dps_including_invalidation": {
+        "A": 610.5315037442488,
+        "W": 898.2756177193655,
+        "E": 783.4131238024444,
+        "Q": 967.0093874684437,
+        "V": 943.0291607344959
+      },
+      "speedup_over_E": {
+        "A": 0.7793225377447319,
+        "W": 1.1466180364191683,
+        "E": 1.0,
+        "Q": 1.2343543375618728,
+        "V": 1.2037444000903696
+      },
+      "speedup_over_A": {
+        "A": 1.0,
+        "W": 1.471301009383543,
+        "E": 1.2831657645804557,
+        "Q": 1.5838812273207825,
+        "V": 1.5446036035014012
+      }
+    },
+    "wide": {
+      "raw_median_dps": {
+        "A": 440.63611514870297,
+        "W": 651.6631080404287,
+        "E": 570.2316823757096,
+        "Q": 645.4062907381018,
+        "V": 625.0043606743686
+      },
+      "median_dps_including_invalidation": {
+        "A": 440.5932948833028,
+        "W": 651.5650080189353,
+        "E": 570.1687688148766,
+        "Q": 645.3051878966058,
+        "V": 624.8941246748823
+      },
+      "speedup_over_E": {
+        "A": 0.7727418949990849,
+        "W": 1.142758151017715,
+        "E": 1.0,
+        "Q": 1.1317792611438608,
+        "V": 1.095980977656414
+      },
+      "speedup_over_A": {
+        "A": 1.0,
+        "W": 1.4788355056368054,
+        "E": 1.2940931590116314,
+        "Q": 1.464627799357509,
+        "V": 1.4183014855920448
+      }
+    }
+  },
+  "runs": [
+    {
+      "label": "current-00-E",
+      "case": "current",
+      "variant": "E",
+      "timing": {
+        "raw_dps": 1313.5463423453618,
+        "collect_plus_invalidation_dps": 1313.1078348920598,
+        "measured_decisions": 12288.0,
+        "measured_collect_seconds": 9.354827921837568,
+        "measured_invalidation_seconds": 0.003124009817838669,
+        "measured_capture_host_seconds": 0.0,
+        "measured_capture_calls": 0,
+        "all_chunk_capture_calls": 0,
+        "peak_graph_bytes_at_chunk_end": 0,
+        "scope": "frozen collection plus learner KV invalidation; capture cost included; excludes PPO, hashing, initialization and teardown"
+      },
+      "triton_used": false,
+      "comparison": {
+        "exact": true,
+        "differences": [],
+        "expected": "ade0d935aa519c84f5a9f0bb1c378c5e5b93e018d57fde635b5212e33406e50a",
+        "actual": "ade0d935aa519c84f5a9f0bb1c378c5e5b93e018d57fde635b5212e33406e50a"
+      },
+      "result_sha256": "55cbb98f38896b1498ec5cab645c9704e1195edf3b4e9bcaabcc50fdad002438",
+      "metrics_sha256": "8d35fc418e544f2c2c5cea907a57bb21f15dc9034ef6a68093e67880362d7646"
+    },
+    {
+      "label": "current-01-A",
+      "case": "current",
+      "variant": "A",
+      "timing": {
+        "raw_dps": 1011.951137521124,
+        "collect_plus_invalidation_dps": 1011.7301663716518,
+        "measured_decisions": 12288.0,
+        "measured_collect_seconds": 12.142878785729408,
+        "measured_invalidation_seconds": 0.002652116119861603,
+        "measured_capture_host_seconds": 0.0,
+        "measured_capture_calls": 0,
+        "all_chunk_capture_calls": 0,
+        "peak_graph_bytes_at_chunk_end": 0,
+        "scope": "frozen collection plus learner KV invalidation; capture cost included; excludes PPO, hashing, initialization and teardown"
+      },
+      "triton_used": false,
+      "comparison": {
+        "exact": true,
+        "differences": [],
+        "expected": "ade0d935aa519c84f5a9f0bb1c378c5e5b93e018d57fde635b5212e33406e50a",
+        "actual": "ade0d935aa519c84f5a9f0bb1c378c5e5b93e018d57fde635b5212e33406e50a"
+      },
+      "result_sha256": "fd4279295c37c2c7a1a133007bea5dad0a69f8bc13efc96f1f7a143e2a52736e",
+      "metrics_sha256": "0290e37e41d39c320dcea61daf94b9879160a7b12c14a7dea05f7e734961aaea"
+    },
+    {
+      "label": "current-02-Q",
+      "case": "current",
+      "variant": "Q",
+      "timing": {
+        "raw_dps": 2978.9312049678824,
+        "collect_plus_invalidation_dps": 2977.217507797987,
+        "measured_decisions": 12288.0,
+        "measured_collect_seconds": 4.124969378113747,
+        "measured_invalidation_seconds": 0.002374347299337387,
+        "measured_capture_host_seconds": 0.3495360463857651,
+        "measured_capture_calls": 11,
+        "all_chunk_capture_calls": 19,
+        "peak_graph_bytes_at_chunk_end": 131881158,
+        "scope": "frozen collection plus learner KV invalidation; capture cost included; excludes PPO, hashing, initialization and teardown"
+      },
+      "triton_used": false,
+      "comparison": {
+        "exact": true,
+        "differences": [],
+        "expected": "ade0d935aa519c84f5a9f0bb1c378c5e5b93e018d57fde635b5212e33406e50a",
+        "actual": "ade0d935aa519c84f5a9f0bb1c378c5e5b93e018d57fde635b5212e33406e50a"
+      },
+      "result_sha256": "cd45707cb4b51658a7809925db8636792916a31fbf3b2b76af5928fa6c57972c",
+      "metrics_sha256": "6eaff1a456e395a72f3a56f083ac8c99e98f21a53c29aeea34b73ffe72e2d22a"
+    },
+    {
+      "label": "current-03-V",
+      "case": "current",
+      "variant": "V",
+      "timing": {
+        "raw_dps": 3742.2718403397007,
+        "collect_plus_invalidation_dps": 3739.0950048741197,
+        "measured_decisions": 12288.0,
+        "measured_collect_seconds": 3.283566914498806,
+        "measured_invalidation_seconds": 0.0027898065745830536,
+        "measured_capture_host_seconds": 0.35494575276970863,
+        "measured_capture_calls": 11,
+        "all_chunk_capture_calls": 19,
+        "peak_graph_bytes_at_chunk_end": 131881158,
+        "scope": "frozen collection plus learner KV invalidation; capture cost included; excludes PPO, hashing, initialization and teardown"
+      },
+      "triton_used": true,
+      "comparison": {
+        "exact": true,
+        "differences": [],
+        "expected": "ade0d935aa519c84f5a9f0bb1c378c5e5b93e018d57fde635b5212e33406e50a",
+        "actual": "ade0d935aa519c84f5a9f0bb1c378c5e5b93e018d57fde635b5212e33406e50a"
+      },
+      "result_sha256": "9bfee04c9cde93256ac10434852c07886acb4817f18b4fbad70fc35533a1467b",
+      "metrics_sha256": "9c4273cbb13d50eb8889aa4758468e00c22a04ff45c29675e79c6bcde240bef6"
+    },
+    {
+      "label": "current-04-W",
+      "case": "current",
+      "variant": "W",
+      "timing": {
+        "raw_dps": 3596.491744536495,
+        "collect_plus_invalidation_dps": 3593.342614689361,
+        "measured_decisions": 12288.0,
+        "measured_collect_seconds": 3.41666292399168,
+        "measured_invalidation_seconds": 0.0029942914843559265,
+        "measured_capture_host_seconds": 0.36454448476433754,
+        "measured_capture_calls": 11,
+        "all_chunk_capture_calls": 19,
+        "peak_graph_bytes_at_chunk_end": 131881158,
+        "scope": "frozen collection plus learner KV invalidation; capture cost included; excludes PPO, hashing, initialization and teardown"
+      },
+      "triton_used": true,
+      "comparison": {
+        "exact": true,
+        "differences": [],
+        "expected": "ade0d935aa519c84f5a9f0bb1c378c5e5b93e018d57fde635b5212e33406e50a",
+        "actual": "ade0d935aa519c84f5a9f0bb1c378c5e5b93e018d57fde635b5212e33406e50a"
+      },
+      "result_sha256": "2fe904411978a67884fbeb43141d15bcdad8e3de44f7b7310c0340cbad23fb3f",
+      "metrics_sha256": "e6320fbf842e27cab4a8b66d7a5cbdad1e3c904e78beaa292b313fe3f0de3f89"
+    },
+    {
+      "label": "current-05-W",
+      "case": "current",
+      "variant": "W",
+      "timing": {
+        "raw_dps": 3385.0119737829023,
+        "collect_plus_invalidation_dps": 3381.256612917891,
+        "measured_decisions": 12288.0,
+        "measured_collect_seconds": 3.630120098590851,
+        "measured_invalidation_seconds": 0.00403175875544548,
+        "measured_capture_host_seconds": 0.4502600021660328,
+        "measured_capture_calls": 11,
+        "all_chunk_capture_calls": 19,
+        "peak_graph_bytes_at_chunk_end": 131881158,
+        "scope": "frozen collection plus learner KV invalidation; capture cost included; excludes PPO, hashing, initialization and teardown"
+      },
+      "triton_used": true,
+      "comparison": {
+        "exact": true,
+        "differences": [],
+        "expected": "ade0d935aa519c84f5a9f0bb1c378c5e5b93e018d57fde635b5212e33406e50a",
+        "actual": "ade0d935aa519c84f5a9f0bb1c378c5e5b93e018d57fde635b5212e33406e50a"
+      },
+      "result_sha256": "0ebcad7d48313dcead95d9984f287b24690ffc37c0b6ab360a52fc0e4958241d",
+      "metrics_sha256": "22d02e046083964370237391bfcc61370a9937ec69bef3e0db03c18579818b0d"
+    },
+    {
+      "label": "current-06-V",
+      "case": "current",
+      "variant": "V",
+      "timing": {
+        "raw_dps": 3439.032935407216,
+        "collect_plus_invalidation_dps": 3435.7176253158373,
+        "measured_decisions": 12288.0,
+        "measured_collect_seconds": 3.5730975046753883,
+        "measured_invalidation_seconds": 0.0034478753805160522,
+        "measured_capture_host_seconds": 0.3676341101527214,
+        "measured_capture_calls": 11,
+        "all_chunk_capture_calls": 19,
+        "peak_graph_bytes_at_chunk_end": 131881158,
+        "scope": "frozen collection plus learner KV invalidation; capture cost included; excludes PPO, hashing, initialization and teardown"
+      },
+      "triton_used": true,
+      "comparison": {
+        "exact": true,
+        "differences": [],
+        "expected": "ade0d935aa519c84f5a9f0bb1c378c5e5b93e018d57fde635b5212e33406e50a",
+        "actual": "ade0d935aa519c84f5a9f0bb1c378c5e5b93e018d57fde635b5212e33406e50a"
+      },
+      "result_sha256": "1a4a5090e07c4420740a965767d541ad97f14e9cf5f54e286d340a975c5ca89e",
+      "metrics_sha256": "14a1b9e39f37e3102e3b17292e8d86f7e1e5bfc07fc9054e342cd6773d3ad490"
+    },
+    {
+      "label": "current-07-Q",
+      "case": "current",
+      "variant": "Q",
+      "timing": {
+        "raw_dps": 2668.884825650751,
+        "collect_plus_invalidation_dps": 2667.6793022177208,
+        "measured_decisions": 12288.0,
+        "measured_collect_seconds": 4.604170206934214,
+        "measured_invalidation_seconds": 0.002080623060464859,
+        "measured_capture_host_seconds": 0.4225616715848446,
+        "measured_capture_calls": 11,
+        "all_chunk_capture_calls": 19,
+        "peak_graph_bytes_at_chunk_end": 131881158,
+        "scope": "frozen collection plus learner KV invalidation; capture cost included; excludes PPO, hashing, initialization and teardown"
+      },
+      "triton_used": false,
+      "comparison": {
+        "exact": true,
+        "differences": [],
+        "expected": "ade0d935aa519c84f5a9f0bb1c378c5e5b93e018d57fde635b5212e33406e50a",
+        "actual": "ade0d935aa519c84f5a9f0bb1c378c5e5b93e018d57fde635b5212e33406e50a"
+      },
+      "result_sha256": "96c04ece814f47a7fce8f444bf16b216b01f09a6f7de52eb0ed9b5373a656d41",
+      "metrics_sha256": "1ca1d071dfec30ce47ddd478f8df59c6d1581c7e119967ec7ee9de6d31b999a2"
+    },
+    {
+      "label": "current-08-A",
+      "case": "current",
+      "variant": "A",
+      "timing": {
+        "raw_dps": 1048.8548307919013,
+        "collect_plus_invalidation_dps": 1048.6156164967038,
+        "measured_decisions": 12288.0,
+        "measured_collect_seconds": 11.715634651482105,
+        "measured_invalidation_seconds": 0.0026726163923740387,
+        "measured_capture_host_seconds": 0.0,
+        "measured_capture_calls": 0,
+        "all_chunk_capture_calls": 0,
+        "peak_graph_bytes_at_chunk_end": 0,
+        "scope": "frozen collection plus learner KV invalidation; capture cost included; excludes PPO, hashing, initialization and teardown"
+      },
+      "triton_used": false,
+      "comparison": {
+        "exact": true,
+        "differences": [],
+        "expected": "ade0d935aa519c84f5a9f0bb1c378c5e5b93e018d57fde635b5212e33406e50a",
+        "actual": "ade0d935aa519c84f5a9f0bb1c378c5e5b93e018d57fde635b5212e33406e50a"
+      },
+      "result_sha256": "cbceeeb115c7d214528f4879b1ce71ac17c4eeb8f8a7c73d296e3c095cdf0586",
+      "metrics_sha256": "634753341fa3930ceee2c8e00b923cc57ea5026ed685cd5ec4a2ce649546defd"
+    },
+    {
+      "label": "current-09-E",
+      "case": "current",
+      "variant": "E",
+      "timing": {
+        "raw_dps": 1433.7290900557255,
+        "collect_plus_invalidation_dps": 1433.443893267014,
+        "measured_decisions": 12288.0,
+        "measured_collect_seconds": 8.570656817406416,
+        "measured_invalidation_seconds": 0.001705210655927658,
+        "measured_capture_host_seconds": 0.0,
+        "measured_capture_calls": 0,
+        "all_chunk_capture_calls": 0,
+        "peak_graph_bytes_at_chunk_end": 0,
+        "scope": "frozen collection plus learner KV invalidation; capture cost included; excludes PPO, hashing, initialization and teardown"
+      },
+      "triton_used": false,
+      "comparison": {
+        "exact": true,
+        "differences": [],
+        "expected": "ade0d935aa519c84f5a9f0bb1c378c5e5b93e018d57fde635b5212e33406e50a",
+        "actual": "ade0d935aa519c84f5a9f0bb1c378c5e5b93e018d57fde635b5212e33406e50a"
+      },
+      "result_sha256": "4dced940439ec36d503ff897b4357e8e2b643ec5ae0c0aa7601c7467b2c0d832",
+      "metrics_sha256": "c3f07dd06aee4a4c5df2577ee4d4be9f01ed9092574c447909a429d43fbdf7da"
+    },
+    {
+      "label": "recent-00-E",
+      "case": "recent",
+      "variant": "E",
+      "timing": {
+        "raw_dps": 789.4544648412475,
+        "collect_plus_invalidation_dps": 789.2975532972137,
+        "measured_decisions": 12288.0,
+        "measured_collect_seconds": 15.56517892703414,
+        "measured_invalidation_seconds": 0.003094341605901718,
+        "measured_capture_host_seconds": 0.0,
+        "measured_capture_calls": 0,
+        "all_chunk_capture_calls": 0,
+        "peak_graph_bytes_at_chunk_end": 0,
+        "scope": "frozen collection plus learner KV invalidation; capture cost included; excludes PPO, hashing, initialization and teardown"
+      },
+      "triton_used": false,
+      "comparison": {
+        "exact": true,
+        "differences": [],
+        "expected": "0cc64dbb9427f1f957ae6ba0da3c8bbf955594578f5e010e7a8b6a4aa73b3e60",
+        "actual": "0cc64dbb9427f1f957ae6ba0da3c8bbf955594578f5e010e7a8b6a4aa73b3e60"
+      },
+      "result_sha256": "b52e12809dd8befff36572d3980280c7696c8a217f0b48fc2d9a0de54fe4d2bb",
+      "metrics_sha256": "6ebfda12ea381b48ebbec6ee701f0bfe4adec6eb3158dab8db414227ee2198a3"
+    },
+    {
+      "label": "recent-01-A",
+      "case": "recent",
+      "variant": "A",
+      "timing": {
+        "raw_dps": 608.5456226413083,
+        "collect_plus_invalidation_dps": 608.4526284763052,
+        "measured_decisions": 12288.0,
+        "measured_collect_seconds": 20.19240553677082,
+        "measured_invalidation_seconds": 0.0030861496925354004,
+        "measured_capture_host_seconds": 0.0,
+        "measured_capture_calls": 0,
+        "all_chunk_capture_calls": 0,
+        "peak_graph_bytes_at_chunk_end": 0,
+        "scope": "frozen collection plus learner KV invalidation; capture cost included; excludes PPO, hashing, initialization and teardown"
+      },
+      "triton_used": false,
+      "comparison": {
+        "exact": true,
+        "differences": [],
+        "expected": "0cc64dbb9427f1f957ae6ba0da3c8bbf955594578f5e010e7a8b6a4aa73b3e60",
+        "actual": "0cc64dbb9427f1f957ae6ba0da3c8bbf955594578f5e010e7a8b6a4aa73b3e60"
+      },
+      "result_sha256": "08b6d540a9224b8d7c931cc559febac1d3c2044558ce3aeba1345e0fc9c461d4",
+      "metrics_sha256": "b6eba5c04549c0a79a6db71e7ea03340218507fe87e18ca11de3b60ae3f4c866"
+    },
+    {
+      "label": "recent-02-Q",
+      "case": "recent",
+      "variant": "Q",
+      "timing": {
+        "raw_dps": 946.1464264669772,
+        "collect_plus_invalidation_dps": 945.9127285237178,
+        "measured_decisions": 12288.0,
+        "measured_collect_seconds": 12.987418919801712,
+        "measured_invalidation_seconds": 0.0032086819410324097,
+        "measured_capture_host_seconds": 2.110264990478754,
+        "measured_capture_calls": 108,
+        "all_chunk_capture_calls": 190,
+        "peak_graph_bytes_at_chunk_end": 525440556,
+        "scope": "frozen collection plus learner KV invalidation; capture cost included; excludes PPO, hashing, initialization and teardown"
+      },
+      "triton_used": false,
+      "comparison": {
+        "exact": true,
+        "differences": [],
+        "expected": "0cc64dbb9427f1f957ae6ba0da3c8bbf955594578f5e010e7a8b6a4aa73b3e60",
+        "actual": "0cc64dbb9427f1f957ae6ba0da3c8bbf955594578f5e010e7a8b6a4aa73b3e60"
+      },
+      "result_sha256": "c39babd7925b679979cea2cfc1d086427a36b84a5f14ce9e69a309b8742a3127",
+      "metrics_sha256": "c6d43e158d98fea81614a16eb0009f974d03cfb288fc264593e28f4f50bb7d1e"
+    },
+    {
+      "label": "recent-03-V",
+      "case": "recent",
+      "variant": "V",
+      "timing": {
+        "raw_dps": 955.2488382277023,
+        "collect_plus_invalidation_dps": 955.0396540932234,
+        "measured_decisions": 12288.0,
+        "measured_collect_seconds": 12.863663904368877,
+        "measured_invalidation_seconds": 0.002817552536725998,
+        "measured_capture_host_seconds": 2.1039406210184097,
+        "measured_capture_calls": 108,
+        "all_chunk_capture_calls": 190,
+        "peak_graph_bytes_at_chunk_end": 525440556,
+        "scope": "frozen collection plus learner KV invalidation; capture cost included; excludes PPO, hashing, initialization and teardown"
+      },
+      "triton_used": true,
+      "comparison": {
+        "exact": true,
+        "differences": [],
+        "expected": "0cc64dbb9427f1f957ae6ba0da3c8bbf955594578f5e010e7a8b6a4aa73b3e60",
+        "actual": "0cc64dbb9427f1f957ae6ba0da3c8bbf955594578f5e010e7a8b6a4aa73b3e60"
+      },
+      "result_sha256": "6b987d2ee3bdd39d9e4d0575c19d96093bca0ce0f6d619c69bd71201420624f5",
+      "metrics_sha256": "d8e8c93d6c671e7297dae05b483505bf5d85f84c29fa46a58d0e6155bf63e911"
+    },
+    {
+      "label": "recent-04-W",
+      "case": "recent",
+      "variant": "W",
+      "timing": {
+        "raw_dps": 895.2998698232827,
+        "collect_plus_invalidation_dps": 895.1022766471938,
+        "measured_decisions": 12288.0,
+        "measured_collect_seconds": 13.725010372698307,
+        "measured_invalidation_seconds": 0.0030297860503196716,
+        "measured_capture_host_seconds": 2.4916315004229546,
+        "measured_capture_calls": 108,
+        "all_chunk_capture_calls": 190,
+        "peak_graph_bytes_at_chunk_end": 525440556,
+        "scope": "frozen collection plus learner KV invalidation; capture cost included; excludes PPO, hashing, initialization and teardown"
+      },
+      "triton_used": true,
+      "comparison": {
+        "exact": true,
+        "differences": [],
+        "expected": "0cc64dbb9427f1f957ae6ba0da3c8bbf955594578f5e010e7a8b6a4aa73b3e60",
+        "actual": "0cc64dbb9427f1f957ae6ba0da3c8bbf955594578f5e010e7a8b6a4aa73b3e60"
+      },
+      "result_sha256": "d549c9e912a94e14a5e6a077279c493285fbfca5582ddc23290d8e6a81a2f351",
+      "metrics_sha256": "633a49592ee140f35cfb99dfeff9fb13d78257381af7ba7988e31ec44d518bbd"
+    },
+    {
+      "label": "recent-05-W",
+      "case": "recent",
+      "variant": "W",
+      "timing": {
+        "raw_dps": 901.6865730603728,
+        "collect_plus_invalidation_dps": 901.4489587915374,
+        "measured_decisions": 12288.0,
+        "measured_collect_seconds": 13.627795252949,
+        "measured_invalidation_seconds": 0.003592170774936676,
+        "measured_capture_host_seconds": 2.362048540264368,
+        "measured_capture_calls": 108,
+        "all_chunk_capture_calls": 190,
+        "peak_graph_bytes_at_chunk_end": 525440556,
+        "scope": "frozen collection plus learner KV invalidation; capture cost included; excludes PPO, hashing, initialization and teardown"
+      },
+      "triton_used": true,
+      "comparison": {
+        "exact": true,
+        "differences": [],
+        "expected": "0cc64dbb9427f1f957ae6ba0da3c8bbf955594578f5e010e7a8b6a4aa73b3e60",
+        "actual": "0cc64dbb9427f1f957ae6ba0da3c8bbf955594578f5e010e7a8b6a4aa73b3e60"
+      },
+      "result_sha256": "519b62c66224928c4b97dd5eb86c76ae767698c36c0d939881193a062a7f0d7f",
+      "metrics_sha256": "597e70e980b72f0bced96126b312ac5b4ea35c873efc9226ca173cf8af9aa8f7"
+    },
+    {
+      "label": "recent-06-V",
+      "case": "recent",
+      "variant": "V",
+      "timing": {
+        "raw_dps": 931.2704722559072,
+        "collect_plus_invalidation_dps": 931.0186673757685,
+        "measured_decisions": 12288.0,
+        "measured_collect_seconds": 13.194877713918686,
+        "measured_invalidation_seconds": 0.003568708896636963,
+        "measured_capture_host_seconds": 2.3083491027355194,
+        "measured_capture_calls": 108,
+        "all_chunk_capture_calls": 190,
+        "peak_graph_bytes_at_chunk_end": 525440556,
+        "scope": "frozen collection plus learner KV invalidation; capture cost included; excludes PPO, hashing, initialization and teardown"
+      },
+      "triton_used": true,
+      "comparison": {
+        "exact": true,
+        "differences": [],
+        "expected": "0cc64dbb9427f1f957ae6ba0da3c8bbf955594578f5e010e7a8b6a4aa73b3e60",
+        "actual": "0cc64dbb9427f1f957ae6ba0da3c8bbf955594578f5e010e7a8b6a4aa73b3e60"
+      },
+      "result_sha256": "d38903d5205e19e9d1b322b1a38438e2ce0befa4be0831a6f81bb15f3db5e258",
+      "metrics_sha256": "d8be3ca4fdcd2c31dcec1e12796d0b52e42fbcd926e37c250b023206475c5e73"
+    },
+    {
+      "label": "recent-07-Q",
+      "case": "recent",
+      "variant": "Q",
+      "timing": {
+        "raw_dps": 988.2887272566852,
+        "collect_plus_invalidation_dps": 988.1060464131697,
+        "measured_decisions": 12288.0,
+        "measured_collect_seconds": 12.433613438159227,
+        "measured_invalidation_seconds": 0.0022987239062786102,
+        "measured_capture_host_seconds": 1.939555000513792,
+        "measured_capture_calls": 108,
+        "all_chunk_capture_calls": 190,
+        "peak_graph_bytes_at_chunk_end": 525440556,
+        "scope": "frozen collection plus learner KV invalidation; capture cost included; excludes PPO, hashing, initialization and teardown"
+      },
+      "triton_used": false,
+      "comparison": {
+        "exact": true,
+        "differences": [],
+        "expected": "0cc64dbb9427f1f957ae6ba0da3c8bbf955594578f5e010e7a8b6a4aa73b3e60",
+        "actual": "0cc64dbb9427f1f957ae6ba0da3c8bbf955594578f5e010e7a8b6a4aa73b3e60"
+      },
+      "result_sha256": "3edd8fa026530e7fde7c9d7f0d6b10fb38ce146bf7cb6565e17cb8c4cf522eb4",
+      "metrics_sha256": "bc799c09b259132fb6e601cf8212e2ff492aef9647b66f844d414ef79ee6ee7e"
+    },
+    {
+      "label": "recent-08-A",
+      "case": "recent",
+      "variant": "A",
+      "timing": {
+        "raw_dps": 612.6810999432515,
+        "collect_plus_invalidation_dps": 612.6103790121922,
+        "measured_decisions": 12288.0,
+        "measured_collect_seconds": 20.0561107583344,
+        "measured_invalidation_seconds": 0.0023153163492679596,
+        "measured_capture_host_seconds": 0.0,
+        "measured_capture_calls": 0,
+        "all_chunk_capture_calls": 0,
+        "peak_graph_bytes_at_chunk_end": 0,
+        "scope": "frozen collection plus learner KV invalidation; capture cost included; excludes PPO, hashing, initialization and teardown"
+      },
+      "triton_used": false,
+      "comparison": {
+        "exact": true,
+        "differences": [],
+        "expected": "0cc64dbb9427f1f957ae6ba0da3c8bbf955594578f5e010e7a8b6a4aa73b3e60",
+        "actual": "0cc64dbb9427f1f957ae6ba0da3c8bbf955594578f5e010e7a8b6a4aa73b3e60"
+      },
+      "result_sha256": "37f4d784a9f5ba809f593aeb5c052cb5e2c522af9ec4f7388b102cc46799dde1",
+      "metrics_sha256": "7a937ccb4ad16acf897b2e9cc6c6da99e6386111b487f7fb0d05fa5ba1d92670"
+    },
+    {
+      "label": "recent-09-E",
+      "case": "recent",
+      "variant": "E",
+      "timing": {
+        "raw_dps": 777.6534629080369,
+        "collect_plus_invalidation_dps": 777.5286943076751,
+        "measured_decisions": 12288.0,
+        "measured_collect_seconds": 15.8013827316463,
+        "measured_invalidation_seconds": 0.002535618841648102,
+        "measured_capture_host_seconds": 0.0,
+        "measured_capture_calls": 0,
+        "all_chunk_capture_calls": 0,
+        "peak_graph_bytes_at_chunk_end": 0,
+        "scope": "frozen collection plus learner KV invalidation; capture cost included; excludes PPO, hashing, initialization and teardown"
+      },
+      "triton_used": false,
+      "comparison": {
+        "exact": true,
+        "differences": [],
+        "expected": "0cc64dbb9427f1f957ae6ba0da3c8bbf955594578f5e010e7a8b6a4aa73b3e60",
+        "actual": "0cc64dbb9427f1f957ae6ba0da3c8bbf955594578f5e010e7a8b6a4aa73b3e60"
+      },
+      "result_sha256": "7697f6a4a5c9faa4bbaebd722ee55a7114241825c49f50568be99450c1400ccf",
+      "metrics_sha256": "db7a74ae0c9409301e08071bd68c35dc6c6a6cdc6eaf4d4f0b4ad8fb05db472f"
+    },
+    {
+      "label": "wide-00-E",
+      "case": "wide",
+      "variant": "E",
+      "timing": {
+        "raw_dps": 561.3101281344001,
+        "collect_plus_invalidation_dps": 561.2391472676991,
+        "measured_decisions": 12288.0,
+        "measured_collect_seconds": 21.891641329973936,
+        "measured_invalidation_seconds": 0.002768673002719879,
+        "measured_capture_host_seconds": 0.0,
+        "measured_capture_calls": 0,
+        "all_chunk_capture_calls": 0,
+        "peak_graph_bytes_at_chunk_end": 0,
+        "scope": "frozen collection plus learner KV invalidation; capture cost included; excludes PPO, hashing, initialization and teardown"
+      },
+      "triton_used": false,
+      "comparison": {
+        "exact": true,
+        "differences": [],
+        "expected": "913135997197c8afcc2bae787782b8ead6a5cdae560d2b99201de34e83872aa2",
+        "actual": "913135997197c8afcc2bae787782b8ead6a5cdae560d2b99201de34e83872aa2"
+      },
+      "result_sha256": "4db8ba9efc5b5f33e9bda11224872eb1a696f4a14a80adbc9d41b701e8d5e1d3",
+      "metrics_sha256": "ae4441e3a57ed3efd030e5bc280e940adb94fcd40c0c6588e8db0dba4d59f67d"
+    },
+    {
+      "label": "wide-01-A",
+      "case": "wide",
+      "variant": "A",
+      "timing": {
+        "raw_dps": 437.8295978249566,
+        "collect_plus_invalidation_dps": 437.785473716708,
+        "measured_decisions": 12288.0,
+        "measured_collect_seconds": 28.06571337580681,
+        "measured_invalidation_seconds": 0.002828724682331085,
+        "measured_capture_host_seconds": 0.0,
+        "measured_capture_calls": 0,
+        "all_chunk_capture_calls": 0,
+        "peak_graph_bytes_at_chunk_end": 0,
+        "scope": "frozen collection plus learner KV invalidation; capture cost included; excludes PPO, hashing, initialization and teardown"
+      },
+      "triton_used": false,
+      "comparison": {
+        "exact": true,
+        "differences": [],
+        "expected": "913135997197c8afcc2bae787782b8ead6a5cdae560d2b99201de34e83872aa2",
+        "actual": "913135997197c8afcc2bae787782b8ead6a5cdae560d2b99201de34e83872aa2"
+      },
+      "result_sha256": "512d029e2c1e6014632e5502e300a0744ff9aa368e5da7bf49d6ee565c147965",
+      "metrics_sha256": "cb8585e8e0f9c8f967e964df0dfbb151933871cf7a6eacb57ae76013eff8536d"
+    },
+    {
+      "label": "wide-02-Q",
+      "case": "wide",
+      "variant": "Q",
+      "timing": {
+        "raw_dps": 632.4412244798184,
+        "collect_plus_invalidation_dps": 632.3374054539532,
+        "measured_decisions": 12288.0,
+        "measured_collect_seconds": 19.429473482072353,
+        "measured_invalidation_seconds": 0.003189988434314728,
+        "measured_capture_host_seconds": 2.5235691368579865,
+        "measured_capture_calls": 138,
+        "all_chunk_capture_calls": 249,
+        "peak_graph_bytes_at_chunk_end": 536497883,
+        "scope": "frozen collection plus learner KV invalidation; capture cost included; excludes PPO, hashing, initialization and teardown"
+      },
+      "triton_used": false,
+      "comparison": {
+        "exact": true,
+        "differences": [],
+        "expected": "913135997197c8afcc2bae787782b8ead6a5cdae560d2b99201de34e83872aa2",
+        "actual": "913135997197c8afcc2bae787782b8ead6a5cdae560d2b99201de34e83872aa2"
+      },
+      "result_sha256": "952751273ac6b72c254c4c1ee25791852f37bd9bf2f2657e2fbc581d6d565351",
+      "metrics_sha256": "96e7a905ab93672151972c1d939997a486de889978416bfa5cde9ab958e3d9c4"
+    },
+    {
+      "label": "wide-03-V",
+      "case": "wide",
+      "variant": "V",
+      "timing": {
+        "raw_dps": 615.1553715177188,
+        "collect_plus_invalidation_dps": 615.0408270724856,
+        "measured_decisions": 12288.0,
+        "measured_collect_seconds": 19.97544127702713,
+        "measured_invalidation_seconds": 0.003720201551914215,
+        "measured_capture_host_seconds": 2.7761786431074142,
+        "measured_capture_calls": 138,
+        "all_chunk_capture_calls": 249,
+        "peak_graph_bytes_at_chunk_end": 536497883,
+        "scope": "frozen collection plus learner KV invalidation; capture cost included; excludes PPO, hashing, initialization and teardown"
+      },
+      "triton_used": true,
+      "comparison": {
+        "exact": true,
+        "differences": [],
+        "expected": "913135997197c8afcc2bae787782b8ead6a5cdae560d2b99201de34e83872aa2",
+        "actual": "913135997197c8afcc2bae787782b8ead6a5cdae560d2b99201de34e83872aa2"
+      },
+      "result_sha256": "999a13a711fb1a015f0654775d01fb191f80cdde82ef28a40596489c0803babf",
+      "metrics_sha256": "f0e96e88b9340b9f5b0ef746a5d9d5285e8176f0267b647912a96ac20f8eedca"
+    },
+    {
+      "label": "wide-04-W",
+      "case": "wide",
+      "variant": "W",
+      "timing": {
+        "raw_dps": 648.3104643253805,
+        "collect_plus_invalidation_dps": 648.2080381859163,
+        "measured_decisions": 12288.0,
+        "measured_collect_seconds": 18.953881938010454,
+        "measured_invalidation_seconds": 0.0029949843883514404,
+        "measured_capture_host_seconds": 2.5557211078703403,
+        "measured_capture_calls": 138,
+        "all_chunk_capture_calls": 249,
+        "peak_graph_bytes_at_chunk_end": 536497883,
+        "scope": "frozen collection plus learner KV invalidation; capture cost included; excludes PPO, hashing, initialization and teardown"
+      },
+      "triton_used": true,
+      "comparison": {
+        "exact": true,
+        "differences": [],
+        "expected": "913135997197c8afcc2bae787782b8ead6a5cdae560d2b99201de34e83872aa2",
+        "actual": "913135997197c8afcc2bae787782b8ead6a5cdae560d2b99201de34e83872aa2"
+      },
+      "result_sha256": "7c25b0327d02b530c3b875e3af01ad0439fc2243dadf5ebf071e19791207f8a6",
+      "metrics_sha256": "4494407ac1995d5d5491ea9de9206186bc9363ceeb581c5b625f3ed1a64f5089"
+    },
+    {
+      "label": "wide-05-W",
+      "case": "wide",
+      "variant": "W",
+      "timing": {
+        "raw_dps": 655.0157517554769,
+        "collect_plus_invalidation_dps": 654.9219778519544,
+        "measured_decisions": 12288.0,
+        "measured_collect_seconds": 18.759854197502136,
+        "measured_invalidation_seconds": 0.0026860982179641724,
+        "measured_capture_host_seconds": 2.5300924107432365,
+        "measured_capture_calls": 138,
+        "all_chunk_capture_calls": 249,
+        "peak_graph_bytes_at_chunk_end": 536497883,
+        "scope": "frozen collection plus learner KV invalidation; capture cost included; excludes PPO, hashing, initialization and teardown"
+      },
+      "triton_used": true,
+      "comparison": {
+        "exact": true,
+        "differences": [],
+        "expected": "913135997197c8afcc2bae787782b8ead6a5cdae560d2b99201de34e83872aa2",
+        "actual": "913135997197c8afcc2bae787782b8ead6a5cdae560d2b99201de34e83872aa2"
+      },
+      "result_sha256": "0398255ef70085ee5abb639fd5c70aaf7fe67eee719e2004c09a9784c21d3572",
+      "metrics_sha256": "e4ecafbb04e6c93fc9aca9689483b50f00405c5832778531ecf64e56d4ab1bfe"
+    },
+    {
+      "label": "wide-06-V",
+      "case": "wide",
+      "variant": "V",
+      "timing": {
+        "raw_dps": 634.8533498310186,
+        "collect_plus_invalidation_dps": 634.7474222772788,
+        "measured_decisions": 12288.0,
+        "measured_collect_seconds": 19.355651196092367,
+        "measured_invalidation_seconds": 0.003230098634958267,
+        "measured_capture_host_seconds": 2.6160294450819492,
+        "measured_capture_calls": 138,
+        "all_chunk_capture_calls": 249,
+        "peak_graph_bytes_at_chunk_end": 536497883,
+        "scope": "frozen collection plus learner KV invalidation; capture cost included; excludes PPO, hashing, initialization and teardown"
+      },
+      "triton_used": true,
+      "comparison": {
+        "exact": true,
+        "differences": [],
+        "expected": "913135997197c8afcc2bae787782b8ead6a5cdae560d2b99201de34e83872aa2",
+        "actual": "913135997197c8afcc2bae787782b8ead6a5cdae560d2b99201de34e83872aa2"
+      },
+      "result_sha256": "3760c2426fc269a740b3c3129c9710accdb3352b5e6619643177c3acc2e8c5c0",
+      "metrics_sha256": "ab668ae976afcc9ec62cd0b880574ca3240e2c5fcbeaa0f613267c14ad62b568"
+    },
+    {
+      "label": "wide-07-Q",
+      "case": "wide",
+      "variant": "Q",
+      "timing": {
+        "raw_dps": 658.3713569963852,
+        "collect_plus_invalidation_dps": 658.2729703392584,
+        "measured_decisions": 12288.0,
+        "measured_collect_seconds": 18.664238456636667,
+        "measured_invalidation_seconds": 0.002789590507745743,
+        "measured_capture_host_seconds": 2.3505100198090076,
+        "measured_capture_calls": 138,
+        "all_chunk_capture_calls": 249,
+        "peak_graph_bytes_at_chunk_end": 536497883,
+        "scope": "frozen collection plus learner KV invalidation; capture cost included; excludes PPO, hashing, initialization and teardown"
+      },
+      "triton_used": false,
+      "comparison": {
+        "exact": true,
+        "differences": [],
+        "expected": "913135997197c8afcc2bae787782b8ead6a5cdae560d2b99201de34e83872aa2",
+        "actual": "913135997197c8afcc2bae787782b8ead6a5cdae560d2b99201de34e83872aa2"
+      },
+      "result_sha256": "9f21742509d031b733af483da4230671e895936e4e0f9448dfec89c2117efc31",
+      "metrics_sha256": "1a83c98e76384abaf45546d239168a2d104c995f65998fedd5eac426bac954ff"
+    },
+    {
+      "label": "wide-08-A",
+      "case": "wide",
+      "variant": "A",
+      "timing": {
+        "raw_dps": 443.4426324724494,
+        "collect_plus_invalidation_dps": 443.4011160498976,
+        "measured_decisions": 12288.0,
+        "measured_collect_seconds": 27.710461512207985,
+        "measured_invalidation_seconds": 0.0025945790112018585,
+        "measured_capture_host_seconds": 0.0,
+        "measured_capture_calls": 0,
+        "all_chunk_capture_calls": 0,
+        "peak_graph_bytes_at_chunk_end": 0,
+        "scope": "frozen collection plus learner KV invalidation; capture cost included; excludes PPO, hashing, initialization and teardown"
+      },
+      "triton_used": false,
+      "comparison": {
+        "exact": true,
+        "differences": [],
+        "expected": "913135997197c8afcc2bae787782b8ead6a5cdae560d2b99201de34e83872aa2",
+        "actual": "913135997197c8afcc2bae787782b8ead6a5cdae560d2b99201de34e83872aa2"
+      },
+      "result_sha256": "aa253520b4794b3b1a0b03b1b617434ecb718fa0930465164aa00679a6e3672a",
+      "metrics_sha256": "803a1cd986a0ba76bb8e3af71211e6c5dc9156891071322d0ee0339342961c2a"
+    },
+    {
+      "label": "wide-09-E",
+      "case": "wide",
+      "variant": "E",
+      "timing": {
+        "raw_dps": 579.1532366170193,
+        "collect_plus_invalidation_dps": 579.0983903620541,
+        "measured_decisions": 12288.0,
+        "measured_collect_seconds": 21.217182643711567,
+        "measured_invalidation_seconds": 0.002009473741054535,
+        "measured_capture_host_seconds": 0.0,
+        "measured_capture_calls": 0,
+        "all_chunk_capture_calls": 0,
+        "peak_graph_bytes_at_chunk_end": 0,
+        "scope": "frozen collection plus learner KV invalidation; capture cost included; excludes PPO, hashing, initialization and teardown"
+      },
+      "triton_used": false,
+      "comparison": {
+        "exact": true,
+        "differences": [],
+        "expected": "913135997197c8afcc2bae787782b8ead6a5cdae560d2b99201de34e83872aa2",
+        "actual": "913135997197c8afcc2bae787782b8ead6a5cdae560d2b99201de34e83872aa2"
+      },
+      "result_sha256": "5537bbef7a2e8e23c47f9a5a99462f14349ff5a75c42af5a7334d28b9ef1fe28",
+      "metrics_sha256": "3458a6471d5462110ae6c71c1d39310470acf6612c1b357c64c334c459cdda9e"
+    }
+  ],
+  "final_source": {
+    "source8": "aec0c4fed31e034be978f638a7e8c7258b0eadb072a7a6b15cd3dcb7cc4c35d7",
+    "source9": "c1765e5c239f5d06fc88a94d2b33cd1d3d9649e87b68942183262e48f748276b",
+    "changed_files": {
+      "tests/test_history_ddp.py": {
+        "before": "cdc3e6c1cdd09a19b408279093a0e75e94a6fda7afeda99c60aebe6ebc0ce08d",
+        "after": "73bda5c42818de7500e4eb93797f719792d5b960d85c850b1c1d532a409649fb"
+      },
+      "tests/test_history_host_rollout.py": {
+        "before": "4c6635b81630f8926c9f4beeb95ed1ba4bc6fec92499fed4cbd1b156a1ee76e7",
+        "after": "9786e70aff0ea1e5128e7ae6ca2f9ed73ceb11de5607048185b9bb834dc2045b"
+      },
+      "tests/test_history_preuploaded_lengths.py": {
+        "before": "725d31412d53e890f1d7a88c0de19beafdaa305a101151fa261c339ec527d775",
+        "after": "aee32ada38c54281a9f6aaff166824c37ff9aef2a72a70866cd3030702fe4275"
+      }
+    },
+    "production_files_identical": true
+  },
+  "local_tests": {
+    "round8": {
+      "passed": 1019,
+      "skipped": 198,
+      "seconds": 91.41
+    },
+    "round9": {
+      "passed": 1019,
+      "skipped": 198,
+      "seconds": 91.55
+    }
+  },
+  "async_lifetime": {
+    "status": "completed",
+    "passed": true,
+    "total_cases": 20,
+    "wall_seconds": 6.0901426412165165,
+    "prototype_files": {
+      "triton_async_lifetime_probe.py": "4d92c1f8d57fe4cf8d86fc07eaf9b4a1893da56466b93c006c960ba61a96c442",
+      "history_triton_cache.py": "71dec6de694d2cba79ce940d60da1849d2274c2463b71b7e3ad847981dfb59f8"
+    },
+    "runtime": {
+      "torch": "2.11.0+cu128",
+      "cuda": "12.8",
+      "triton": "3.6.0",
+      "device": "cuda",
+      "gpu": "NVIDIA GeForce RTX 4090",
+      "gpu_uuid": "7e30bbb6-0ab6-acac-4737-bca386cac52c",
+      "allocator": "native",
+      "deterministic_algorithms": true,
+      "deterministic_warn_only": false,
+      "dtype": "float32",
+      "tf32_matmul": false,
+      "tf32_cudnn": false,
+      "cublas_workspace_config": ":4096:8"
+    }
+  },
+  "gpu_full_suite": {
+    "status": "completed",
+    "passed": true,
+    "junit": {
+      "total": 1203,
+      "passed": 1192,
+      "skipped": 11,
+      "failures": 0,
+      "errors": 0
+    },
+    "launcher_sha256": "2946b714816b11ad8f990be1a520d5fa10c13b1f5284e5b2f803c7d5494bfa27",
+    "runtime": {
+      "engine": {
+        "package_file": "/workspace/shared/python/gd/__init__.py",
+        "engine_file": "/workspace/shared/python/gd/_gd_core.cpython-312-x86_64-linux-gnu.so",
+        "engine_binary_sha256": "3e2c9443bef716ce83a07b3daf7deddba8946b4d46373afeb4a9031311ee4834"
+      },
+      "torch": "2.11.0+cu128",
+      "cuda": "12.8",
+      "gpu": "NVIDIA GeForce RTX 4090",
+      "gpu_uuid": "7e30bbb6-0ab6-acac-4737-bca386cac52c",
+      "deterministic_before": true,
+      "pytest_args": [
+        "-q",
+        "tests",
+        "--junitxml",
+        "/workspace/experiment-full-gpu-09/pytest.xml"
+      ],
+      "pytest_exit_code": 0,
+      "deterministic_after": true
+    },
+    "started_utc": "2026-09-28T03:46:13.666061+00:00",
+    "finished_utc": "2026-09-28T03:51:27.702840+00:00",
+    "returncode": 0,
+    "receipt_path": "download/experiment-full-gpu-09/receipt.json",
+    "receipt_sha256": "662d03e8f7b584b56a2308cab9b6de3a85e02ecd385711b81d569174616dbb50",
+    "source_sha256": "c1765e5c239f5d06fc88a94d2b33cd1d3d9649e87b68942183262e48f748276b",
+    "all_source_engine_config_fixture_hashes_unchanged": true
+  },
+  "ppo_short": {
+    "status": "completed",
+    "accepted": true,
+    "script_sha256": "f736356d121251e0ca3a744686abc80d83d308e40f70143cba2087176d3fe27f",
+    "production_sha256": "4c705b2242c330c310f30653ef6e301144e835673bd8f4fd8b4f7e3e820eaa83",
+    "accepted_summaries": {
+      "adjusted_update_median_dps": {
+        "A": 748.5997623746845,
+        "V": 1524.620219734373,
+        "Q": 1481.257137998925,
+        "E": 1026.8963235876981
+      },
+      "raw_update_median_dps": {
+        "A": 715.1445834342856,
+        "V": 1392.277391075925,
+        "Q": 1365.7328880242417,
+        "E": 968.8800630728514
+      },
+      "collect_learn_median_dps": {
+        "A": 753.3969284036738,
+        "V": 1543.3472404353947,
+        "Q": 1496.368651471699,
+        "E": 1035.2193344257537
+      },
+      "speedup_over_E": {
+        "A": 0.7289925430439553,
+        "V": 1.4846875820995855,
+        "Q": 1.442460260081381,
+        "E": 1.0
+      },
+      "run_counts": {
+        "A": 1,
+        "V": 1,
+        "Q": 1,
+        "E": 2
+      },
+      "speedup_over_A": {
+        "A": 1.0,
+        "V": 2.0366293129696182,
+        "Q": 1.978703724537833,
+        "E": 1.3717561442047619
+      }
+    },
+    "timing_scope": "collect/learn phase timers exclude validation; raw update wall includes it; adjusted wall subtracts only measured non-overlapping hash intervals",
+    "report_path": "download/experiment-ppo-throughput-08-retry/report.json",
+    "report_sha256": "bd935c0dfff39fd994a2830066319c7aa20ef57e335716236933d2e4aba27703",
+    "strict_sha256": "cd49900377a120f2b7a2e97fa5876892b3d9c9efd034c78930022624cc16e206",
+    "scope": "32 environments; 32 steps x 6 updates; 2 warmup; 4 measured real learning updates / 34 minibatches / 4096 decisions each. All seats remain learner; no recent/wide training-speed claim.",
+    "runs": [
+      {
+        "label": "ppo-00-E",
+        "variant": "E",
+        "result_sha256": "dcf9a96c315d8ede52cce5786e2fad7b9c9f8e8599b8a8707d7b4684ec5c0ec3",
+        "comparison": {
+          "exact": true,
+          "differences": []
+        },
+        "strict_sha256": "cd49900377a120f2b7a2e97fa5876892b3d9c9efd034c78930022624cc16e206",
+        "summary": {
+          "collect_seconds": 2.9054875187575817,
+          "learn_seconds": 1.0782804265618324,
+          "raw_update_wall_seconds": 4.2548954375088215,
+          "adjusted_update_wall_seconds": 4.014077935367823,
+          "verification_inside_update_seconds": 0.24081750214099884,
+          "measured_decisions": 4096,
+          "measured_learning_updates": 4,
+          "measured_minibatches": 34,
+          "collect_dps": 1409.7462038837098,
+          "collect_learn_dps": 1028.1723374004375,
+          "raw_update_dps": 962.6558537471717,
+          "adjusted_update_dps": 1020.4086881100056
+        }
+      },
+      {
+        "label": "ppo-01-A",
+        "variant": "A",
+        "result_sha256": "7f39fe0e8612b429c69c6d963e3792e127d3c4625fd0651c70b44be0c49645e7",
+        "comparison": {
+          "exact": true,
+          "differences": []
+        },
+        "strict_sha256": "cd49900377a120f2b7a2e97fa5876892b3d9c9efd034c78930022624cc16e206",
+        "summary": {
+          "collect_seconds": 4.118063405156136,
+          "learn_seconds": 1.318645779043436,
+          "raw_update_wall_seconds": 5.727513141930103,
+          "adjusted_update_wall_seconds": 5.4715486243367195,
+          "verification_inside_update_seconds": 0.2559645175933838,
+          "measured_decisions": 4096,
+          "measured_learning_updates": 4,
+          "measured_minibatches": 34,
+          "collect_dps": 994.642286194887,
+          "collect_learn_dps": 753.3969284036738,
+          "raw_update_dps": 715.1445834342856,
+          "adjusted_update_dps": 748.5997623746845
+        }
+      },
+      {
+        "label": "ppo-02-Q",
+        "variant": "Q",
+        "result_sha256": "2b984b198bbbf3c0635397813e7ea9b45d9ed0adfa80fbebf307a4b49abf8ea0",
+        "comparison": {
+          "exact": true,
+          "differences": []
+        },
+        "strict_sha256": "cd49900377a120f2b7a2e97fa5876892b3d9c9efd034c78930022624cc16e206",
+        "summary": {
+          "collect_seconds": 1.6588319204747677,
+          "learn_seconds": 1.0784614570438862,
+          "raw_update_wall_seconds": 2.999122329056263,
+          "adjusted_update_wall_seconds": 2.7652187421917915,
+          "verification_inside_update_seconds": 0.23390358686447144,
+          "measured_decisions": 4096,
+          "measured_learning_updates": 4,
+          "measured_minibatches": 34,
+          "collect_dps": 2469.20736781319,
+          "collect_learn_dps": 1496.368651471699,
+          "raw_update_dps": 1365.7328880242417,
+          "adjusted_update_dps": 1481.257137998925
+        }
+      },
+      {
+        "label": "ppo-03-V",
+        "variant": "V",
+        "result_sha256": "4080a750f19451e38eeb39fa5b102cf276d5191a201c16faaf7c083eb65026a3",
+        "comparison": {
+          "exact": true,
+          "differences": []
+        },
+        "strict_sha256": "cd49900377a120f2b7a2e97fa5876892b3d9c9efd034c78930022624cc16e206",
+        "summary": {
+          "collect_seconds": 1.4730798602104187,
+          "learn_seconds": 1.1808919049799442,
+          "raw_update_wall_seconds": 2.9419424794614315,
+          "adjusted_update_wall_seconds": 2.686570692807436,
+          "verification_inside_update_seconds": 0.2553717866539955,
+          "measured_decisions": 4096,
+          "measured_learning_updates": 4,
+          "measured_minibatches": 34,
+          "collect_dps": 2780.5688684216457,
+          "collect_learn_dps": 1543.3472404353947,
+          "raw_update_dps": 1392.277391075925,
+          "adjusted_update_dps": 1524.620219734373
+        }
+      },
+      {
+        "label": "ppo-04-E",
+        "variant": "E",
+        "result_sha256": "d11def11d728b6e32d05d5af81df152a8a3153c94e63c2e296ab41fd97ff96b8",
+        "comparison": {
+          "exact": true,
+          "differences": []
+        },
+        "strict_sha256": "cd49900377a120f2b7a2e97fa5876892b3d9c9efd034c78930022624cc16e206",
+        "summary": {
+          "collect_seconds": 2.8132191747426987,
+          "learn_seconds": 1.1166784688830376,
+          "raw_update_wall_seconds": 4.200576405972242,
+          "adjusted_update_wall_seconds": 3.9636767767369747,
+          "verification_inside_update_seconds": 0.23689962923526764,
+          "measured_decisions": 4096,
+          "measured_learning_updates": 4,
+          "measured_minibatches": 34,
+          "collect_dps": 1455.9832510649037,
+          "collect_learn_dps": 1042.2663314510698,
+          "raw_update_dps": 975.1042723985311,
+          "adjusted_update_dps": 1033.3839590653904
+        }
+      }
+    ],
+    "raw_speedup_over_A": {
+      "A": 1.0,
+      "V": 1.9468474254393355,
+      "Q": 1.9097297520812986,
+      "E": 1.3548030503427304
+    },
+    "raw_timing_boundary": "Measured update() wall time including collection, learning and inside-update verification; excludes initialization, warmup and post-update verification. Subtracting measured verification wall still leaves instrumentation effects."
+  },
+  "final_profile": {
+    "report_path": "download/experiment-profile-source9/report.json",
+    "report_sha256": "1351c7346aaf64afad13c75e7d0c4254cb89fdca9146eae392570280f24c9b81",
+    "source_sha256": "c1765e5c239f5d06fc88a94d2b33cd1d3d9649e87b68942183262e48f748276b",
+    "accepted_replay": true,
+    "speed_claim_accepted": false,
+    "claim": "Diagnostic cProfile and head-shape census; do not use these timings in speed tables",
+    "measured_decisions_per_case": 2048,
+    "cases": {
+      "current": {
+        "comparison": {
+          "exact": true,
+          "differences": [],
+          "expected": "7e1b3639085cb61f7f5c648d965868e4ec09d191d3baa57b37e9454c351f3a03",
+          "actual": "7e1b3639085cb61f7f5c648d965868e4ec09d191d3baa57b37e9454c351f3a03"
+        },
+        "head_shapes_sha256": "d9e94e8e701dae896ecdfad0572f791b6fa5d30741d1a62179669cc61f88e0f1",
+        "admission": {
+          "3": {
+            "admit_after": 3,
+            "max_entries_per_policy": 32,
+            "max_observed_per_policy": 256,
+            "all_chunks": {
+              "calls": 96,
+              "eager_admission": 94,
+              "would_capture": 1,
+              "replay_hits": 1,
+              "replay_fraction": 0.010416666666666666,
+              "replays_per_capture": 1.0
+            },
+            "measured_chunks": {
+              "calls": 64,
+              "eager_admission": 62,
+              "would_capture": 1,
+              "replay_hits": 1,
+              "replay_fraction": 0.015625,
+              "replays_per_capture": 1.0
+            },
+            "limitation": "Shape-only simulation; excludes pool-byte limits, capture/copy cost and policy-cache pruning. Not a speed estimate."
+          },
+          "8": {
+            "admit_after": 8,
+            "max_entries_per_policy": 32,
+            "max_observed_per_policy": 256,
+            "all_chunks": {
+              "calls": 96,
+              "eager_admission": 96,
+              "replay_fraction": 0.0,
+              "replays_per_capture": null
+            },
+            "measured_chunks": {
+              "calls": 64,
+              "eager_admission": 64,
+              "replay_fraction": 0.0,
+              "replays_per_capture": null
+            },
+            "limitation": "Shape-only simulation; excludes pool-byte limits, capture/copy cost and policy-cache pruning. Not a speed estimate."
+          }
+        },
+        "head_shape_limitation": "Host metadata census changes profiling overhead but no tensor values. Integer alignment is omitted from the proposed key and still needs a separate GPU equivalence gate.",
+        "measured_policy_calls": 64,
+        "mean_policy_batch": 30.875
+      },
+      "wide": {
+        "comparison": {
+          "exact": true,
+          "differences": [],
+          "expected": "78a0788d45186f6a8bf135bff743de6e9f1af4f9de84c715874774d4845b2cd1",
+          "actual": "78a0788d45186f6a8bf135bff743de6e9f1af4f9de84c715874774d4845b2cd1"
+        },
+        "head_shapes_sha256": "9a425cb404b2c4ca2b2de4fef87cf4bb6085bea56a38fd351436e11441d7b61e",
+        "admission": {
+          "3": {
+            "admit_after": 3,
+            "max_entries_per_policy": 32,
+            "max_observed_per_policy": 256,
+            "all_chunks": {
+              "calls": 834,
+              "eager_admission": 614,
+              "would_capture": 62,
+              "replay_hits": 158,
+              "replay_fraction": 0.18944844124700239,
+              "replays_per_capture": 2.5483870967741935
+            },
+            "measured_chunks": {
+              "calls": 556,
+              "eager_admission": 353,
+              "replay_hits": 155,
+              "would_capture": 48,
+              "replay_fraction": 0.2787769784172662,
+              "replays_per_capture": 3.2291666666666665
+            },
+            "limitation": "Shape-only simulation; excludes pool-byte limits, capture/copy cost and policy-cache pruning. Not a speed estimate."
+          },
+          "8": {
+            "admit_after": 8,
+            "max_entries_per_policy": 32,
+            "max_observed_per_policy": 256,
+            "all_chunks": {
+              "calls": 834,
+              "eager_admission": 784,
+              "would_capture": 13,
+              "replay_hits": 37,
+              "replay_fraction": 0.04436450839328537,
+              "replays_per_capture": 2.8461538461538463
+            },
+            "measured_chunks": {
+              "calls": 556,
+              "eager_admission": 506,
+              "would_capture": 13,
+              "replay_hits": 37,
+              "replay_fraction": 0.06654676258992806,
+              "replays_per_capture": 2.8461538461538463
+            },
+            "limitation": "Shape-only simulation; excludes pool-byte limits, capture/copy cost and policy-cache pruning. Not a speed estimate."
+          }
+        },
+        "head_shape_limitation": "Host metadata census changes profiling overhead but no tensor values. Integer alignment is omitted from the proposed key and still needs a separate GPU equivalence gate.",
+        "measured_policy_calls": 556,
+        "mean_policy_batch": 3.5431654676258995
+      }
+    },
+    "wide_cprofile_host_cumulative_seconds": {
+      "collection": 4.679,
+      "public_encode": 1.989,
+      "candidate_logits": 0.471,
+      "public_signature": 0.193,
+      "warning": "Rounded cProfile host attribution; not GPU-time shares or a throughput forecast."
+    }
+  },
+  "artifact_verification": {
+    "verified_epoch": 1790567755.1081312,
+    "files": 800,
+    "total_bytes": 34201098,
+    "mismatches": [],
+    "manifest_sha256": "52e7b01f43f28329be4636d012befb8686667afb5140dcc443434b82e42d86b7"
+  },
+  "teardown": {
+    "instance_id": 53083880,
+    "created_epoch": 1790560767.87059,
+    "absence_confirmed_epoch": 1790567785.331624,
+    "elapsed_seconds": 7017.4610340595245,
+    "hourly_usd": 0.783148148148148,
+    "estimated_compute_disk_usd": 1.5265865593126402,
+    "cost_scope": "estimated from elapsed rental and observed hourly quote; excludes unverified traffic charges",
+    "provider_status": {
+      "instances": 0,
+      "owned": null
+    },
+    "console_instances": 0,
+    "console_credit_usd": 8.47,
+    "console_screenshot": ".work/vast-throughput-2026-09-28/teardown.png",
+    "local_sync_and_destroy_guard_exited": true
+  },
+  "larger_model_final_matrix": {
+    "completed": false,
+    "reason": "Full acceptance and artifact verification prioritized within the two-hour rental. Earlier round6 short exact smoke is not a stable speed estimate."
+  }
+}

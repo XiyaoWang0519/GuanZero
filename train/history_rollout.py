@@ -44,6 +44,7 @@ import torch
 
 from train.history_model import (HIDDEN_DIM, PLAY_PHASE, DecisionInputs, HistoryActor,
                                  PublicStream, StreamBatch)
+from train.history_transfers import download_tensors as _download_tensors, upload_arrays
 
 LEARNER = 0     # policy identity of the collecting learner in a seat assignment
 NUM_SEATS = 4
@@ -450,6 +451,16 @@ class CollectStats:
         return self.prefix_sum / self.learner_rows if self.learner_rows else 0.0
 
 
+@dataclass
+class _PolicyBatch:
+    identity: int
+    rows: np.ndarray
+    keys: list[tuple[int, int]]
+    streams: list[PublicStream]
+    one_decision_per_stream: bool
+    max_candidates: int
+
+
 class HistoryCollector:
     """Vector rollout of the history actor with heuristic tribute.
 
@@ -462,6 +473,12 @@ class HistoryCollector:
     ``temperature`` and ``epsilon`` shape the learner identity's sampling
     only (``HistoryActor.explore``); frozen snapshot seats always use
     ``HistoryActor.act`` at temperature 1.
+    ``reuse_cache_lengths`` reuses uploaded prefixes for matching KV metadata;
+    disable it to compare against the original separate lengths upload.
+    ``private_graphs`` checks actor storage and structure once per synchronous
+    ``collect`` call. Actor weights, structure and hooks must stay fixed during
+    that call; normal PPO updates happen between calls. Direct ``step`` calls
+    retain the full graph validation on every inference.
     """
 
     def __init__(self, env: Any, actor: HistoryActor, store: MatchEventStore,
@@ -471,7 +488,10 @@ class HistoryCollector:
                  resolve_policy: Callable[[int], HistoryActor] | None = None,
                  assignment_log: Callable[[dict], None] | None = None,
                  kv_cache: bool = False, profile: bool = False,
-                 temperature: float = 1.0, epsilon: float = 0.0) -> None:
+                 temperature: float = 1.0, epsilon: float = 0.0,
+                 reuse_cache_lengths: bool = True, private_graphs: bool = False,
+                 private_graph_budget_mb: int = 512, triton_cache: bool = False,
+                 triton_min_batch: int = 1) -> None:
         self.env = env
         self.actor = actor
         self.store = store
@@ -483,13 +503,29 @@ class HistoryCollector:
         self.assignment_log = assignment_log
         if kv_cache and actor.config.window:
             raise ValueError("rollout KV cache requires full history")
+        if private_graphs and (not kv_cache or self.device.type != "cuda"):
+            raise ValueError("private CUDA graphs require CUDA rollout and the full-history KV cache")
+        if triton_cache and (not kv_cache or self.device.type != "cuda"):
+            raise ValueError("Triton cache copies require CUDA rollout and the full-history KV cache")
+        if triton_min_batch < 1:
+            raise ValueError("Triton minimum batch must be positive")
+        if private_graph_budget_mb < 1:
+            raise ValueError("private graph memory budget must be positive")
         self.kv_cache = kv_cache
+        self.reuse_cache_lengths = reuse_cache_lengths
+        self.private_graphs = private_graphs
+        self.private_graph_budget_bytes = private_graph_budget_mb << 20
+        self.decision_graphs = {}
+        self._graph_collecting = False
+        self.triton_cache = triton_cache
+        self.triton_min_batch = triton_min_batch
         self.profile = profile
         self.temperature = float(temperature)
         self.epsilon = float(epsilon)
         self.caches = {}
         self.policy_decisions: dict[int, int] = {}
         self.assignments: dict[tuple[int, int], np.ndarray] = {}
+        self._assignments_changed = False
         self.results: list[Any] = []            # RoundResults drained by the last collect()
         self.choice_log: list[np.ndarray] | None = [] if record_choices else None
         self.started = False
@@ -516,6 +552,37 @@ class HistoryCollector:
                 del self.caches[identity]
             else:
                 self.caches[identity].prune(active[identity])
+        for identity in list(self.decision_graphs):
+            if identity not in active:
+                self.decision_graphs.pop(identity).clear()
+
+    @torch.no_grad()
+    def _graph_log_probs(self, identity, actor, inputs, encoded):
+        """Collector-owned graphs never become actor or checkpoint state."""
+        from train.history_cuda_graphs import PrivateDecisionGraphs
+        graph = self.decision_graphs.get(identity)
+        if graph is not None and graph.actor is not actor:
+            self.decision_graphs.pop(identity).clear()
+            graph = None
+        other_bytes = sum(g.bytes for key, g in self.decision_graphs.items() if key != identity)
+        available = min(128 << 20, self.private_graph_budget_bytes - other_bytes)
+        if available < 1:
+            return actor.candidate_log_probs(inputs, encoded=encoded)
+        if graph is None:
+            graph = PrivateDecisionGraphs(actor, max_entries=32, max_bytes=available,
+                                          admit_after=3, integer_alignment_agnostic=True)
+            self.decision_graphs[identity] = graph
+            if self._graph_collecting:
+                graph.begin_interval()
+        graph.set_memory_budget(available)
+        return graph.log_probs(inputs, encoded)
+
+    def graph_metrics(self) -> dict:
+        return {str(identity): graph.metrics() for identity, graph in self.decision_graphs.items()}
+
+    def transfer_metrics(self) -> dict:
+        return {str(identity): dict(cache.copy_stats) for identity, cache in self.caches.items()
+                if hasattr(cache, "copy_stats")}
 
     def assignment(self, env_id: int, match_id: int) -> np.ndarray:
         key = (int(env_id), int(match_id))
@@ -533,6 +600,7 @@ class HistoryCollector:
                     raise TypeError("training seats require a HistoryActor")
             seats.setflags(write=False)
             self.assignments[key] = seats
+            self._assignments_changed = True
             if self.assignment_log is not None:
                 self.assignment_log(dict(event="assignment", env=key[0], match=key[1],
                                          version=self.version, seats=seats.tolist()))
@@ -595,59 +663,102 @@ class HistoryCollector:
             learner[i] = identities[i] == LEARNER
             prefix[i] = self.store.stream(env_id[i], match_id[i]).prefix
         acting = learner & (phase == PLAY_PHASE)
-        if self.kv_cache:
+        if self.kv_cache and self._assignments_changed:
             self._prune_caches()
+            self._assignments_changed = False
         mark("metadata_and_assignment")
+        groups, host_fields = [], []
         for identity in np.unique(identities[phase == PLAY_PHASE]):
             rows = np.flatnonzero((identities == identity) & (phase == PLAY_PHASE))
-            actor = self.actor if identity == LEARNER else self.resolve_policy(int(identity))
             keys = list(zip(env_id[rows].tolist(), match_id[rows].tolist()))
             unique = list(dict.fromkeys(keys))
             index = {key: i for i, key in enumerate(unique)}
             src = ragged_index(offsets[rows], counts[rows])
             local = np.concatenate(([0], np.cumsum(counts[rows])))
             streams = [self.store.stream(*k) for k in unique]
-            mark("input_indexing")
+            groups.append(_PolicyBatch(int(identity), rows, unique, streams,
+                                       len(keys) == len(unique), int(counts[rows].max())))
+            host_fields.extend((
+                np.asarray([index[k] for k in keys], np.int64), prefix[rows],
+                obs[rows].astype(np.uint8), seat[rows], cand[src].astype(np.uint8),
+                local, np.repeat(np.arange(len(rows), dtype=np.int64), counts[rows])))
+        mark("input_indexing")
+        # All groups' decision inputs are known before inference. One aligned
+        # upload preserves group/row order and avoids seven transfers per group.
+        uploaded = upload_arrays(host_fields, self.device)
+        mark("decision_upload")
+        pending_downloads = []
+        for group_index, group in enumerate(groups):
+            identity, rows = group.identity, group.rows
+            fields = uploaded[7 * group_index:7 * (group_index + 1)]
+            actor = self.actor if identity == LEARNER else self.resolve_policy(int(identity))
             encoded = None
             if self.kv_cache:
                 from train.history_inference import BatchedHistoryCache
                 cache = self.caches.get(int(identity))
                 if cache is None or cache.actor is not actor:
-                    cache = self.caches[int(identity)] = BatchedHistoryCache(actor)
-                stream_batch, encoded = cache.encode(unique, streams)
+                    if self.triton_cache:
+                        from train.history_triton_cache import TritonHistoryCache
+                        cache = TritonHistoryCache(actor, min_batch=self.triton_min_batch)
+                    else:
+                        cache = BatchedHistoryCache(actor)
+                    self.caches[int(identity)] = cache
+                lengths_hint = {}
+                if self.reuse_cache_lengths and group.one_decision_per_stream:
+                    # With distinct keys, insertion order makes decision rows
+                    # and streams identical. Check the original host values
+                    # before reusing the prefix upload as stream metadata.
+                    host_lengths = tuple(prefix[rows].tolist())
+                    if host_lengths == tuple(stream.prefix for stream in group.streams):
+                        lengths_hint = dict(preuploaded_lengths=fields[1],
+                                            host_lengths=host_lengths)
+                stream_batch, encoded = cache.encode(group.keys, group.streams, **lengths_hint)
             else:
-                stream_batch = StreamBatch.from_streams(streams, self.device)
+                stream_batch = StreamBatch.from_streams(group.streams, self.device)
             mark("public_cache_or_collation")
             inputs = DecisionInputs(
                 streams=stream_batch,
-                match_index=torch.as_tensor([index[k] for k in keys], dtype=torch.long,
-                                            device=self.device),
-                prefix=torch.as_tensor(prefix[rows], dtype=torch.long, device=self.device),
-                obs=torch.as_tensor(obs[rows].astype(np.uint8), device=self.device),
-                seat=torch.as_tensor(seat[rows], dtype=torch.long, device=self.device),
-                cand=torch.as_tensor(cand[src].astype(np.uint8), device=self.device),
-                offsets=torch.as_tensor(local, dtype=torch.long, device=self.device))
-            mark("decision_upload")
+                match_index=fields[0], prefix=fields[1], obs=fields[2], seat=fields[3],
+                cand=fields[4], offsets=fields[5], candidate_rows=fields[6],
+                one_decision_per_stream=group.one_decision_per_stream)
+            inference = {}
+            if self.private_graphs:
+                inference["inference_log_probs"] = self._graph_log_probs(identity, actor, inputs, encoded)
             if identity == LEARNER:
                 sample = actor.explore(inputs, self.generator, temperature=self.temperature,
                                        epsilon=self.epsilon, encoded=encoded,
-                                       max_candidates=int(counts[rows].max()))
+                                       max_candidates=group.max_candidates, **inference)
                 choice, chosen_logp = sample.choice, sample.logp
-                behaviour_logp[rows] = sample.behaviour_logp.float().cpu().numpy()
-                stats.epsilon_picks += int(sample.uniform_pick.sum())
-                stats.behaviour_entropy_sum += float(sample.behaviour_entropy.double().sum())
+                downloads = (choice, chosen_logp.float(), sample.behaviour_logp.float(),
+                             sample.uniform_pick.sum(), sample.behaviour_entropy.double().sum())
             else:
                 choice, chosen_logp = actor.act(inputs, self.generator, encoded=encoded,
-                                               max_candidates=int(counts[rows].max()))
+                                               max_candidates=group.max_candidates, **inference)
+                downloads = (choice, chosen_logp.float())
             mark("actor_and_sampling")
-            picked_logp = chosen_logp.float().cpu().numpy()
-            if not (np.isfinite(picked_logp).all() and np.isfinite(behaviour_logp[rows]).all()):
-                raise FloatingPointError("non-finite behaviour probability")
-            choices[rows] = choice.cpu().numpy().astype(np.int32)
-            logp[rows] = picked_logp
+            pending_downloads.append((int(identity), rows, downloads))
             self.policy_decisions[int(identity)] = self.policy_decisions.get(int(identity), 0) + len(rows)
             stats.policy_batches += 1
-            mark("decision_download")
+        # Policies do not depend on one another's actions until env.step().
+        # Preserve their sampling order, then synchronize once for the whole
+        # vector step instead of stalling after each identity's inference.
+        all_downloaded = _download_tensors(
+            tuple(t for _, _, tensors in pending_downloads for t in tensors),
+            packed=self.device.type == "cuda")
+        cursor = 0
+        for identity, rows, tensors in pending_downloads:
+            downloaded = all_downloaded[cursor:cursor + len(tensors)]
+            cursor += len(tensors)
+            picked_choice, picked_logp = downloaded[:2]
+            if identity == LEARNER:
+                behaviour_logp[rows] = downloaded[2]
+                stats.epsilon_picks += int(downloaded[3])
+                stats.behaviour_entropy_sum += float(downloaded[4])
+            if not (np.isfinite(picked_logp).all() and np.isfinite(behaviour_logp[rows]).all()):
+                raise FloatingPointError("non-finite behaviour probability")
+            choices[rows] = picked_choice.astype(np.int32)
+            logp[rows] = picked_logp
+        mark("decision_download")
         if ((choices < 0) | (choices >= counts)).any():
             raise ValueError("a choice lies outside its candidate list")
         stored = self.buffer.add_step(
@@ -674,6 +785,20 @@ class HistoryCollector:
             self.version = int(version)
         self.results.clear()
         stats = CollectStats()
-        for _ in range(int(steps)):
-            self.step(stats)
+        if not self.private_graphs:
+            for _ in range(int(steps)):
+                self.step(stats)
+            return stats
+        if self._graph_collecting:
+            raise RuntimeError("nested graph collection is unsupported")
+        self._graph_collecting = True
+        try:
+            for graph in self.decision_graphs.values():
+                graph.begin_interval()
+            for _ in range(int(steps)):
+                self.step(stats)
+        finally:
+            self._graph_collecting = False
+            for graph in self.decision_graphs.values():
+                graph.end_interval()
         return stats
