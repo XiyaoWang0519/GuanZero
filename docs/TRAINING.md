@@ -107,6 +107,21 @@ None is a strength claim. The kit tooling (`prepare.py`, `arm.py`,
 The small history model trains faster on the pod's CPUs than on its GPU;
 training on CPU is the FP32 reference path covered by the equivalence tests.
 
+## Speed options after the refactor (September 29)
+
+The [refactor report](reports/training-stack-refactor-2026-09-29.md) adds
+four opt-in, resume-overridable options: `--rollout-paged-cache` (one page
+pool for every identity's public KV cache; bitwise on CPU; replaces
+`--rollout-triton-cache`), `--batch-snapshot-encoder` (one merged snapshot
+encode per step), `--learner-length-groups N` (learner encode in length
+groups, each stream only as far as its rows read) and `--rollout-page-span`
+(page-padded rather than power-of-two attention spans). The last three are
+tier 2. Default behaviour is bitwise unchanged on CPU. On an M4 Pro CPU all
+four together took 87 s per 10 production-architecture updates against
+149 s; GPU speed is unmeasured. `python -m bench.history_arms` compares
+options in-run from a checkpoint without touching the lineage; the report
+lists the GPU gate and A/B commands.
+
 ## Local development checks
 
 The [history-stack follow-up](reports/history-stack-2026-09-26.md) adds optional

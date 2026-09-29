@@ -15,6 +15,7 @@ Most of the work is in the training system, not in how well the agent plays. Eve
 | CUDA Graphs + batched attention + Triton KV-cache kernel in rollout collection | **3.48x** decisions/s (1,030 → 3,587). Bitwise-identical FP32 results on all 30 replays. About 1.95x in a short end-to-end PPO loop | RTX 4090 | [history-cuda-throughput-2026-09-28](docs/reports/history-cuda-throughput-2026-09-28.md) |
 | Causal SDPA + batched KV cache instead of dense attention | **1.76x** full-update throughput. Reserved GPU memory 24.74 GB → 0.145 GB | RTX 4090 | [history-stack-cuda-2026-09-26](docs/reports/history-stack-cuda-2026-09-26.md) |
 | 4 actor processes sharing one GPU | **1.78x** decisions/s (1,871 → 3,324). GPU utilization 55% → 82% | RTX 4090 | [history-actor-ranks-2026-09-28](docs/reports/history-actor-ranks-2026-09-28.md) |
+| Learner length groups + page-padded rollout attention + paged KV cache (opt-in) | **1.71x** per training update (149 → 87 s per 10 updates); learner 2.4x. Tier 1–2 only; GPU not yet measured | Apple M4 Pro CPU | [training-stack-refactor-2026-09-29](docs/reports/training-stack-refactor-2026-09-29.md) |
 | C++ rules engine, random play, canonical move generation | **190,533** decisions/s on one core; **1,839,581** on 12 threads | Apple silicon, 14 cores | [M0](docs/reports/M0.md) |
 
 ### A rejected idea
@@ -47,7 +48,7 @@ The history Transformer trains from random initialization with self-play PPO. Af
 | `cpp/` | `gd_core` C++20 engine, unit tests, fuzzer |
 | `python/gd/` | pybind11 package (`gd._gd_core`) |
 | `oracle/` | independent Python rules oracle, used only in tests |
-| `train/` | PPO trainer, history Transformer, KV cache, CUDA Graphs, Triton kernel, DDP actor ranks |
+| `train/` | PPO trainer, history Transformer, KV caches (per-entry and paged), CUDA Graphs, Triton kernel, DDP actor ranks |
 | `bench/` | throughput benchmarks |
 | `docs/reports/` | one report per milestone or experiment |
 

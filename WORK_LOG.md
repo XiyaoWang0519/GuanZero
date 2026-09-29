@@ -1,3 +1,16 @@
+# History trainer refactor and speed options — September 29, 2026
+
+- Refactored the history trainer on top of the production branch: contiguous
+  public streams, one PPO loop for base and DDP trainers, one packed upload
+  and one host sync per minibatch, the collector step split into phases.
+  Tier 1: bitwise identical on CPU (four 6-update configurations, 2-rank DDP).
+- New opt-in, resume-overridable options: paged KV cache (tier 1 on CPU),
+  merged snapshot encoder, learner length groups, page-padded spans (tier 2).
+  CPU (M4 Pro, width 128, 64 envs): learn 70.0 -> 29.5 s per 10 updates with
+  4 length groups; all options 149 -> 87 s (1.71x). No GPU used; CUDA speed
+  and CUDA numerics are open. `bench.history_arms` runs the in-run A/B.
+  [Report](docs/reports/training-stack-refactor-2026-09-29.md).
+
 # Lineage continuation with actor ranks — September 28, 2026
 
 - Continued the overnight large lineage from update 675 to 844 (55.3M
