@@ -498,6 +498,13 @@ class HistoryCollector:
     generator advances identically; snapshot log-probabilities carry FP32
     reduction-order noise (acceptance tier 2). It may be switched between
     ``collect`` calls.
+    ``batch_snapshot_encode`` (opt-in, needs ``kv_cache``; active only in
+    merged steps) also replaces the per-identity public encodes of those rows
+    with one merged encode over stacked encoder weights
+    (``train.history_snapshot_encode``). K/V and memory stay in each identity's
+    cache entries; identities needing more than one prefill chunk fall back to
+    their own ``cache.encode``. Tier 2 again: no random draws, learner encode
+    untouched.
     """
 
     def __init__(self, env: Any, actor: HistoryActor, store: MatchEventStore,
@@ -512,7 +519,8 @@ class HistoryCollector:
                  private_graph_budget_mb: int = 512, private_graph_policy_budget_mb: int = 128,
                  triton_cache: bool = False,
                  triton_min_batch: int = 1,
-                 batch_snapshot_policies: bool = False) -> None:
+                 batch_snapshot_policies: bool = False,
+                 batch_snapshot_encode: bool = False) -> None:
         self.env = env
         self.actor = actor
         self.store = store
@@ -546,6 +554,13 @@ class HistoryCollector:
         if self.batch_snapshot_policies:
             from train.history_snapshot_batch import validate_actor
             validate_actor(actor)
+        if batch_snapshot_encode and not kv_cache:
+            raise ValueError("merged snapshot encode requires the full-history KV cache")
+        self.batch_snapshot_encode = bool(batch_snapshot_encode)
+        self.snapshot_encoders = None   # stacked snapshot encoders, created on first merged encode
+        if self.batch_snapshot_encode:
+            from train.history_snapshot_encode import validate_encoder
+            validate_encoder(actor)
         self.profile = profile
         self.temperature = float(temperature)
         self.epsilon = float(epsilon)
@@ -584,6 +599,8 @@ class HistoryCollector:
                 self.decision_graphs.pop(identity).clear()
         if self.snapshot_heads is not None:
             self.snapshot_heads.retain(set(active) - {LEARNER})
+        if self.snapshot_encoders is not None:
+            self.snapshot_encoders.retain(set(active) - {LEARNER})
 
     @torch.no_grad()
     def _graph_log_probs(self, identity, actor, inputs, encoded):
@@ -620,6 +637,9 @@ class HistoryCollector:
 
     def snapshot_head_metrics(self) -> dict:
         return self.snapshot_heads.metrics() if self.snapshot_heads is not None else {}
+
+    def snapshot_encoder_metrics(self) -> dict:
+        return self.snapshot_encoders.metrics() if self.snapshot_encoders is not None else {}
 
     def _cache(self, identity: int, actor: HistoryActor):
         from train.history_inference import BatchedHistoryCache
@@ -663,10 +683,8 @@ class HistoryCollector:
         return seats
 
     @torch.no_grad()
-    def _merged_snapshot_step(self, groups, actors, layout, fields, prefix, mark):
-        """Per-identity public encodes into one padded memory, then one merged
-        actor call and one Gumbel-max draw per row (uniforms per identity)."""
-        from train.history_snapshot_batch import merged_log_probs, merged_sample
+    def _snapshot_memory(self, groups, actors, layout, fields, prefix, mark):
+        """Each identity's own public encode, copied into one padded memory."""
         width = self.actor.config.width
         memory = None
         for group, actor, (begin, end), (first, last) in zip(
@@ -690,6 +708,24 @@ class HistoryCollector:
             memory[first:last, :span].copy_(encoded[:, :span])
             del encoded
             mark("public_cache_or_collation", "snapshot")
+        return memory
+
+    @torch.no_grad()
+    def _merged_snapshot_step(self, groups, actors, layout, fields, prefix, mark,
+                              encode_plan=None, encode_fields=None):
+        """Per-identity public encodes (or one merged encode) into one padded
+        memory, then one merged actor call and one Gumbel-max draw per row
+        (uniforms per identity)."""
+        from train.history_snapshot_batch import merged_log_probs, merged_sample
+        width = self.actor.config.width
+        if encode_plan is not None:
+            from train.history_snapshot_encode import merged_encode
+            memory = merged_encode(self.snapshot_encoders, encode_plan, encode_fields, self.device)
+            if memory.dtype != torch.float32 or memory.shape != (layout.streams, layout.length, width):
+                raise ValueError("merged snapshot encode needs FP32 memory, one row per stream")
+            mark("public_cache_or_collation", "snapshot")
+        else:
+            memory = self._snapshot_memory(groups, actors, layout, fields, prefix, mark)
         log_probs = merged_log_probs(self.snapshot_heads, layout, fields, memory)
         choice, chosen_logp = merged_sample(log_probs, layout, fields, self.generator)
         mark("actor_and_sampling", "snapshot")
@@ -776,7 +812,7 @@ class HistoryCollector:
                 np.asarray([index[k] for k in keys], np.int64), prefix[rows],
                 obs[rows].astype(np.uint8), seat[rows], cand[src].astype(np.uint8),
                 local, np.repeat(np.arange(len(rows), dtype=np.int64), counts[rows])))
-        layout = merged_actors = None
+        layout = merged_actors = encode_plan = None
         if merged_groups:
             from train.history_snapshot_batch import SnapshotHeads, merged_layout
             if self.snapshot_heads is None:
@@ -787,6 +823,17 @@ class HistoryCollector:
             layout = merged_layout(merged_groups, slots, prefix, obs, seat, cand, offsets,
                                    counts, env_id, match_id)
             host_fields.extend(layout.arrays)
+            if self.batch_snapshot_encode and self.kv_cache:
+                # Entries, counts and the padded token grid are host work: plan
+                # now so the plan's arrays ride the step's single upload.
+                from train.history_snapshot_encode import SnapshotEncoders, plan_encode
+                if self.snapshot_encoders is None:
+                    self.snapshot_encoders = SnapshotEncoders()
+                caches = [self._cache(g.identity, a) for g, a in zip(merged_groups, merged_actors)]
+                encode_plan = plan_encode(self.snapshot_encoders, merged_groups, merged_actors,
+                                          caches, layout.length,
+                                          triton=self.triton_cache and self.device.type == "cuda")
+                host_fields.extend(encode_plan.arrays)
         mark("input_indexing")
         # All groups' decision inputs are known before inference. One aligned
         # upload preserves group/row order and avoids seven transfers per group.
@@ -843,9 +890,14 @@ class HistoryCollector:
         if layout is not None:
             # After the learner, as the per-identity calls were: identical
             # generator order. One merged actor call for every snapshot row.
-            fields = dict(zip(LAYOUT_FIELDS, uploaded[7 * len(groups):]))
+            base = 7 * len(groups)
+            fields = dict(zip(LAYOUT_FIELDS, uploaded[base:base + len(LAYOUT_FIELDS)]))
+            encode_fields = None
+            if encode_plan is not None:
+                from train.history_snapshot_encode import ENCODE_FIELDS
+                encode_fields = dict(zip(ENCODE_FIELDS, uploaded[base + len(LAYOUT_FIELDS):]))
             downloads = self._merged_snapshot_step(merged_groups, merged_actors, layout, fields,
-                                                   prefix, mark)
+                                                   prefix, mark, encode_plan, encode_fields)
             pending_downloads.append((-1, layout.rows, downloads))
             for group in merged_groups:
                 self.policy_decisions[group.identity] = (self.policy_decisions.get(group.identity, 0)
@@ -908,6 +960,11 @@ class HistoryCollector:
                 validate_actor(self.actor)
             # Snapshot seats no longer use private graphs; free their budget.
             self.release_snapshot_graphs()
+        if not (self.batch_snapshot_policies and self.batch_snapshot_encode):
+            self.snapshot_encoders = None   # inactive: release the stacked copy
+        elif self.snapshot_encoders is None:
+            from train.history_snapshot_encode import validate_encoder
+            validate_encoder(self.actor)
         if not self.private_graphs:
             for _ in range(int(steps)):
                 self.step(stats)
