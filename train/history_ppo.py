@@ -105,6 +105,10 @@ class HistoryPPOConfig:
     # Diagnostic A/B inside one process: "N:on,M:off,..." blocks of this process's
     # updates; the last block's arm persists. Empty: batch_snapshot_policies throughout.
     batch_snapshot_policies_schedule: str = ""
+    # With the merged arm on: one merged public encode for all snapshot identities
+    # of a vector step (train/history_snapshot_encode.py) instead of one KV-cache
+    # encode per identity. Tier 2 like the merged head; K/V stay per identity.
+    batch_snapshot_encode: bool = False
     # Release the CUDA caching allocator's free blocks (torch.cuda.empty_cache)
     # after collect and after learn. Allocator timing only; no numeric change.
     # None follows the update's merged-snapshot arm: with the arm on, no snapshot
@@ -155,6 +159,11 @@ class HistoryPPOConfig:
                 self.window or self.response_mode == "explicit"):
             raise ValueError("batch_snapshot_policies requires full history and no explicit "
                              "response bridge")
+        if self.batch_snapshot_encode and not (self.batch_snapshot_policies
+                                               or self.batch_snapshot_policies_schedule):
+            raise ValueError("batch_snapshot_encode requires batch_snapshot_policies")
+        if self.batch_snapshot_encode and not self.rollout_kv_cache:
+            raise ValueError("batch_snapshot_encode requires rollout_kv_cache")
         if (self.rollout_private_graphs or self.rollout_triton_cache) and not self.rollout_kv_cache:
             raise ValueError('CUDA rollout optimizations require rollout_kv_cache')
         if self.rollout_wide_projection and not self.rollout_batched_attention:
@@ -214,7 +223,8 @@ def parse_arm_schedule(schedule: str) -> list[tuple[int, bool]]:
 # Config fields a resume may change (``--resume-set``): the layout of the batch over
 # processes and threads, checkpoint cadence and graph budgets (the per-update batch
 # stays num_envs x world size), the diagnostic collection profile (timing only),
-# merged snapshot inference (tier 2: frozen snapshot seats' float-order noise only),
+# merged snapshot inference and encode (tier 2: frozen snapshot seats' float-order
+# noise only),
 # the allocator cache trim (allocator timing only), plus snapshot_updates, which
 # changes dynamics.
 RESUME_OVERRIDES = frozenset({"num_envs", "num_threads", "minibatch_matches", "torch_threads",
@@ -223,7 +233,7 @@ RESUME_OVERRIDES = frozenset({"num_envs", "num_threads", "minibatch_matches", "t
                               "rollout_triton_min_batch", "snapshot_updates",
                               "profile_collection", "profile_collection_warmup",
                               "batch_snapshot_policies", "batch_snapshot_policies_schedule",
-                              "rollout_trim_cuda_cache"})
+                              "batch_snapshot_encode", "rollout_trim_cuda_cache"})
 
 
 def parse_resume_overrides(items: list[str] | None) -> dict[str, Any]:
@@ -437,7 +447,8 @@ class HistoryTrainer:
                                 profile=self.collection_profiled(),
                                 temperature=config.rollout_temperature,
                                 epsilon=config.rollout_epsilon,
-                                batch_snapshot_policies=self.snapshot_batching())
+                                batch_snapshot_policies=self.snapshot_batching(),
+                                batch_snapshot_encode=config.batch_snapshot_encode)
 
     def snapshot_batching(self) -> bool:
         """Merged snapshot inference for this update (the schedule's block, if any)."""
@@ -534,6 +545,12 @@ class HistoryTrainer:
                           "batch_snapshot_policies": self.config.batch_snapshot_policies,
                           "batch_snapshot_policies_schedule":
                               self.config.batch_snapshot_policies_schedule,
+                          "batch_snapshot_encode": self.config.batch_snapshot_encode,
+                          "snapshot_encode": "with the merged arm: one merged public encode "
+                                             "over stacked snapshot encoder weights; K/V and "
+                                             "memory stay in each identity's cache; identities "
+                                             "needing more than one prefill chunk use their "
+                                             "own cache.encode",
                           "rollout_trim_cuda_cache": self.config.rollout_trim_cuda_cache,
                           "cuda_cache_trim": "torch.cuda.empty_cache() after collect and after "
                                              "learn (None: with the merged-snapshot arm); "
@@ -812,6 +829,9 @@ class HistoryTrainer:
             "cuda_trim": trims,
             "cuda_trim_seconds": sum(record["seconds"] for record in trims.values()),
             "snapshot_heads": self.collector.snapshot_head_metrics(),
+            "rollout_batch_snapshot_encode": (self.collector.batch_snapshot_policies
+                                              and self.collector.batch_snapshot_encode),
+            "snapshot_encoders": self.collector.snapshot_encoder_metrics(),
             "rollout_epsilon_pick_fraction": (collected.epsilon_picks / collected.learner_rows
                                               if collected.learner_rows else None),
             "rollout_behaviour_entropy": (collected.behaviour_entropy_sum / collected.learner_rows
@@ -962,6 +982,10 @@ def build_parser() -> argparse.ArgumentParser:
                              "actor call (FP32; snapshot seats' reduction order differs)")
     parser.add_argument("--batch-snapshot-policies-schedule", default="",
                         help="diagnostic A/B: N:on|off blocks of this process's updates")
+    parser.add_argument("--batch-snapshot-encode", action="store_true",
+                        help="with --batch-snapshot-policies and --rollout-kv-cache: one merged "
+                             "public encode for all snapshot identities of a vector step (FP32; "
+                             "snapshot seats' reduction order differs)")
     parser.add_argument("--rollout-trim-cuda-cache", type=optional_bool, default=None,
                         metavar="auto|true|false",
                         help="torch.cuda.empty_cache() after collect and after learn "

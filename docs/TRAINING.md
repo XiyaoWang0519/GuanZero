@@ -129,6 +129,15 @@ acceptance tier 2 for snapshot seats only (FP32 reduction-order noise; the
 same uniforms from the same generator in the same order); learner rows and
 sampling are unchanged and snapshot seats bypass private graphs. CPU tests
 pass; CUDA correctness and speed are not yet measured.
+`--batch-snapshot-encode` (off by default; needs the merged arm and
+`--rollout-kv-cache`; resume-settable and recorded) also replaces that step's
+per-identity public KV-cache encodes with one merged encode over stacked
+snapshot encoder weights (`train/history_snapshot_encode.py`). K/V and memory
+stay in each identity's cache entries; an identity needing more than one
+prefill chunk falls back to its own `cache.encode` (counted in the
+`snapshot_encoders` metrics). Tier 2 like the merged head, no random draws.
+CPU tests pass (memory/KV within 1e-6, learner rows and sampler bitwise); the
+CUDA gate `tests/test_history_snapshot_encode_cuda.py` and speed are not yet run.
 `rollout_trim_cuda_cache` (`--rollout-trim-cuda-cache auto|true|false`,
 resume-settable and recorded) calls `torch.cuda.empty_cache()` after collect and
 after learn; `auto` (default) follows the merged-snapshot arm, because with the
