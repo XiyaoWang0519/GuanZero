@@ -118,11 +118,14 @@ class HistoryDDPTrainer(HistoryTrainer):
         count = int(round(float(host[-1])))
         if count == 0:
             return 0
+        # The division allocates a fresh tensor, so each gradient can be a view
+        # of its slice instead of a per-parameter copy; clip_grad_norm_ scales
+        # the views in place over disjoint slices.
         flat = host[:-1].to(flat.device) / count
         begin = 0
         for p in params:
             n = p.numel()
-            p.grad = flat[begin:begin + n].view_as(p).clone()
+            p.grad = flat[begin:begin + n].view_as(p)
             begin += n
         return count
 

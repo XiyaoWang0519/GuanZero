@@ -740,14 +740,18 @@ class HistoryTrainer:
                 terms = self.backward_minibatch(rows)
                 if self.reduce_gradients(terms is not None) == 0:
                     continue
-                encoder = [p.grad.detach().float().norm() ** 2 for p in encoder_parameters
-                           if p.grad is not None]
+                # Per-tensor encoder norms in one foreach call rather than a few
+                # kernels per tensor; squared and summed as before.
+                grads = [p.grad.detach().float() for p in encoder_parameters
+                         if p.grad is not None]
+                encoder = (torch.stack(torch._foreach_norm(grads)) ** 2).unbind() if grads else ()
                 actor = torch.nn.utils.clip_grad_norm_(self.actor.parameters(), cfg.grad_clip)
                 critic = torch.nn.utils.clip_grad_norm_(self.critic.parameters(), cfg.grad_clip)
                 present = [key for key in keys if terms is not None and key in terms]
-                host = torch.stack([actor.float(), critic.float(), *encoder,
-                                    *(terms[key].detach().float() for key in present)]
-                                   ).tolist()
+                # clip_grad_norm_ returns a CPU zero when a module has no gradient.
+                host = torch.stack([value.detach().to(self.device, torch.float32) for value in
+                                    (actor, critic, *encoder,
+                                     *(terms[key] for key in present))]).tolist()
                 actor, critic = host[0], host[1]
                 if not (math.isfinite(actor) and math.isfinite(critic)):
                     raise FloatingPointError("non-finite gradient; stopping before the step")
