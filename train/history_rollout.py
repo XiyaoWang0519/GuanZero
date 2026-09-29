@@ -610,6 +610,14 @@ class HistoryCollector:
     def graph_metrics(self) -> dict:
         return {str(identity): graph.metrics() for identity, graph in self.decision_graphs.items()}
 
+    def release_snapshot_graphs(self) -> int:
+        """Clear every non-learner identity's private graphs; returns how many.
+        Their pool blocks become free allocator cache (empty_cache returns them)."""
+        released = [identity for identity in self.decision_graphs if identity != LEARNER]
+        for identity in released:
+            self.decision_graphs.pop(identity).clear()
+        return len(released)
+
     def snapshot_head_metrics(self) -> dict:
         return self.snapshot_heads.metrics() if self.snapshot_heads is not None else {}
 
@@ -899,8 +907,7 @@ class HistoryCollector:
                 from train.history_snapshot_batch import validate_actor
                 validate_actor(self.actor)
             # Snapshot seats no longer use private graphs; free their budget.
-            for identity in [i for i in self.decision_graphs if i != LEARNER]:
-                self.decision_graphs.pop(identity).clear()
+            self.release_snapshot_graphs()
         if not self.private_graphs:
             for _ in range(int(steps)):
                 self.step(stats)

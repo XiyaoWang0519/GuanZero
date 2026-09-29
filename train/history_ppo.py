@@ -104,6 +104,12 @@ class HistoryPPOConfig:
     # Diagnostic A/B inside one process: "N:on,M:off,..." blocks of this process's
     # updates; the last block's arm persists. Empty: batch_snapshot_policies throughout.
     batch_snapshot_policies_schedule: str = ""
+    # Release the CUDA caching allocator's free blocks (torch.cuda.empty_cache)
+    # after collect and after learn. Allocator timing only; no numeric change.
+    # None follows the update's merged-snapshot arm: with the arm on, no snapshot
+    # private graphs are captured, so nothing else ever trims and each process's
+    # reserved memory only ratchets upward.
+    rollout_trim_cuda_cache: bool | None = None
     rollout_device: str | None = None  # None shares the learner device
     # learner
     lr: float = 3e-4
@@ -208,13 +214,15 @@ def parse_arm_schedule(schedule: str) -> list[tuple[int, bool]]:
 # processes and threads, checkpoint cadence and graph budgets (the per-update batch
 # stays num_envs x world size), the diagnostic collection profile (timing only),
 # merged snapshot inference (tier 2: frozen snapshot seats' float-order noise only),
-# plus snapshot_updates, which changes dynamics.
+# the allocator cache trim (allocator timing only), plus snapshot_updates, which
+# changes dynamics.
 RESUME_OVERRIDES = frozenset({"num_envs", "num_threads", "minibatch_matches", "torch_threads",
                               "checkpoint_updates", "ddp_global_minibatch",
                               "rollout_graph_budget_mb", "rollout_graph_policy_budget_mb",
                               "rollout_triton_min_batch", "snapshot_updates",
                               "profile_collection", "profile_collection_warmup",
-                              "batch_snapshot_policies", "batch_snapshot_policies_schedule"})
+                              "batch_snapshot_policies", "batch_snapshot_policies_schedule",
+                              "rollout_trim_cuda_cache"})
 
 
 def parse_resume_overrides(items: list[str] | None) -> dict[str, Any]:
@@ -226,7 +234,10 @@ def parse_resume_overrides(items: list[str] | None) -> dict[str, Any]:
         key = key.strip().replace("-", "_")
         if not sep or key not in RESUME_OVERRIDES:
             raise ValueError(f"--resume-set takes KEY=VALUE with KEY in {sorted(RESUME_OVERRIDES)}")
-        if "bool" in str(types[key]):
+        if "None" in str(types[key]) and "bool" in str(types[key]) and raw.lower() in (
+                "auto", "none"):
+            values[key] = None
+        elif "bool" in str(types[key]):
             if raw.lower() not in ("true", "false", "1", "0"):
                 raise ValueError(f"{key} needs true/false")
             values[key] = raw.lower() in ("true", "1")
@@ -410,6 +421,34 @@ class HistoryTrainer:
             done -= count
         return blocks[-1][1]
 
+    def cuda_cache_trimmed(self) -> bool:
+        """Trim the allocator cache in this update (explicit, or the merged arm)."""
+        if self.config.rollout_trim_cuda_cache is None:
+            return self.snapshot_batching()
+        return bool(self.config.rollout_trim_cuda_cache)
+
+    def trim_cuda_cache(self, point: str, trims: dict[str, dict]) -> None:
+        """``torch.cuda.empty_cache()`` with reserved/allocated bytes before and
+        after and the seconds it took, recorded under ``trims[point]``. Only free
+        cached blocks are returned to the driver; live tensors, KV caches and
+        captured graphs are untouched, so nothing computed changes. A no-op
+        (zero bytes) without CUDA."""
+        devices = [d for d in (self.rollout_device, self.device) if d.type == "cuda"]
+        begin = time.perf_counter()
+        record = dict(reserved_before=0, allocated_before=0, reserved_after=0,
+                      allocated_after=0)
+        if devices:
+            device = devices[0]
+            torch.cuda.synchronize(device)
+            record.update(reserved_before=torch.cuda.memory_reserved(device),
+                          allocated_before=torch.cuda.memory_allocated(device))
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize(device)
+            record.update(reserved_after=torch.cuda.memory_reserved(device),
+                          allocated_after=torch.cuda.memory_allocated(device))
+        record["seconds"] = time.perf_counter() - begin
+        trims[point] = record
+
     def collection_profiled(self) -> bool:
         """Profile this update's collection: on, after this process's warmup updates."""
         return (self.config.profile_collection and int(self.progress["updates"])
@@ -465,6 +504,10 @@ class HistoryTrainer:
                           "batch_snapshot_policies": self.config.batch_snapshot_policies,
                           "batch_snapshot_policies_schedule":
                               self.config.batch_snapshot_policies_schedule,
+                          "rollout_trim_cuda_cache": self.config.rollout_trim_cuda_cache,
+                          "cuda_cache_trim": "torch.cuda.empty_cache() after collect and after "
+                                             "learn (None: with the merged-snapshot arm); "
+                                             "allocator timing only",
                           "snapshot_batching": "merged head over stacked snapshot weights; "
                                                "per-identity public KV cache; snapshot seats "
                                                "bypass private graphs",
@@ -658,16 +701,32 @@ class HistoryTrainer:
         # Merged snapshot inference changes only how frozen snapshot seats are
         # evaluated (tier 2), so it may switch between updates as well.
         self.collector.batch_snapshot_policies = self.snapshot_batching()
+        # Allocator cache trim (allocator timing only). Points: after collect,
+        # so learn (the phase with the highest device readings) starts from the
+        # live set rather than on top of collection's freed variable-shape
+        # blocks; after learn, so collection does not sit on the learner's
+        # activation cache. Switching the merged arm on releases the snapshot
+        # private graphs; their pools only return to the driver on a trim.
+        trim = self.cuda_cache_trimmed()
+        trims: dict[str, dict] = {}
+        if trim and self.collector.batch_snapshot_policies:
+            if self.collector.release_snapshot_graphs():
+                self.trim_cuda_cache("graphs_released", trims)
         t0 = time.perf_counter()
         collected = self.collect()
         if self.device.type == "cuda":
             torch.cuda.synchronize(self.device)
         t1 = time.perf_counter()
         collection_cache = self.collector.cache_metrics()
+        if trim:
+            self.trim_cuda_cache("after_collect", trims)
+        t1_learn = time.perf_counter()
         stats = self.learn()
         if self.device.type == "cuda":
             torch.cuda.synchronize(self.device)
         t2 = time.perf_counter()
+        if trim:
+            self.trim_cuda_cache("after_learn", trims)
         cited = self.buffer.next_iteration()
         pruned = self.store.prune(cited)
         self.progress["updates"] += 1
@@ -690,9 +749,9 @@ class HistoryTrainer:
             "step_rounds": collected.rounds, "step_matches": collected.matches,
             "round_gain": collected.gain / collected.rounds if collected.rounds else None,
             "decisions_per_sec": collected.decisions / max(t1 - t0, 1e-9),
-            "collect_seconds": t1 - t0, "learn_seconds": t2 - t1,
-            "learn_decisions_per_sec": stats["update_samples"] / max(t2 - t1, 1e-9),
-            "learn_exposures_per_sec": stats["update_samples"] * self.config.epochs / max(t2 - t1, 1e-9),
+            "collect_seconds": t1 - t0, "learn_seconds": t2 - t1_learn,
+            "learn_decisions_per_sec": stats["update_samples"] / max(t2 - t1_learn, 1e-9),
+            "learn_exposures_per_sec": stats["update_samples"] * self.config.epochs / max(t2 - t1_learn, 1e-9),
             "learner_collect_decisions_per_sec": collected.learner_rows / max(t1 - t0, 1e-9),
             "mean_prefix": collected.mean_prefix, "max_prefix": collected.prefix_max,
             "store_matches": len(self.store), "store_tokens": self.store.tokens,
@@ -716,6 +775,9 @@ class HistoryTrainer:
             "collection_policy_batches": collected.policy_batches,
             "collection_steps": collected.steps,
             "rollout_batch_snapshot_policies": self.collector.batch_snapshot_policies,
+            "rollout_trim_cuda_cache": trim,
+            "cuda_trim": trims,
+            "cuda_trim_seconds": sum(record["seconds"] for record in trims.values()),
             "snapshot_heads": self.collector.snapshot_head_metrics(),
             "rollout_epsilon_pick_fraction": (collected.epsilon_picks / collected.learner_rows
                                               if collected.learner_rows else None),
@@ -830,6 +892,10 @@ def build_parser() -> argparse.ArgumentParser:
                              "actor call (FP32; snapshot seats' reduction order differs)")
     parser.add_argument("--batch-snapshot-policies-schedule", default="",
                         help="diagnostic A/B: N:on|off blocks of this process's updates")
+    parser.add_argument("--rollout-trim-cuda-cache", type=optional_bool, default=None,
+                        metavar="auto|true|false",
+                        help="torch.cuda.empty_cache() after collect and after learn "
+                             "(allocator timing only); auto follows the merged-snapshot arm")
     parser.add_argument("--profile-collection", action="store_true")
     parser.add_argument("--profile-collection-warmup", type=int, default=0,
                         help="with --profile-collection: unprofiled updates of this process "
@@ -844,6 +910,16 @@ def build_parser() -> argparse.ArgumentParser:
                         help="with --resume: change a batch-layout field (recorded); "
                              "see RESUME_OVERRIDES")
     return parser
+
+
+def optional_bool(raw: str) -> bool | None:
+    """``auto``/``none`` -> None, ``true``/``1`` -> True, ``false``/``0`` -> False."""
+    value = raw.lower()
+    if value in ("auto", "none"):
+        return None
+    if value not in ("true", "false", "1", "0"):
+        raise argparse.ArgumentTypeError("expected auto, true or false")
+    return value in ("true", "1")
 
 
 def config_from_args(args: argparse.Namespace) -> HistoryPPOConfig:

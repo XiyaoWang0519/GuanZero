@@ -32,7 +32,9 @@ TIMING_KEYS = {"collection_phase_seconds", "collection_profile_synchronized",
                "collection_policy_batches", "decisions_per_sec", "collect_seconds",
                "learn_seconds", "learn_decisions_per_sec", "learn_exposures_per_sec",
                "learner_collect_decisions_per_sec", "elapsed_seconds",
-               "rollout_batch_snapshot_policies", "snapshot_heads"}
+               "rollout_batch_snapshot_policies", "snapshot_heads",
+               # the allocator cache trim follows the merged arm by default
+               "rollout_trim_cuda_cache", "cuda_trim", "cuda_trim_seconds"}
 
 
 @pytest.fixture(params=["cpu", "cuda"])
