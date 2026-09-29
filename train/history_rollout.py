@@ -152,6 +152,18 @@ def ragged_index(starts: np.ndarray, counts: np.ndarray) -> np.ndarray:
     return first + np.arange(total, dtype=np.int64)
 
 
+# Per-row learner tensors of a PPO minibatch besides the actor inputs.
+TRAINING_FIELDS = ("logp", "behaviour_logp", "advantage", "returns", "hidden")
+
+
+@dataclass
+class TrainingBatch:
+    """One PPO minibatch on the learner device (``SequenceRolloutBuffer.training_batch``)."""
+    inputs: DecisionInputs
+    chosen: torch.Tensor                 # flat index of each row's chosen candidate
+    fields: dict[str, torch.Tensor]      # TRAINING_FIELDS and extras, one row each
+
+
 @dataclass
 class Trajectory:
     env: int
@@ -394,6 +406,16 @@ class SequenceRolloutBuffer:
         row's ``prefix`` is what it read at collection, however many tokens
         the match has gained since. ``streams`` overrides the store's streams
         per match (tests truncate them to check prefix invariance)."""
+        batch = self.training_batch(rows, store, device, streams, fields=())
+        return batch.inputs, batch.chosen
+
+    def training_batch(self, rows: np.ndarray, store: MatchEventStore, device,
+                       streams: dict[tuple[int, int], PublicStream] | None = None, *,
+                       fields: Sequence[str] = TRAINING_FIELDS,
+                       extra: dict[str, np.ndarray] | None = None) -> "TrainingBatch":
+        """``decision_inputs`` plus the rows' ``fields`` (stored row data, or
+        ``advantage``/``returns`` from ``finalize``) and ``extra`` host arrays,
+        all uploaded with one packed copy."""
         data = self.compact()
         rows = np.asarray(rows, np.int64)
         keys = list(zip(data["env"][rows].tolist(), data["match"][rows].tolist()))
@@ -406,19 +428,19 @@ class SequenceRolloutBuffer:
                 raise ValueError("a stored row cites more history than its match has")
         counts = data["cand_count"][rows]
         src = ragged_index(data["cand_start"][rows], counts)
-        offsets = np.concatenate(([0], np.cumsum(counts)))
-        inputs = DecisionInputs(
-            streams=StreamBatch.from_streams(picked, device),
-            match_index=torch.as_tensor([index[key] for key in keys], dtype=torch.long,
-                                        device=device),
-            prefix=torch.as_tensor(prefix, dtype=torch.long, device=device),
-            obs=torch.as_tensor(data["obs"][rows], device=device),
-            seat=torch.as_tensor(data["seat"][rows], dtype=torch.long, device=device),
-            cand=torch.as_tensor(data["cand"][src], device=device),
-            offsets=torch.as_tensor(offsets, dtype=torch.long, device=device))
-        chosen = torch.as_tensor(offsets[:-1] + data["chosen"][rows], dtype=torch.long,
-                                 device=device)
-        return inputs, chosen
+        offsets = np.concatenate(([0], np.cumsum(counts))).astype(np.int64)
+        named = {name: (getattr(self, name) if name in ("advantage", "returns") else data[name])[rows]
+                 for name in fields}
+        named.update(extra or {})
+        host = (*StreamBatch.host_arrays([stream.arrays() for stream in picked]),
+                np.asarray([index[key] for key in keys], np.int64), prefix,
+                data["obs"][rows], data["seat"][rows], data["cand"][src], offsets,
+                offsets[:-1] + data["chosen"][rows], *named.values())
+        uploaded = upload_arrays(host, device)
+        inputs = DecisionInputs(streams=StreamBatch(*uploaded[:4]), match_index=uploaded[4],
+                                prefix=uploaded[5], obs=uploaded[6], seat=uploaded[7],
+                                cand=uploaded[8], offsets=uploaded[9])
+        return TrainingBatch(inputs, uploaded[10], dict(zip(named, uploaded[11:])))
 
 
 # ---- collector -------------------------------------------------------------------

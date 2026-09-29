@@ -45,7 +45,7 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 
 from train import history_ppo
-from train.history_ppo import HistoryPPOConfig, HistoryTrainer, config_from_args, grad_norm
+from train.history_ppo import HistoryPPOConfig, HistoryTrainer, config_from_args
 
 RANK_SEED_STRIDE = 7919
 RANK_ENV_STRIDE = 10_000_000
@@ -105,6 +105,8 @@ class HistoryDDPTrainer(HistoryTrainer):
 
     def reduce_gradients(self, real: bool) -> int:
         """Average the gradients of ranks that had a real minibatch; returns that count."""
+        if self.world_size == 1:
+            return super().reduce_gradients(real)
         params = self.parameters_all()
         flat = torch.cat([(p.grad if (real and p.grad is not None) else torch.zeros_like(p)).reshape(-1)
                           for p in params] + [torch.ones(1, dtype=params[0].dtype, device=params[0].device)
@@ -149,77 +151,34 @@ class HistoryDDPTrainer(HistoryTrainer):
             self.advantage_moments = (mean, std)
         return len(rows) * ranks / n
 
-    # -- learning -----------------------------------------------------------------
+    # -- learning: the base PPO loop with collective hooks -------------------------
 
-    def learn(self) -> dict[str, Any]:
+    def collective(self) -> bool:
+        return self.world_size > 1
+
+    def epoch_batches(self, samples: int):
+        """This rank's minibatches, padded with ``None`` to the longest rank's count
+        so every rank takes the same optimizer steps."""
         if self.world_size == 1:
-            return super().learn()
-        cfg = self.config
-        self.collector.invalidate_learner_cache()
-        values = self.refresh_values()
-        samples = self.buffer.finalize(values, cfg.gamma, cfg.gae_lambda)
-        stats: dict[str, Any] = {"update_samples": samples, "minibatches": 0}
-        stats.update({key: None for key in self.STAT_KEYS})
-        stats.update({"mean_reward": None, "mean_abs_reward": None, "mean_return": None,
-                      "explained_variance": None})
-        if samples:
-            rows = self.buffer.samples
-            returns = self.buffer.returns[rows]
-            variance = float(np.var(returns))
-            stats["explained_variance"] = (1.0 - float(np.var(returns - values[rows])) / variance
-                                           if variance > 0 else 0.0)
-            stats["mean_return"] = float(returns.mean())
-            prefixes = self.buffer.compact()["prefix"][rows]
-            stats["learn_mean_prefix"] = float(prefixes.mean())
-            stats["learn_max_prefix"] = int(prefixes.max())
-            terminal = self.buffer.done[rows]
-            rewards = self.buffer.reward[rows][terminal]
-            stats["mean_reward"] = float(rewards.mean()) if rewards.size else None
-            stats["mean_abs_reward"] = float(np.abs(rewards).mean()) if rewards.size else None
-        totals = {key: 0.0 for key in self.STAT_KEYS}
-        count = steps = 0
-        for _ in range(cfg.epochs):
-            batches = list(self.minibatches()) if samples else []
-            longest = torch.tensor([len(batches)], dtype=torch.long)
-            dist.all_reduce(longest, op=dist.ReduceOp.MAX)
-            for index in range(int(longest)):
-                real = index < len(batches)
-                self.actor_optimizer.zero_grad(set_to_none=True)
-                self.critic_optimizer.zero_grad(set_to_none=True)
-                scale = self.global_minibatch(batches[index] if real else None)
-                if real:
-                    try:
-                        terms = self.minibatch_loss(batches[index])
-                    finally:
-                        self.advantage_moments = None
-                    (scale * terms["policy_total"]).backward()
-                    (scale * terms["value_total"]).backward()
-                if self.reduce_gradients(real) == 0:
-                    continue
-                encoder = grad_norm(self.actor.stream.parameters())
-                actor = float(torch.nn.utils.clip_grad_norm_(self.actor.parameters(), cfg.grad_clip))
-                critic = float(torch.nn.utils.clip_grad_norm_(self.critic.parameters(), cfg.grad_clip))
-                if not (math.isfinite(actor) and math.isfinite(critic)):
-                    raise FloatingPointError("non-finite gradient; stopping before the step")
-                self.actor_optimizer.step()
-                self.critic_optimizer.step()
-                steps += 1
-                if real:
-                    for key in self.STAT_KEYS:
-                        if key in terms:
-                            totals[key] += float(terms[key].detach())
-                    totals["actor_grad_norm"] += actor
-                    totals["encoder_grad_norm"] += encoder
-                    totals["critic_grad_norm"] += critic
-                    count += 1
-        # Every rank took the same optimizer steps; snapshot decisions use this count.
-        stats["minibatches"] = steps
-        stats["local_minibatches"] = count
-        if count:
-            for key in self.STAT_KEYS:
-                stats[key] = totals[key] / count
-        self.progress["samples"] += samples
-        return stats
+            return super().epoch_batches(samples)
+        batches = list(self.minibatches()) if samples else []
+        longest = torch.tensor([len(batches)], dtype=torch.long)
+        dist.all_reduce(longest, op=dist.ReduceOp.MAX)
+        return [batches[i] if i < len(batches) else None for i in range(int(longest))]
+
+    def backward_minibatch(self, rows: np.ndarray | None) -> dict[str, torch.Tensor] | None:
+        if self.world_size == 1:
+            return super().backward_minibatch(rows)
+        scale = self.global_minibatch(rows)
+        if rows is None:
+            return None
+        try:
+            terms = self.minibatch_loss(rows)
+        finally:
+            self.advantage_moments = None
+        (scale * terms["policy_total"]).backward()
+        (scale * terms["value_total"]).backward()
+        return terms
 
     def update(self) -> dict[str, Any]:
         line = super().update()

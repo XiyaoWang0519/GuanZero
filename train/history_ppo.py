@@ -255,14 +255,6 @@ def segment_entropy(log_probs: torch.Tensor, rows: torch.Tensor, count: int) -> 
         0, rows, terms)
 
 
-def grad_norm(parameters) -> float:
-    total = 0.0
-    for p in parameters:
-        if p.grad is not None:
-            total += float(p.grad.detach().float().norm() ** 2)
-    return math.sqrt(total)
-
-
 class HistoryTrainer:
     """Collect, learn, checkpoint. ``update()`` is one PPO iteration."""
 
@@ -574,29 +566,30 @@ class HistoryTrainer:
 
     def minibatch_loss(self, rows: np.ndarray) -> dict[str, torch.Tensor]:
         cfg = self.config
-        buffer = self.buffer
+        predict = cfg.response_mode != "none"
+        extra = ({"response_target": opponent_response_labels(self.buffer, self.store, rows)}
+                 if predict else None)
+        # Actor inputs, stored row data and response targets: one packed upload.
+        batch = self.buffer.training_batch(rows, self.store, self.device, extra=extra)
+        inputs, chosen, row = batch.inputs, batch.chosen, batch.fields
         response_stats = {}
-        if cfg.response_mode == "none":
-            log_prob, entropy = self.recompute_log_probs(rows)
+        if not predict:
+            all_log_probs = self.actor.candidate_log_probs(inputs)
         else:
             from train.history_model import segment_log_softmax
-            inputs, chosen = buffer.decision_inputs(rows, self.store, self.device)
             state = self.actor.decision_states(None, inputs)
             logits, response = self.actor.candidate_outputs(state, inputs.cand, inputs.offsets,
                                                             predict=True)
             all_log_probs = segment_log_softmax(logits, inputs.rows, inputs.decisions)
-            log_prob = all_log_probs[chosen]
-            entropy = segment_entropy(all_log_probs, inputs.rows, inputs.decisions)
-            targets = torch.as_tensor(opponent_response_labels(buffer, self.store, rows),
-                                      device=self.device)
+            targets = row["response_target"]
             prediction = response[chosen]   # outcomes exist ONLY for executed actions
             response_stats = {"response_loss": F.cross_entropy(prediction, targets),
                               "response_accuracy": (prediction.argmax(-1) == targets).float().mean(),
                               "response_event_fraction": (targets != 0).float().mean()}
-        old = torch.as_tensor(buffer.compact()["logp"][rows], device=self.device)
-        behaviour = torch.as_tensor(buffer.compact()["behaviour_logp"][rows], device=self.device)
-        advantage = torch.as_tensor(buffer.advantage[rows], device=self.device)
-        returns = torch.as_tensor(buffer.returns[rows], device=self.device)
+        log_prob = all_log_probs[chosen]
+        entropy = segment_entropy(all_log_probs, inputs.rows, inputs.decisions)
+        old, behaviour = row["logp"], row["behaviour_logp"]
+        advantage, returns = row["advantage"], row["returns"]
         log_ratio = log_prob - old
         ratio = log_ratio.exp()
         if self.advantage_moments is not None:   # data parallel: the cross-rank minibatch
@@ -618,10 +611,7 @@ class HistoryTrainer:
         policy_total = surrogate - cfg.entropy * entropy.mean()
         if response_stats:
             policy_total = policy_total + cfg.response_coef * response_stats["response_loss"]
-        data = buffer.compact()
-        obs = torch.as_tensor(data["obs"][rows], device=self.device)
-        hidden = torch.as_tensor(data["hidden"][rows], device=self.device)
-        value_loss = F.mse_loss(self.critic(obs, hidden), returns)
+        value_loss = F.mse_loss(self.critic(inputs.obs, row["hidden"]), returns)
         with torch.no_grad():
             approx_kl = ((ratio - 1) - log_ratio).mean()
             clip_fraction = ((ratio - 1).abs() > cfg.clip).float().mean()
@@ -633,17 +623,21 @@ class HistoryTrainer:
                 "ratio_deviation": ratio_deviation, "behaviour_weight_mean": weight.mean(),
                 "behaviour_weight_cap_fraction": weight_capped, **response_stats}
 
-    def learn(self) -> dict[str, Any]:
+    def learn_summary(self) -> tuple[dict[str, Any], int]:
+        """Values, GAE and the update's data statistics; returns ``(stats, samples)``.
+
+        ``stats`` holds every learning key (``None`` until ``learn`` fills it).
+        """
         cfg = self.config
         self.collector.invalidate_learner_cache()
         values = self.refresh_values()
         samples = self.buffer.finalize(values, cfg.gamma, cfg.gae_lambda)
         stats: dict[str, Any] = {"update_samples": samples, "minibatches": 0}
         stats.update({key: None for key in self.STAT_KEYS})
+        stats.update({"mean_reward": None, "mean_abs_reward": None, "mean_return": None,
+                      "explained_variance": None})
         if samples == 0:
-            stats.update({"mean_reward": None, "mean_abs_reward": None, "mean_return": None,
-                          "explained_variance": None})
-            return stats
+            return stats, samples
         rows = self.buffer.samples
         returns = self.buffer.returns[rows]
         variance = float(np.var(returns))
@@ -659,34 +653,82 @@ class HistoryTrainer:
         # the magnitude is the levels at stake per finished trajectory.
         stats["mean_reward"] = float(rewards.mean()) if rewards.size else None
         stats["mean_abs_reward"] = float(np.abs(rewards).mean()) if rewards.size else None
+        return stats, samples
+
+    # Hooks that data-parallel training overrides (train/history_ddp.py).
+
+    def epoch_batches(self, samples: int) -> Iterator[np.ndarray | None]:
+        """One epoch's minibatch rows; ``None`` is a step without local data."""
+        return self.minibatches()
+
+    def backward_minibatch(self, rows: np.ndarray | None) -> dict[str, torch.Tensor] | None:
+        """Loss terms of ``rows`` with their gradients accumulated."""
+        terms = self.minibatch_loss(rows)
+        terms["policy_total"].backward()
+        terms["value_total"].backward()
+        return terms
+
+    def reduce_gradients(self, real: bool) -> int:
+        """Number of minibatches in the gradient about to be applied (0 skips the step)."""
+        return 1
+
+    def collective(self) -> bool:
+        """Whether learning runs collectives, so every step happens on every rank."""
+        return False
+
+    def learn(self) -> dict[str, Any]:
+        cfg = self.config
+        stats, samples = self.learn_summary()
+        if samples == 0 and not self.collective():
+            return stats
+        # Loss terms and gradient norms stay on the device until one transfer per
+        # minibatch, which also carries the finiteness check before the step.
+        # Each value is the same FP32 number the per-term float() reads gave, and
+        # the totals add them in the same order in double precision.
+        keys = [key for key in self.STAT_KEYS
+                if key not in ("actor_grad_norm", "encoder_grad_norm", "critic_grad_norm")]
         totals = {key: 0.0 for key in self.STAT_KEYS}
-        count = 0
+        count = steps = 0
+        encoder_parameters = list(self.actor.stream.parameters())
         for _ in range(cfg.epochs):
-            for batch in self.minibatches():
-                terms = self.minibatch_loss(batch)
+            for rows in self.epoch_batches(samples):
                 self.actor_optimizer.zero_grad(set_to_none=True)
                 self.critic_optimizer.zero_grad(set_to_none=True)
-                terms["policy_total"].backward()
-                terms["value_total"].backward()
-                encoder = grad_norm(self.actor.stream.parameters())
-                actor = float(torch.nn.utils.clip_grad_norm_(self.actor.parameters(),
-                                                             cfg.grad_clip))
-                critic = float(torch.nn.utils.clip_grad_norm_(self.critic.parameters(),
-                                                              cfg.grad_clip))
+                terms = self.backward_minibatch(rows)
+                if self.reduce_gradients(terms is not None) == 0:
+                    continue
+                encoder = [p.grad.detach().float().norm() ** 2 for p in encoder_parameters
+                           if p.grad is not None]
+                actor = torch.nn.utils.clip_grad_norm_(self.actor.parameters(), cfg.grad_clip)
+                critic = torch.nn.utils.clip_grad_norm_(self.critic.parameters(), cfg.grad_clip)
+                present = [key for key in keys if terms is not None and key in terms]
+                host = torch.stack([actor.float(), critic.float(), *encoder,
+                                    *(terms[key].detach().float() for key in present)]
+                                   ).tolist()
+                actor, critic = host[0], host[1]
                 if not (math.isfinite(actor) and math.isfinite(critic)):
                     raise FloatingPointError("non-finite gradient; stopping before the step")
                 self.actor_optimizer.step()
                 self.critic_optimizer.step()
-                for key in self.STAT_KEYS:
-                    if key in terms:
-                        totals[key] += float(terms[key].detach())
+                steps += 1
+                if terms is None:
+                    continue
+                encoder_total = 0.0
+                for value in host[2:2 + len(encoder)]:
+                    encoder_total += value
+                for key, value in zip(present, host[2 + len(encoder):]):
+                    totals[key] += value
                 totals["actor_grad_norm"] += actor
-                totals["encoder_grad_norm"] += encoder
+                totals["encoder_grad_norm"] += math.sqrt(encoder_total)
                 totals["critic_grad_norm"] += critic
                 count += 1
-        stats["minibatches"] = count
-        for key in self.STAT_KEYS:
-            stats[key] = totals[key] / count
+        # Every rank took the same optimizer steps; snapshot decisions use this count.
+        stats["minibatches"] = steps
+        if self.collective():
+            stats["local_minibatches"] = count
+        if count:
+            for key in self.STAT_KEYS:
+                stats[key] = totals[key] / count
         self.progress["samples"] += samples
         return stats
 

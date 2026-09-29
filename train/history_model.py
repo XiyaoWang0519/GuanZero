@@ -179,9 +179,9 @@ class StreamBatch:
     lengths: Tensor   # int64 [B]
 
     @staticmethod
-    def from_arrays(streams: list[tuple[np.ndarray, np.ndarray, np.ndarray]], device
-                    ) -> "StreamBatch":
-        from train.history_transfers import upload_arrays
+    def host_arrays(streams: list[tuple[np.ndarray, np.ndarray, np.ndarray]]
+                    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Zero-padded ``(tokens, rounds, phases, lengths)`` host arrays, in field order."""
         count = len(streams)
         longest = max((len(t) for t, _, _ in streams), default=0)
         tokens = np.zeros((count, longest, TOKEN_DIM), dtype=np.uint8)
@@ -195,8 +195,14 @@ class StreamBatch:
                 tokens[b, :n] = t
                 rounds[b, :n] = r
                 phases[b, :n] = p
+        return tokens, rounds, phases, lengths
+
+    @staticmethod
+    def from_arrays(streams: list[tuple[np.ndarray, np.ndarray, np.ndarray]], device
+                    ) -> "StreamBatch":
+        from train.history_transfers import upload_arrays
         # One packed host-to-device copy on CUDA; zero-copy views on the CPU.
-        return StreamBatch(*upload_arrays((tokens, rounds, phases, lengths), device))
+        return StreamBatch(*upload_arrays(StreamBatch.host_arrays(streams), device))
 
     @staticmethod
     def from_streams(streams: list[PublicStream], device) -> "StreamBatch":
