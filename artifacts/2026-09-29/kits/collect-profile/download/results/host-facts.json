@@ -1,0 +1,23 @@
+{
+  "platform": "Linux-6.5.0-21-generic-x86_64-with-glibc2.39",
+  "cpu_model": "AMD EPYC 7B13 64-Core Processor",
+  "cpu_count": 255,
+  "affinity_cpus": 255,
+  "cgroup_cpu_max": null,
+  "cgroup_quota_cpus": 30.6,
+  "cgroup_cpu_stat": {
+    "nr_periods": "532",
+    "nr_throttled": "0",
+    "throttled_time": "0",
+    "nr_bursts": "0",
+    "burst_time": "0"
+  },
+  "usable_cpus": 30,
+  "loadavg": [
+    16.06005859375,
+    12.04296875,
+    11.26123046875
+  ],
+  "omp_num_threads": "2",
+  "gpu": "NVIDIA GeForce RTX 4090, 1, 16, 3105 MHz, 450.00 W"
+}

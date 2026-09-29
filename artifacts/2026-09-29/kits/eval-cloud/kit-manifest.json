@@ -1,0 +1,101 @@
+{
+  "frozen_at": "2026-09-29T14:12:55Z",
+  "source": {
+    "revision": "b8c0c543ff20d9933029d4f5d3384d5a4d3edde7",
+    "source_sha256": "14e72581d628409032acf88b646f7eb7a1ded7e954fa06d2e367bcce67889270",
+    "engine_digest": "606ff1e735823cefb9968a974991bfc5ca325c2ef1cb8ea5a5540f174ce84096",
+    "source_files": 213,
+    "archive_sha256": "7e60ac5b418add61c996f79f907c7da0bf1cfc748d12e052a39379001434c3b7"
+  },
+  "payload_files": {
+    "assets/b11-main.pt": "25e9e0bf549957b9d8b8aeb426b7225259cca714ec23d77de8eeda45bef063df",
+    "assets/development.json": "d7cbd9e021c42702e3d376b1487b7bf91d401f562d925964ee5c5f45fbc10705",
+    "assets/freeze.json": "f77ea34dbd4bae50dfb088b441a1c46868d7c0b1b013205975655517de3f7760",
+    "assets/longrun-segment2-raw-endpoint.pt": "eda2efc844d3831615b8fa99b3102591a95f9c1a6dfc03f3b0ede0479b8f6aa6",
+    "ckpt/u0844.pt": "b1c5503743fe69d7d997612ffeab139cb9d5ef2ecb55e02ee2c76f259e112bd7",
+    "ckpt/u2201.pt": "8dd52066c0cfa4692ff9038c7d9bd985845070e4733a5e739abe5f79f179627d",
+    "ckpt/u2263.pt": "a99024158a24e960dfe843ffbebafadfa6b1eea5a8661cc48a5371e53acd35d1",
+    "ckpt/u2418.pt": "5bdc3b66dfc7e07b2d30f9db3ae36b1fd10968cbe07a8f10eff142264feeeb74",
+    "ckpt/u2480.pt": "47260eb1884db3d3b3160343db77ea1e81a8f5caefe9a9e756e538813bd5486f",
+    "ckpt/u2542.pt": "642fe4e4c6fa87fcd7e5d1969dc13b3a5259b7c1524f25c8d3994a6a2d37e892",
+    "ckpt/u2623.pt": "6fd3b94d9ce8f4ae42e5164c3b8645990c09cb4ab1b1e564897ef3732b7972a9",
+    "eval_pod.py": "4de81ee2ceb40351920a208db8abae9598ca12afaa897d9efb4420a946414571",
+    "expected.json": "2fb160c21431f5ce45d7494769a9e4b11d823b2cfbf3c819f04a9d05e7e94cc5",
+    "remote_setup.sh": "cc7b9934f1f0394ffa77908f4cb7843551895c6cac65077959f9e1cc7c4482ac",
+    "remote_start.sh": "9aa2d2dd818071566ffae41a6d57a44ba938d9520dbd94389f10cd14e741e6ad",
+    "run_point.py": "82e79b5ee5d5eaf705c5e989f8b379c91b18dc233a3c424dd0d51c18711cd895",
+    "source.tar.gz": "7e60ac5b418add61c996f79f907c7da0bf1cfc748d12e052a39379001434c3b7"
+  },
+  "payload_bytes": {
+    "assets/b11-main.pt": 65891385,
+    "assets/development.json": 441133,
+    "assets/freeze.json": 1942,
+    "assets/longrun-segment2-raw-endpoint.pt": 78217769,
+    "ckpt/u0844.pt": 104613518,
+    "ckpt/u2201.pt": 110314739,
+    "ckpt/u2263.pt": 116007768,
+    "ckpt/u2418.pt": 98930537,
+    "ckpt/u2480.pt": 116008920,
+    "ckpt/u2542.pt": 110316595,
+    "ckpt/u2623.pt": 110317043,
+    "eval_pod.py": 8226,
+    "expected.json": 4441,
+    "remote_setup.sh": 4950,
+    "remote_start.sh": 2346,
+    "run_point.py": 377,
+    "source.tar.gz": 603286
+  },
+  "payload_total_bytes": 911684975,
+  "kit_files_sha256": "2710224d6229db4bf33b6ea264757fa2098c05c6d65740cbdb7265261f4c35ee",
+  "lifecycle_sha256": "129edbd070d1d32be2b0e66544b5639f794a597a0a0a2818e7878695eadf0546",
+  "remote_guard_template_sha256": "5c44d635ed7a07cf7c8b4ca9ae5b8130e087a93e9cf20b68cd1bc75372a1e071",
+  "summarize_sha256": "5c61aa93aea1762c10ba3f078bb306d3092d5947fc01dae1247f4caa9f954286",
+  "machine_ids": [
+    62158,
+    38639,
+    33405,
+    20082
+  ],
+  "label": "guanzero-eval-cloud-20260929",
+  "image": "vastai/pytorch:cuda-12.8.1-auto",
+  "max_hourly_usd": 0.8,
+  "min_reliability": 0.99,
+  "min_cpu_cores_effective": 28,
+  "min_cpu_ram_mb": 32000,
+  "timeline_seconds": {
+    "ssh_wait": 1500,
+    "latest_start": 4800,
+    "eval_stop": 7500,
+    "sync_stop": 7680,
+    "guard_destroy": 8400,
+    "remote_stop": 8520,
+    "hard_cap": 9000,
+    "cost_cap_usd": 2.0
+  },
+  "refreezes": [
+    {
+      "at": "2026-09-29T14:13:33Z",
+      "changed": [
+        "eval_pod.py"
+      ],
+      "previous_lifecycle_sha256": "8c53e4351bb1efb2c0c37787c8c8a3477945e2e3ce75213f7cf6a7613e13698b",
+      "previous_machine_ids": [
+        62158,
+        38639,
+        33405,
+        20082
+      ]
+    },
+    {
+      "at": "2026-09-29T14:15:08Z",
+      "changed": [],
+      "previous_lifecycle_sha256": "8c53e4351bb1efb2c0c37787c8c8a3477945e2e3ce75213f7cf6a7613e13698b",
+      "previous_machine_ids": [
+        62158,
+        38639,
+        33405,
+        20082
+      ]
+    }
+  ]
+}

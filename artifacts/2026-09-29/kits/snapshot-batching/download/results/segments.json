@@ -1,0 +1,14 @@
+[
+  {
+    "segment": "snapshot-batching-diag",
+    "ranks": 4,
+    "status": "completed",
+    "seconds": 1310.935282945633,
+    "resume_update": 844,
+    "target_update": 919,
+    "updates": 75,
+    "last_update": 919,
+    "has_checkpoint": true,
+    "diagnostic_branch": true
+  }
+]

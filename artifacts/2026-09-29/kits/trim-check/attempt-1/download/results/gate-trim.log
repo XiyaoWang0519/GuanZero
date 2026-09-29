@@ -1,0 +1,41 @@
+....F
+snapshot private graphs before the switch: True; graphs_released trim: {'reserved_before': 314572800, 'allocated_before': 244455424, 'reserved_after': 285212672, 'allocated_after': 244455424, 'seconds': 0.0017638690769672394}
+.
+=================================== FAILURES ===================================
+_____________ test_trim_leaves_training_bitwise_unchanged_on_cuda ______________
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-4/test_trim_leaves_training_bitw2')
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA allocator cache trim")
+    def test_trim_leaves_training_bitwise_unchanged_on_cuda(tmp_path):
+        trainers, lines = run_pair(tmp_path, "cuda",
+                                   ["batch_snapshot_policies=true", "rollout_trim_cuda_cache=true"],
+                                   ["batch_snapshot_policies=true", "rollout_trim_cuda_cache=false"],
+                                   rollout_device="cuda")
+>       assert_identical(trainers, lines)
+
+tests/test_history_trim.py:163: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+trainers = {'on': <train.history_ppo.HistoryTrainer object at 0x7fd4f6427ef0>, 'off': <train.history_ppo.HistoryTrainer object at 0x7fd4f69e7aa0>}
+lines = {'on': [{'update': 4, 'decisions': 480, 'rounds': 4, 'matches': 0, ...}, {'update': 5, 'decisions': 600, 'rounds': 4, ...5, 'decisions': 600, 'rounds': 4, 'matches': 0, ...}, {'update': 6, 'decisions': 720, 'rounds': 8, 'matches': 0, ...}]}
+
+    def assert_identical(trainers, lines):
+        for on, off in zip(lines["on"], lines["off"]):
+            assert on["rollout_trim_cuda_cache"] and not off["rollout_trim_cuda_cache"]
+            assert set(on["cuda_trim"]) >= POINTS and off["cuda_trim"] == {}
+            assert off["cuda_trim_seconds"] == 0.0 and on["cuda_trim_seconds"] >= 0.0
+>           assert ({k: v for k, v in on.items() if k not in TIMING_KEYS}
+                    == {k: v for k, v in off.items() if k not in TIMING_KEYS})
+E           AssertionError: assert {'update': 4,...ches': 0, ...} == {'update': 4,...ches': 0, ...}
+E             
+E             Omitting 48 identical items, use -vv to show
+E             Differing items:
+E             {'cuda_allocated_bytes': 93129728} != {'cuda_allocated_bytes': 109208576}
+E             {'cuda_peak_allocated_bytes': 95246848} != {'cuda_peak_allocated_bytes': 111325696}
+E             Use -v to get more diff
+
+tests/test_history_trim.py:81: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_history_trim.py::test_trim_leaves_training_bitwise_unchanged_on_cuda
+1 failed, 5 passed in 14.33s

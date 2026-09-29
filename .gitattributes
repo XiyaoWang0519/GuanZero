@@ -1,0 +1,6 @@
+# Experiment data copied from .work/ (single-line JSON, logs, the replay page):
+# keep it out of textual diffs; the files stay readable in full.
+artifacts/**/*.html -diff
+artifacts/**/*.json -diff
+artifacts/**/*.jsonl -diff
+artifacts/**/*.csv -diff

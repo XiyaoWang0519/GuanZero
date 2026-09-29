@@ -1,0 +1,60 @@
+..
+run on (order ('on', 'off')): before construction cpu
+  on update 4: end allocated 0.0 MiB, peak allocated 0.0 MiB, end reserved 0.0 MiB
+  on update 5: end allocated 0.0 MiB, peak allocated 0.0 MiB, end reserved 0.0 MiB
+  on update 6: end allocated 0.0 MiB, peak allocated 0.0 MiB, end reserved 0.0 MiB
+
+run off (order ('on', 'off')): before construction cpu
+  off update 4: end allocated 0.0 MiB, peak allocated 0.0 MiB, end reserved 0.0 MiB
+  off update 5: end allocated 0.0 MiB, peak allocated 0.0 MiB, end reserved 0.0 MiB
+  off update 6: end allocated 0.0 MiB, peak allocated 0.0 MiB, end reserved 0.0 MiB
+.
+run on (order ('on', 'off')): before construction cpu
+  on update 4: end allocated 0.0 MiB, peak allocated 0.0 MiB, end reserved 0.0 MiB
+  on update 5: end allocated 0.0 MiB, peak allocated 0.0 MiB, end reserved 0.0 MiB
+  on update 6: end allocated 0.0 MiB, peak allocated 0.0 MiB, end reserved 0.0 MiB
+
+run off (order ('on', 'off')): before construction cpu
+  off update 4: end allocated 0.0 MiB, peak allocated 0.0 MiB, end reserved 0.0 MiB
+  off update 5: end allocated 0.0 MiB, peak allocated 0.0 MiB, end reserved 0.0 MiB
+  off update 6: end allocated 0.0 MiB, peak allocated 0.0 MiB, end reserved 0.0 MiB
+.
+run on (order ('on', 'off')): before construction allocated 65.0 MiB, reserved 66.0 MiB
+  on update 4: end allocated 76.3 MiB, peak allocated 78.3 MiB, end reserved 92.0 MiB
+  on update 5: end allocated 76.4 MiB, peak allocated 77.6 MiB, end reserved 92.0 MiB
+  on update 6: end allocated 80.0 MiB, peak allocated 82.0 MiB, end reserved 94.0 MiB
+
+run off (order ('on', 'off')): before construction allocated 65.0 MiB, reserved 66.0 MiB
+  off update 4: end allocated 76.3 MiB, peak allocated 78.3 MiB, end reserved 94.0 MiB
+  off update 5: end allocated 76.4 MiB, peak allocated 77.6 MiB, end reserved 94.0 MiB
+  off update 6: end allocated 80.0 MiB, peak allocated 82.0 MiB, end reserved 94.0 MiB
+
+update 4 trims (MiB): after_collect reserved 94->92 allocated 76 in 0.0006s, after_learn reserved 92->92 allocated 76 in 0.0005s
+
+update 5 trims (MiB): after_collect reserved 92->92 allocated 77 in 0.0004s, after_learn reserved 92->92 allocated 76 in 0.0004s
+
+update 6 trims (MiB): after_collect reserved 94->92 allocated 77 in 0.0005s, after_learn reserved 94->94 allocated 80 in 0.0006s
+on: u4 alloc 80023552 peak 82140672, u5 alloc 80131072 peak 81326592, u6 alloc 83857408 peak 85995520
+off: u4 alloc 80023552 peak 82140672, u5 alloc 80131072 peak 81326592, u6 alloc 83857408 peak 85995520
+.
+run off (order ('off', 'on')): before construction allocated 65.0 MiB, reserved 66.0 MiB
+  off update 4: end allocated 76.3 MiB, peak allocated 78.3 MiB, end reserved 94.0 MiB
+  off update 5: end allocated 76.4 MiB, peak allocated 77.6 MiB, end reserved 94.0 MiB
+  off update 6: end allocated 80.0 MiB, peak allocated 82.0 MiB, end reserved 94.0 MiB
+
+run on (order ('off', 'on')): before construction allocated 65.0 MiB, reserved 66.0 MiB
+  on update 4: end allocated 76.3 MiB, peak allocated 78.3 MiB, end reserved 92.0 MiB
+  on update 5: end allocated 76.4 MiB, peak allocated 77.6 MiB, end reserved 92.0 MiB
+  on update 6: end allocated 80.0 MiB, peak allocated 82.0 MiB, end reserved 94.0 MiB
+
+update 4 trims (MiB): after_collect reserved 94->92 allocated 76 in 0.0006s, after_learn reserved 92->92 allocated 76 in 0.0005s
+
+update 5 trims (MiB): after_collect reserved 92->92 allocated 77 in 0.0004s, after_learn reserved 92->92 allocated 76 in 0.0004s
+
+update 6 trims (MiB): after_collect reserved 94->92 allocated 77 in 0.0006s, after_learn reserved 94->94 allocated 80 in 0.0007s
+on: u4 alloc 80023552 peak 82140672, u5 alloc 80131072 peak 81326592, u6 alloc 83857408 peak 85995520
+off: u4 alloc 80023552 peak 82140672, u5 alloc 80131072 peak 81326592, u6 alloc 83857408 peak 85995520
+.
+snapshot private graphs before the switch: True; graphs_released trim: {'reserved_before': 301989888, 'allocated_before': 215270400, 'reserved_after': 272629760, 'allocated_after': 215270400, 'seconds': 0.001698520965874195}
+.
+7 passed in 18.55s

@@ -1,0 +1,25 @@
+{
+  "instance_id": 53295782,
+  "machine_id": 67872,
+  "offer_id": 50569796,
+  "created_epoch": 1790650980.824404,
+  "absence_confirmed": true,
+  "ended_epoch": 1790651247.824191,
+  "elapsed_seconds": 266.99978709220886,
+  "hourly_usd": 0.557037037037037,
+  "estimated_compute_disk_usd": 0.041313547303156596,
+  "within_hard_cap": true,
+  "balance_before": {
+    "credit": 10.159305240030017,
+    "balance": 0
+  },
+  "balance_after": {
+    "credit": 10.119954076030018,
+    "balance": 0
+  },
+  "status_after": {
+    "owned": null,
+    "instances": 0
+  },
+  "cost_scope": "elapsed x quoted hourly; traffic charges not included"
+}

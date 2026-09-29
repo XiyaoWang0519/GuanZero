@@ -1,0 +1,18 @@
+{
+  "machine_id": 67872,
+  "offer_id": 50569796,
+  "label": "guanzero-trim-check-20260928",
+  "created_at_epoch": 1790650980.824404,
+  "offer_dph_total": 0.557037037037037,
+  "sweep_stop_epoch": 1790652240.824404,
+  "sync_stop_epoch": 1790652300.824404,
+  "guard_destroy_epoch": 1790652420.824404,
+  "remote_stop_epoch": 1790652450.824404,
+  "hard_cap_epoch": 1790652480.824404,
+  "max_hourly_usd": 0.8,
+  "cost_cap_usd": 0.36,
+  "timeline": "25m",
+  "disk_gb": 50,
+  "image": "vastai/pytorch:cuda-12.8.1-auto",
+  "instance_id": 53295782
+}

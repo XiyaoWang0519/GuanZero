@@ -1,0 +1,52 @@
+{
+  "frozen_at": "2026-09-28T22:22:54Z",
+  "source": {
+    "revision": "e7ef4ccecd6eb810fced7d1ea9d1b07195894a4a",
+    "dirty": false,
+    "source_sha256": "76c5d6b3a723d0e23d0ab5ed3e8fe0ca250340346ddc747e65fd03820d9ce869",
+    "dirty_source_sha256": null,
+    "archive_sha256": "1e1b2246f7528f34f80595f8872975fcd7443d951e38b173ef34363af68abbea"
+  },
+  "source_branch": "snapshot-batching-2026-09-28",
+  "source_root": "/Users/xiyaowang/Developer/Projects/GuanZero/.claude/worktrees/agent-a7237a895dc05db67",
+  "init_sha256": "b1c5503743fe69d7d997612ffeab139cb9d5ef2ecb55e02ee2c76f259e112bd7",
+  "source_files": 216,
+  "kit_files": {
+    "source.tar.gz": "1e1b2246f7528f34f80595f8872975fcd7443d951e38b173ef34363af68abbea",
+    "init.pt": "b1c5503743fe69d7d997612ffeab139cb9d5ef2ecb55e02ee2c76f259e112bd7",
+    "snapshot_ab.py": "c7014a720c12615b90b98644723dd4ec47e861eeaa6ad2366764319fc52b93a0",
+    "summarize.py": "421b64649f4c6353c26d8655cc81c503d8c6d4b690082b70a198ce0c3a9d372e",
+    "gpu_sampler.py": "9b5df71a0d64492d176858a308bae2e7b15159453178acba89c9c168ac9787b3",
+    "remote_setup.sh": "8fad8accef8dd3e82e2517a646be18f74d8514f834bf373da23aeb46d9ce1ab1",
+    "remote_start.sh": "743dfacb4be6584bf43d4e532f80920a65c963ad8f4f6f330a45bde9ffa405b2"
+  },
+  "lifecycle_sha256": "1b55d7ad9cb889ce34aa7e53b8ceec39f4aa7e04fd2b27a939d9bed3184344af",
+  "remote_guard_template_sha256": "7e29c38afea07046eca3d8241947afa9ce616d1510f1e4a78634513219a0d2e5",
+  "machine_id": 67872,
+  "label": "guanzero-snapshot-batching-20260928",
+  "image": "vastai/pytorch:cuda-12.8.1-auto",
+  "timelines": {
+    "45m": {
+      "sweep": 2280,
+      "sync": 2400,
+      "guard": 2640,
+      "remote": 2670,
+      "hard": 2700,
+      "cost_cap": 0.59
+    }
+  },
+  "max_hourly_usd": 0.8,
+  "min_reliability": 0.99,
+  "refreezes": [
+    {
+      "at": "2026-09-29T01:32:08Z",
+      "previous_machine_id": 20082,
+      "machine_id": 67872,
+      "previous_lifecycle_sha256": "fad282b4b21807f6b09d57877f0dc1586073c6408798d36e864aa70b38a04b1b",
+      "previous_kit_files": {
+        "summarize.py": "08be31d9c3faf0398668fbf160ac451c5852f5d239389fe54c4cb8ea86cbd26f",
+        "remote_start.sh": "223d8e3fcbdb70f1ec54dd845e1b7b76a59c7e601f34893bab1107e9118dbf00"
+      }
+    }
+  ]
+}

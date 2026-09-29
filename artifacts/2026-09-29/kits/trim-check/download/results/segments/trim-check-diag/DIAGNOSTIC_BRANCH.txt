@@ -1,0 +1,2 @@
+Diagnostic allocator-trim check resumed from main-w4/latest.pt.
+Not the main lineage endpoint; never continue the main lineage from here.

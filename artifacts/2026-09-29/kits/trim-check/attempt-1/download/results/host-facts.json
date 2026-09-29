@@ -1,0 +1,24 @@
+{
+  "platform": "Linux-5.15.0-191-generic-x86_64-with-glibc2.39",
+  "cpu_model": "Intel(R) Xeon(R) Platinum 8173M CPU @ 2.00GHz",
+  "cpu_count": 112,
+  "affinity_cpus": 112,
+  "cgroup_cpu_max": "2687999 100000",
+  "cgroup_quota_cpus": 26.87999,
+  "cgroup_cpu_stat": {
+    "usage_usec": "72573271",
+    "user_usec": "61740658",
+    "system_usec": "10832613",
+    "nr_periods": "742",
+    "nr_throttled": "0",
+    "throttled_usec": "0"
+  },
+  "usable_cpus": 26,
+  "loadavg": [
+    1.1953125,
+    0.53271484375,
+    0.50537109375
+  ],
+  "omp_num_threads": "2",
+  "gpu": "NVIDIA GeForce RTX 4090, 1, 16, 3135 MHz, 300.00 W"
+}

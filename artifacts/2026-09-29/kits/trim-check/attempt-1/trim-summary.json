@@ -1,0 +1,10 @@
+{
+  "error": "no rank-0 metrics",
+  "host": {
+    "machine_id": 67872,
+    "offer_id": 50569796,
+    "cpu_model": "Intel(R) Xeon(R) Platinum 8173M CPU @ 2.00GHz",
+    "usable_cpus": 26,
+    "gpu": "NVIDIA GeForce RTX 4090, 1, 16, 3135 MHz, 300.00 W"
+  }
+}

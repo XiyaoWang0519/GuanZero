@@ -1,0 +1,85 @@
+[32mActivated conda/uv virtual environment at [36m/venv/main[0m
+3.12.14 (main, Sep  2 2026, 23:27:36) [GCC 15.3.0]
+2.11.0+cu128 12.8 True NVIDIA GeForce RTX 4090
+WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.
+-- The CXX compiler identification is GNU 13.3.0
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+-- Found Threads: TRUE  
+-- Found Python: /venv/main/bin/python (found suitable version "3.12.14", minimum required is "3.11") found components: Interpreter Development.Module 
+-- Performing Test HAS_FLTO_AUTO
+-- Performing Test HAS_FLTO_AUTO - Success
+-- Found pybind11: /venv/main/lib/python3.12/site-packages/pybind11/include (found version "3.1.0")
+-- Configuring done (1.0s)
+-- Generating done (0.0s)
+-- Build files have been written to: /workspace/src/build
+[0/2] Re-checking globbed directories...
+[1/21] Building CXX object cpp/tests/CMakeFiles/gd_tests.dir/main.cpp.o
+[2/21] Building CXX object cpp/CMakeFiles/gd_core.dir/src/cards.cpp.o
+/workspace/src/cpp/src/cards.cpp: In function ‘std::string gd::card_to_string(CardId)’:
+/workspace/src/cpp/src/cards.cpp:99:33: warning: array subscript -1 is outside array bounds of ‘const char [5]’ [-Warray-bounds=]
+   99 |   out[0] = kSuitChars[suit_of(c)];
+      |            ~~~~~~~~~~~~~~~~~~~~~^
+[3/21] Building CXX object cpp/CMakeFiles/gd_core.dir/src/encoder.cpp.o
+[4/21] Building CXX object cpp/CMakeFiles/gd_core.dir/src/state.cpp.o
+[5/21] Building CXX object cpp/CMakeFiles/gd_core.dir/src/search.cpp.o
+[6/21] Building CXX object cpp/CMakeFiles/gd_core.dir/src/bots.cpp.o
+[7/21] Building CXX object cpp/tests/CMakeFiles/gd_tests.dir/test_bots_styled.cpp.o
+[8/21] Building CXX object cpp/tests/CMakeFiles/gd_tests.dir/test_search.cpp.o
+[9/21] Building CXX object cpp/CMakeFiles/gd_core.dir/src/rules.cpp.o
+[10/21] Building CXX object cpp/tests/CMakeFiles/gd_tests.dir/test_env_styles.cpp.o
+[11/21] Building CXX object cpp/tests/CMakeFiles/gd_tests.dir/test_engine_encoding.cpp.o
+[12/21] Building CXX object cpp/tests/CMakeFiles/gd_tests.dir/test_cards.cpp.o
+[13/21] Building CXX object cpp/tests/CMakeFiles/gd_tests.dir/test_house_rules.cpp.o
+[14/21] Building CXX object cpp/tests/CMakeFiles/gd_tests.dir/test_training.cpp.o
+[15/21] Building CXX object cpp/tests/CMakeFiles/gd_tests.dir/test_rules.cpp.o
+[16/21] Building CXX object cpp/CMakeFiles/gd_core.dir/src/env.cpp.o
+In file included from /usr/include/c++/13/bits/stl_uninitialized.h:63,
+                 from /usr/include/c++/13/memory:69,
+                 from /workspace/src/cpp/include/gd/env.h:5,
+                 from /workspace/src/cpp/src/env.cpp:2:
+In static member function ‘static constexpr _Up* std::__copy_move<_IsMove, true, std::random_access_iterator_tag>::__copy_m(_Tp*, _Tp*, _Up*) [with _Tp = const float; _Up = float; bool _IsMove = false]’,
+    inlined from ‘constexpr _OI std::__copy_move_a2(_II, _II, _OI) [with bool _IsMove = false; _II = const float*; _OI = float*]’ at /usr/include/c++/13/bits/stl_algobase.h:506:30,
+    inlined from ‘constexpr _OI std::__copy_move_a1(_II, _II, _OI) [with bool _IsMove = false; _II = const float*; _OI = float*]’ at /usr/include/c++/13/bits/stl_algobase.h:533:42,
+    inlined from ‘constexpr _OI std::__copy_move_a(_II, _II, _OI) [with bool _IsMove = false; _II = const float*; _OI = float*]’ at /usr/include/c++/13/bits/stl_algobase.h:540:31,
+    inlined from ‘constexpr _OI std::copy(_II, _II, _OI) [with _II = const float*; _OI = float*]’ at /usr/include/c++/13/bits/stl_algobase.h:633:7,
+    inlined from ‘static _ForwardIterator std::__uninitialized_copy<true>::__uninit_copy(_InputIterator, _InputIterator, _ForwardIterator) [with _InputIterator = const float*; _ForwardIterator = float*]’ at /usr/include/c++/13/bits/stl_uninitialized.h:147:27,
+    inlined from ‘_ForwardIterator std::uninitialized_copy(_InputIterator, _InputIterator, _ForwardIterator) [with _InputIterator = const float*; _ForwardIterator = float*]’ at /usr/include/c++/13/bits/stl_uninitialized.h:185:15,
+    inlined from ‘constexpr _ForwardIterator std::__uninitialized_copy_a(_InputIterator, _InputIterator, _ForwardIterator, allocator<_Tp>&) [with _InputIterator = const float*; _ForwardIterator = float*; _Tp = float]’ at /usr/include/c++/13/bits/stl_uninitialized.h:373:37,
+    inlined from ‘constexpr void std::vector<_Tp, _Alloc>::_M_range_insert(iterator, _ForwardIterator, _ForwardIterator, std::forward_iterator_tag) [with _ForwardIterator = const float*; _Tp = float; _Alloc = std::allocator<float>]’ at /usr/include/c++/13/bits/vector.tcc:814:38,
+    inlined from ‘constexpr std::vector<_Tp, _Alloc>::iterator std::vector<_Tp, _Alloc>::insert(const_iterator, _InputIterator, _InputIterator) [with _InputIterator = const float*; <template-parameter-2-2> = void; _Tp = float; _Alloc = std::allocator<float>]’ at /usr/include/c++/13/bits/stl_vector.h:1486:19,
+    inlined from ‘std::vector<int> gd::VecEnv::fork(int, int)’ at /workspace/src/cpp/src/env.cpp:422:22:
+/usr/include/c++/13/bits/stl_algobase.h:437:30: warning: ‘void* __builtin_memcpy(void*, const void*, long unsigned int)’ writing 288 bytes into a region of size 0 overflows the destination [-Wstringop-overflow=]
+  437 |             __builtin_memmove(__result, __first, sizeof(_Tp) * _Num);
+      |             ~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from /usr/include/x86_64-linux-gnu/c++/13/bits/c++allocator.h:33,
+                 from /usr/include/c++/13/bits/allocator.h:46,
+                 from /usr/include/c++/13/memory:65:
+In member function ‘_Tp* std::__new_allocator<_Tp>::allocate(size_type, const void*) [with _Tp = float]’,
+    inlined from ‘constexpr _Tp* std::allocator< <template-parameter-1-1> >::allocate(std::size_t) [with _Tp = float]’ at /usr/include/c++/13/bits/allocator.h:198:40,
+    inlined from ‘static constexpr _Tp* std::allocator_traits<std::allocator<_Up> >::allocate(allocator_type&, size_type) [with _Tp = float]’ at /usr/include/c++/13/bits/alloc_traits.h:482:28,
+    inlined from ‘constexpr std::_Vector_base<_Tp, _Alloc>::pointer std::_Vector_base<_Tp, _Alloc>::_M_allocate(std::size_t) [with _Tp = float; _Alloc = std::allocator<float>]’ at /usr/include/c++/13/bits/stl_vector.h:381:33,
+    inlined from ‘constexpr void std::vector<_Tp, _Alloc>::_M_range_insert(iterator, _ForwardIterator, _ForwardIterator, std::forward_iterator_tag) [with _ForwardIterator = const float*; _Tp = float; _Alloc = std::allocator<float>]’ at /usr/include/c++/13/bits/vector.tcc:805:40,
+    inlined from ‘constexpr std::vector<_Tp, _Alloc>::iterator std::vector<_Tp, _Alloc>::insert(const_iterator, _InputIterator, _InputIterator) [with _InputIterator = const float*; <template-parameter-2-2> = void; _Tp = float; _Alloc = std::allocator<float>]’ at /usr/include/c++/13/bits/stl_vector.h:1486:19,
+    inlined from ‘std::vector<int> gd::VecEnv::fork(int, int)’ at /workspace/src/cpp/src/env.cpp:422:22:
+/usr/include/c++/13/bits/new_allocator.h:151:55: note: at offset [-9223372036854775808, -4] into destination object of size 9223372036854775804 allocated by ‘operator new’
+  151 |         return static_cast<_Tp*>(_GLIBCXX_OPERATOR_NEW(__n * sizeof(_Tp)));
+      |                                                       ^
+/usr/include/c++/13/bits/new_allocator.h:151:55: note: at offset [-9223372036854775808, -4] into destination object of size [568, 9223372036854775804] allocated by ‘operator new’
+[17/21] Building CXX object cpp/CMakeFiles/gd_core.dir/src/movegen.cpp.o
+[18/21] Linking CXX static library cpp/libgd_core.a
+[19/21] Linking CXX executable cpp/tests/gd_tests
+[20/21] Building CXX object python/CMakeFiles/_gd_core.dir/bindings.cpp.o
+[21/21] Linking CXX shared module /workspace/src/python/gd/_gd_core.cpython-312-x86_64-linux-gnu.so
+gd_tests ok
+gate triton exit 0
+gate graphs exit 0
+gate wide exit 0
+gate learner exit 0
+ddp tests exit 0
+{"triton": true, "graphs": true, "wide": true, "learner": true}

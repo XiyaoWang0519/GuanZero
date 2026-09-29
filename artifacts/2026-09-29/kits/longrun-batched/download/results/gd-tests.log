@@ -1,0 +1,5 @@
+  neutral vs greedy: 12000 decision points, 0 mismatches
+  style sweep: 4000 points x 24 styles, 0 out of range
+  sampling: 3000 points, 0 seed mismatches, 1869 differing across seeds
+  differences from neutral: bomb 615, high 3370, partner 408
+81 test cases, 0 failed assertions

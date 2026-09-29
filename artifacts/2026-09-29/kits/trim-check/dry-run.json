@@ -1,0 +1,121 @@
+{
+  "machine_ids": [
+    20082,
+    67872
+  ],
+  "kit_source": {
+    "revision": "5b7078e1cbd653209e9f4d8a923219429bff9249",
+    "dirty": false,
+    "source_sha256": "f36a296658a15fc74c7f69574d10ebef3d29dc6b72abf9d35c31dc0b904c0d71",
+    "dirty_source_sha256": null,
+    "archive_sha256": "53fe5aa62e90c0df7e926776badf100aa1baa719dbe11de9658f488e5414ac4f"
+  },
+  "source_branch": "longrun-batched-2026-09-28",
+  "kit_files": {
+    "source.tar.gz": "53fe5aa62e90c0df7e926776badf100aa1baa719dbe11de9658f488e5414ac4f",
+    "init.pt": "b1c5503743fe69d7d997612ffeab139cb9d5ef2ecb55e02ee2c76f259e112bd7",
+    "trim_check.py": "26f6534d2d2e9842361697fd2cef8a5728769fdb1650253cca6028702a01f1c4",
+    "summarize.py": "1356988c0c038840068494a2060da5b6bf2250fb53cc4851eed737968d1fc467",
+    "gpu_sampler.py": "9b5df71a0d64492d176858a308bae2e7b15159453178acba89c9c168ac9787b3",
+    "remote_setup.sh": "de2ae72803bcc7636140823166d3f59fe395c9049a6ebe16d4f7eb74114ed856",
+    "remote_start.sh": "771a92bc16541292ecb747284b6710b8bdbeea73be4d5c1415ad5c23b8474ef5"
+  },
+  "secrets": {
+    "api_key": "present, 0600",
+    "ssh_key": "present, 0600"
+  },
+  "rendered": {
+    "remote_guard.py": "ffda8eabd3cc35d6433e786ec9e498cef6e1a485c4c5aed20d3324b7665378f8",
+    "deadlines.env": "2f40a81558d85690060131bf827cbe08ec76b979cbddcf7c74909f342d7fdc39"
+  },
+  "manifest_exists": false,
+  "upload": [
+    "source.tar.gz",
+    "init.pt",
+    "trim_check.py",
+    "summarize.py",
+    "gpu_sampler.py",
+    "remote_setup.sh",
+    "remote_start.sh",
+    "kit-files.sha256",
+    "remote_guard.py",
+    "deadlines.env"
+  ],
+  "timeline": "25m",
+  "timeline_seconds": {
+    "sweep": 1260,
+    "sync": 1320,
+    "guard": 1440,
+    "remote": 1470,
+    "hard": 1500,
+    "cost_cap": 0.36
+  },
+  "worst_case_usd_at_ceiling": 0.352,
+  "create_body": {
+    "client_id": "me",
+    "image": "vastai/pytorch:cuda-12.8.1-auto",
+    "disk": 50,
+    "label": "guanzero-trim-check-20260928",
+    "runtype": "ssh_direct",
+    "env": {},
+    "onstart": "entrypoint.sh",
+    "cancel_unavail": true,
+    "target_state": "running"
+  },
+  "provider_instances": 0,
+  "matching_label": [],
+  "balance": {
+    "credit": 10.091403072030019,
+    "balance": 0
+  },
+  "search": {
+    "20082": {
+      "returned": 0,
+      "qualified": 0,
+      "dph_total": []
+    },
+    "67872": {
+      "returned": 1,
+      "qualified": 1,
+      "dph_total": [
+        0.557
+      ]
+    }
+  },
+  "would_rent_machine": 67872,
+  "offers": [
+    {
+      "id": 50569796,
+      "machine_id": 67872,
+      "host_id": 307216,
+      "gpu_name": "RTX 4090",
+      "gpu_ram": 24564,
+      "dph_total": 0.557037037037037,
+      "cpu_name": "Xeon\u00ae Platinum 8173M ",
+      "cpu_cores_effective": 37.33333333333333,
+      "cpu_ghz": 3.5,
+      "cpu_ram": 85853,
+      "disk_space": 725.0,
+      "inet_up": 5845.0,
+      "inet_down": 7242.9,
+      "reliability2": 0.9922487,
+      "hosting_type": 1,
+      "verification": "verified",
+      "cuda_max_good": 13.0,
+      "driver_version": "580.178.04",
+      "pci_gen": 3.0,
+      "gpu_lanes": 16,
+      "geolocation": "United Kingdom, GB",
+      "inet_up_cost": 0.00390625,
+      "storage_cost": 0.5333333333333332
+    }
+  ],
+  "would_create_offer": 50569796,
+  "worst_case_usd_at_offer": 0.229,
+  "balance_check": {
+    "credit": 10.091403072030019,
+    "needed": 0.602,
+    "ok": true
+  },
+  "stopped_before": "PUT /api/v0/asks/{offer}/ (create) -- dry run, nothing rented"
+}

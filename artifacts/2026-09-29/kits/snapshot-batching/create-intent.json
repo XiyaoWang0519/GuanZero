@@ -1,0 +1,17 @@
+{
+  "machine_id": 67872,
+  "offer_id": 50569797,
+  "label": "guanzero-snapshot-batching-20260928",
+  "created_at_epoch": 1790646326.629945,
+  "offer_dph_total": 0.557037037037037,
+  "sweep_stop_epoch": 1790648606.629945,
+  "sync_stop_epoch": 1790648726.629945,
+  "guard_destroy_epoch": 1790648966.629945,
+  "remote_stop_epoch": 1790648996.629945,
+  "hard_cap_epoch": 1790649026.629945,
+  "max_hourly_usd": 0.8,
+  "cost_cap_usd": 0.59,
+  "timeline": "45m",
+  "disk_gb": 50,
+  "image": "vastai/pytorch:cuda-12.8.1-auto"
+}

@@ -1,0 +1,44 @@
+{
+  "frozen_at": "2026-09-29T03:10:05Z",
+  "source": {
+    "revision": "5b7078e1cbd653209e9f4d8a923219429bff9249",
+    "dirty": false,
+    "source_sha256": "f36a296658a15fc74c7f69574d10ebef3d29dc6b72abf9d35c31dc0b904c0d71",
+    "dirty_source_sha256": null,
+    "archive_sha256": "53fe5aa62e90c0df7e926776badf100aa1baa719dbe11de9658f488e5414ac4f"
+  },
+  "source_branch": "longrun-batched-2026-09-28",
+  "source_root": "/Users/xiyaowang/Developer/Projects/GuanZero/.claude/worktrees/agent-a995b257f61e2e322",
+  "init_sha256": "b1c5503743fe69d7d997612ffeab139cb9d5ef2ecb55e02ee2c76f259e112bd7",
+  "source_files": 217,
+  "kit_files": {
+    "source.tar.gz": "53fe5aa62e90c0df7e926776badf100aa1baa719dbe11de9658f488e5414ac4f",
+    "init.pt": "b1c5503743fe69d7d997612ffeab139cb9d5ef2ecb55e02ee2c76f259e112bd7",
+    "trim_check.py": "26f6534d2d2e9842361697fd2cef8a5728769fdb1650253cca6028702a01f1c4",
+    "summarize.py": "1356988c0c038840068494a2060da5b6bf2250fb53cc4851eed737968d1fc467",
+    "gpu_sampler.py": "9b5df71a0d64492d176858a308bae2e7b15159453178acba89c9c168ac9787b3",
+    "remote_setup.sh": "de2ae72803bcc7636140823166d3f59fe395c9049a6ebe16d4f7eb74114ed856",
+    "remote_start.sh": "771a92bc16541292ecb747284b6710b8bdbeea73be4d5c1415ad5c23b8474ef5"
+  },
+  "lifecycle_sha256": "d8276aa90f3051cb7217ef5a08238096fe55ec1c1c4b19a529e0aa4185386cbf",
+  "remote_guard_template_sha256": "7e29c38afea07046eca3d8241947afa9ce616d1510f1e4a78634513219a0d2e5",
+  "machine_ids": [
+    20082,
+    67872
+  ],
+  "label": "guanzero-trim-check-20260928",
+  "image": "vastai/pytorch:cuda-12.8.1-auto",
+  "timelines": {
+    "25m": {
+      "sweep": 1260,
+      "sync": 1320,
+      "guard": 1440,
+      "remote": 1470,
+      "hard": 1500,
+      "cost_cap": 0.36
+    }
+  },
+  "max_hourly_usd": 0.8,
+  "min_reliability": 0.99,
+  "max_inet_up_usd_per_gb": 0.05
+}

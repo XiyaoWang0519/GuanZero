@@ -1,0 +1,23 @@
+{
+  "instance_id": 53259117,
+  "created_epoch": 1790631485.98752,
+  "absence_confirmed": true,
+  "ended_epoch": 1790632374.146494,
+  "elapsed_seconds": 888.1589739322662,
+  "hourly_usd": 0.783148148148148,
+  "estimated_compute_disk_usd": 0.19321112658228154,
+  "within_hard_cap": true,
+  "balance_before": {
+    "credit": 10.588427884530017,
+    "balance": 0
+  },
+  "balance_after": {
+    "credit": 10.398244421130014,
+    "balance": 0
+  },
+  "status_after": {
+    "owned": null,
+    "instances": 0
+  },
+  "cost_scope": "elapsed x quoted hourly; traffic charges not included"
+}

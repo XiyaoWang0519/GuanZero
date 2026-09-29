@@ -1,0 +1,37 @@
+{
+  "id": 53259117,
+  "machine_id": 20082,
+  "label": "guanzero-collect-profile-20260928",
+  "actual_status": "running",
+  "cur_state": "running",
+  "intended_status": "running",
+  "dph_total": 0.783148148148148,
+  "disk_space": 50.0,
+  "gpu_name": "RTX 4090",
+  "num_gpus": 1,
+  "cpu_cores_effective": 32.0,
+  "cpu_ram": 1031846,
+  "ssh_host": "ssh1.vast.ai",
+  "ssh_port": 19116,
+  "public_ipaddr": "108.39.26.2",
+  "ports": {
+    "22/tcp": [
+      {
+        "HostIp": "0.0.0.0",
+        "HostPort": "42201"
+      },
+      {
+        "HostIp": "::",
+        "HostPort": "42201"
+      }
+    ]
+  },
+  "start_date": 1790631486.1460695,
+  "image_uuid": "vastai/pytorch:cuda-12.8.1-auto",
+  "image_runtype": "ssh_direct",
+  "status_msg": "success, running vastai/pytorch_cuda-12.8.1-auto/ssh",
+  "inet_up_cost": 0.032552083333333336,
+  "inet_down_cost": 0.032552083333333336,
+  "inet_up_billed": 1894.4,
+  "inet_down_billed": 144384.0
+}

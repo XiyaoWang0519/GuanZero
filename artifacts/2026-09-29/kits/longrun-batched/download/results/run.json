@@ -1,0 +1,9 @@
+{
+  "segment": "main-overnight",
+  "mode": "batched",
+  "fallback": false,
+  "restarts": 0,
+  "attempts": 1,
+  "reason": "train deadline",
+  "has_checkpoint": true
+}

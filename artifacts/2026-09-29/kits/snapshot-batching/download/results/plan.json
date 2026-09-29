@@ -1,0 +1,9 @@
+{
+  "resume_update": 844,
+  "target_update": 919,
+  "schedule": "35:off,10:on,10:off,10:on,5:off,5:on",
+  "warmup": 25,
+  "block": 10,
+  "profile": 5,
+  "profile_warmup": 65
+}

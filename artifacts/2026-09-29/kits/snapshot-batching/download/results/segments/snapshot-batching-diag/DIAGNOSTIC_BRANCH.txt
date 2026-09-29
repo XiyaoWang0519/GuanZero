@@ -1,0 +1,2 @@
+Diagnostic merged-snapshot-inference A/B branch resumed from main-w4/latest.pt.
+Not the main lineage endpoint; never continue the main lineage from here.

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="6" time="14.213" timestamp="2026-09-29T03:06:42.649580+00:00" hostname="f79ebdae1a51"><testcase classname="tests.test_history_trim" name="test_default_follows_the_merged_snapshot_arm" time="1.316" /><testcase classname="tests.test_history_trim" name="test_resume_set_switches_and_records_the_trim" time="0.357" /><testcase classname="tests.test_history_trim" name="test_trim_leaves_training_bitwise_unchanged_on_cpu[true]" time="1.432" /><testcase classname="tests.test_history_trim" name="test_trim_leaves_training_bitwise_unchanged_on_cpu[false]" time="1.631" /><testcase classname="tests.test_history_trim" name="test_trim_leaves_training_bitwise_unchanged_on_cuda" time="4.295"><failure message="AssertionError: assert {'update': 4,...ches': 0, ...} == {'update': 4,...ches': 0, ...}&#10;  &#10;  Omitting 48 identical items, use -vv to show&#10;  Differing items:&#10;  {'cuda_allocated_bytes': 93129728} != {'cuda_allocated_bytes': 109208576}&#10;  {'cuda_peak_allocated_bytes': 95246848} != {'cuda_peak_allocated_bytes': 111325696}&#10;  Use -v to get more diff">tmp_path = PosixPath('/tmp/pytest-of-root/pytest-4/test_trim_leaves_training_bitw2')
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA allocator cache trim")
+    def test_trim_leaves_training_bitwise_unchanged_on_cuda(tmp_path):
+        trainers, lines = run_pair(tmp_path, "cuda",
+                                   ["batch_snapshot_policies=true", "rollout_trim_cuda_cache=true"],
+                                   ["batch_snapshot_policies=true", "rollout_trim_cuda_cache=false"],
+                                   rollout_device="cuda")
+&gt;       assert_identical(trainers, lines)
+
+tests/test_history_trim.py:163: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+trainers = {'on': &lt;train.history_ppo.HistoryTrainer object at 0x7fd4f6427ef0&gt;, 'off': &lt;train.history_ppo.HistoryTrainer object at 0x7fd4f69e7aa0&gt;}
+lines = {'on': [{'update': 4, 'decisions': 480, 'rounds': 4, 'matches': 0, ...}, {'update': 5, 'decisions': 600, 'rounds': 4, ...5, 'decisions': 600, 'rounds': 4, 'matches': 0, ...}, {'update': 6, 'decisions': 720, 'rounds': 8, 'matches': 0, ...}]}
+
+    def assert_identical(trainers, lines):
+        for on, off in zip(lines["on"], lines["off"]):
+            assert on["rollout_trim_cuda_cache"] and not off["rollout_trim_cuda_cache"]
+            assert set(on["cuda_trim"]) &gt;= POINTS and off["cuda_trim"] == {}
+            assert off["cuda_trim_seconds"] == 0.0 and on["cuda_trim_seconds"] &gt;= 0.0
+&gt;           assert ({k: v for k, v in on.items() if k not in TIMING_KEYS}
+                    == {k: v for k, v in off.items() if k not in TIMING_KEYS})
+E           AssertionError: assert {'update': 4,...ches': 0, ...} == {'update': 4,...ches': 0, ...}
+E             
+E             Omitting 48 identical items, use -vv to show
+E             Differing items:
+E             {'cuda_allocated_bytes': 93129728} != {'cuda_allocated_bytes': 109208576}
+E             {'cuda_peak_allocated_bytes': 95246848} != {'cuda_peak_allocated_bytes': 111325696}
+E             Use -v to get more diff
+
+tests/test_history_trim.py:81: AssertionError</failure></testcase><testcase classname="tests.test_history_trim" name="test_switching_the_arm_on_releases_snapshot_graph_pools" time="3.621" /></testsuite></testsuites>

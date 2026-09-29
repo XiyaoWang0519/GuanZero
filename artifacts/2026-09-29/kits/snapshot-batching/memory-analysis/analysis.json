@@ -1,0 +1,1361 @@
+{
+  "offset": 1790616375.1712823,
+  "blocks": [
+    {
+      "index": 0,
+      "arm": "off",
+      "profiled": false,
+      "updates": [
+        872,
+        879
+      ],
+      "ranks": [
+        {
+          "peak_alloc_max": 3503.09375,
+          "peak_res_max": 4640.0,
+          "alloc_mean": 1730.3828125,
+          "res_mean": 4464.0,
+          "res_max": 4640.0,
+          "inact_max": 0.0,
+          "cache_mean": 1343.5727233886719,
+          "ccache_mean": 2315.247452735901,
+          "graph_ids": "13-15",
+          "graph_pool_mean": 422.25,
+          "heads": 0.0
+        },
+        {
+          "peak_alloc_max": 3510.5400390625,
+          "peak_res_max": 4506.0,
+          "alloc_mean": 1690.3046875,
+          "res_mean": 4400.75,
+          "res_max": 4506.0,
+          "inact_max": 0.0,
+          "cache_mean": 1301.021375656128,
+          "ccache_mean": 2252.5871810913086,
+          "graph_ids": "13-15",
+          "graph_pool_mean": 417.25,
+          "heads": 0.0
+        },
+        {
+          "peak_alloc_max": 4199.193359375,
+          "peak_res_max": 5062.0,
+          "alloc_mean": 1681.087158203125,
+          "res_mean": 4592.25,
+          "res_max": 4906.0,
+          "inact_max": 0.0,
+          "cache_mean": 1295.883173942566,
+          "ccache_mean": 2279.308228492737,
+          "graph_ids": "13-15",
+          "graph_pool_mean": 423.75,
+          "heads": 0.0
+        },
+        {
+          "peak_alloc_max": 3890.8212890625,
+          "peak_res_max": 4770.0,
+          "alloc_mean": 1568.238525390625,
+          "res_mean": 4318.0,
+          "res_max": 4420.0,
+          "inact_max": 0.0,
+          "cache_mean": 1179.5721321105957,
+          "ccache_mean": 2110.034589767456,
+          "graph_ids": "13-15",
+          "graph_pool_mean": 422.75,
+          "heads": 0.0
+        }
+      ],
+      "sum_peak_res_max": 18420.0,
+      "sum_res_mean": 17775.0,
+      "sum_alloc_mean": 6670.01318359375,
+      "sum_cached_free_end_mean": 11104.98681640625,
+      "sum_trim_mean": 374.0,
+      "ranks_trimmed_mean": 2.375,
+      "captures_mean": 646.375,
+      "smi_max": 20458.0,
+      "smi_mean": 17764.074999999997,
+      "smi_min": 15490.0,
+      "gap_lb_max": 2058.0,
+      "gap_end_mean": -231.25
+    },
+    {
+      "index": 1,
+      "arm": "on",
+      "profiled": false,
+      "updates": [
+        882,
+        889
+      ],
+      "ranks": [
+        {
+          "peak_alloc_max": 4201.8193359375,
+          "peak_res_max": 5144.0,
+          "alloc_mean": 1698.5382080078125,
+          "res_mean": 5128.75,
+          "res_max": 5144.0,
+          "inact_max": 0.0,
+          "cache_mean": 1328.569182395935,
+          "ccache_mean": 2295.9062938690186,
+          "graph_ids": "1-1",
+          "graph_pool_mean": 42.0,
+          "heads": 32.82818603515625
+        },
+        {
+          "peak_alloc_max": 3447.5341796875,
+          "peak_res_max": 4600.0,
+          "alloc_mean": 1646.9998779296875,
+          "res_mean": 4597.5,
+          "res_max": 4600.0,
+          "inact_max": 0.0,
+          "cache_mean": 1277.0705394744873,
+          "ccache_mean": 2249.237603187561,
+          "graph_ids": "1-1",
+          "graph_pool_mean": 42.0,
+          "heads": 32.82818603515625
+        },
+        {
+          "peak_alloc_max": 3374.9296875,
+          "peak_res_max": 4974.0,
+          "alloc_mean": 1629.401611328125,
+          "res_mean": 4935.5,
+          "res_max": 4974.0,
+          "inact_max": 0.0,
+          "cache_mean": 1266.6870183944702,
+          "ccache_mean": 2203.6804637908936,
+          "graph_ids": "1-1",
+          "graph_pool_mean": 22.0,
+          "heads": 32.82818603515625
+        },
+        {
+          "peak_alloc_max": 3384.185546875,
+          "peak_res_max": 5140.0,
+          "alloc_mean": 1658.5183715820312,
+          "res_mean": 5037.75,
+          "res_max": 5140.0,
+          "inact_max": 0.0,
+          "cache_mean": 1286.3082342147827,
+          "ccache_mean": 2206.5670738220215,
+          "graph_ids": "1-1",
+          "graph_pool_mean": 42.0,
+          "heads": 32.82818603515625
+        }
+      ],
+      "sum_peak_res_max": 19858.0,
+      "sum_res_mean": 19699.5,
+      "sum_alloc_mean": 6633.458068847656,
+      "sum_cached_free_end_mean": 13066.041931152344,
+      "sum_trim_mean": 0.0,
+      "ranks_trimmed_mean": 0.0,
+      "captures_mean": 0.0,
+      "smi_max": 21870.0,
+      "smi_mean": 21698.166666666664,
+      "smi_min": 21406.0,
+      "gap_lb_max": 2012.0,
+      "gap_end_mean": 1150.5
+    },
+    {
+      "index": 2,
+      "arm": "off",
+      "profiled": false,
+      "updates": [
+        892,
+        899
+      ],
+      "ranks": [
+        {
+          "peak_alloc_max": 4330.1923828125,
+          "peak_res_max": 5364.0,
+          "alloc_mean": 1759.1372680664062,
+          "res_mean": 4750.25,
+          "res_max": 4904.0,
+          "inact_max": 0.0,
+          "cache_mean": 1260.072060585022,
+          "ccache_mean": 2220.966347694397,
+          "graph_ids": "13-15",
+          "graph_pool_mean": 420.5,
+          "heads": 0.0
+        },
+        {
+          "peak_alloc_max": 4115.28515625,
+          "peak_res_max": 5372.0,
+          "alloc_mean": 1728.6468505859375,
+          "res_mean": 4682.75,
+          "res_max": 4736.0,
+          "inact_max": 0.0,
+          "cache_mean": 1236.4574813842773,
+          "ccache_mean": 2192.460346221924,
+          "graph_ids": "12-14",
+          "graph_pool_mean": 423.0,
+          "heads": 0.0
+        },
+        {
+          "peak_alloc_max": 3568.08447265625,
+          "peak_res_max": 4884.0,
+          "alloc_mean": 1797.3896484375,
+          "res_mean": 4683.0,
+          "res_max": 4884.0,
+          "inact_max": 0.0,
+          "cache_mean": 1305.6581230163574,
+          "ccache_mean": 2270.0730867385864,
+          "graph_ids": "12-14",
+          "graph_pool_mean": 423.5,
+          "heads": 0.0
+        },
+        {
+          "peak_alloc_max": 4263.71533203125,
+          "peak_res_max": 5528.0,
+          "alloc_mean": 1820.5132446289062,
+          "res_mean": 4914.75,
+          "res_max": 5022.0,
+          "inact_max": 0.0,
+          "cache_mean": 1326.7669715881348,
+          "ccache_mean": 2312.8403692245483,
+          "graph_ids": "14-16",
+          "graph_pool_mean": 431.5,
+          "heads": 0.0
+        }
+      ],
+      "sum_peak_res_max": 20700.0,
+      "sum_res_mean": 19030.75,
+      "sum_alloc_mean": 7105.68701171875,
+      "sum_cached_free_end_mean": 11925.06298828125,
+      "sum_trim_mean": 835.5,
+      "ranks_trimmed_mean": 3.0,
+      "captures_mean": 590.625,
+      "smi_max": 21250.0,
+      "smi_mean": 19144.6875,
+      "smi_min": 16810.0,
+      "gap_lb_max": 1654.0,
+      "gap_end_mean": 429.0
+    },
+    {
+      "index": 3,
+      "arm": "on",
+      "profiled": false,
+      "updates": [
+        902,
+        909
+      ],
+      "ranks": [
+        {
+          "peak_alloc_max": 4449.4755859375,
+          "peak_res_max": 5444.0,
+          "alloc_mean": 1734.0787963867188,
+          "res_mean": 5371.75,
+          "res_max": 5444.0,
+          "inact_max": 0.0,
+          "cache_mean": 1267.456883430481,
+          "ccache_mean": 2242.821611404419,
+          "graph_ids": "1-1",
+          "graph_pool_mean": 42.0,
+          "heads": 32.82818603515625
+        },
+        {
+          "peak_alloc_max": 3535.20751953125,
+          "peak_res_max": 5308.0,
+          "alloc_mean": 1740.3832397460938,
+          "res_mean": 5305.75,
+          "res_max": 5308.0,
+          "inact_max": 0.0,
+          "cache_mean": 1276.5020141601562,
+          "ccache_mean": 2228.7356519699097,
+          "graph_ids": "1-1",
+          "graph_pool_mean": 42.0,
+          "heads": 32.82818603515625
+        },
+        {
+          "peak_alloc_max": 4220.822265625,
+          "peak_res_max": 5372.0,
+          "alloc_mean": 1786.236083984375,
+          "res_mean": 4863.5,
+          "res_max": 5372.0,
+          "inact_max": 0.0,
+          "cache_mean": 1330.245535850525,
+          "ccache_mean": 2273.7463426589966,
+          "graph_ids": "1-1",
+          "graph_pool_mean": 22.0,
+          "heads": 32.82818603515625
+        },
+        {
+          "peak_alloc_max": 4237.01123046875,
+          "peak_res_max": 5442.0,
+          "alloc_mean": 1720.13330078125,
+          "res_mean": 5442.0,
+          "res_max": 5442.0,
+          "inact_max": 0.0,
+          "cache_mean": 1253.2960062026978,
+          "ccache_mean": 2202.242796897888,
+          "graph_ids": "1-1",
+          "graph_pool_mean": 42.0,
+          "heads": 32.82818603515625
+        }
+      ],
+      "sum_peak_res_max": 21566.0,
+      "sum_res_mean": 20983.0,
+      "sum_alloc_mean": 6980.8314208984375,
+      "sum_cached_free_end_mean": 14002.168579101562,
+      "sum_trim_mean": 0.0,
+      "ranks_trimmed_mean": 0.0,
+      "captures_mean": 0.0,
+      "smi_max": 23578.0,
+      "smi_mean": 22969.916666666664,
+      "smi_min": 22602.0,
+      "gap_lb_max": 2012.0,
+      "gap_end_mean": 1338.75
+    },
+    {
+      "index": 4,
+      "arm": "off",
+      "profiled": true,
+      "updates": [
+        912,
+        914
+      ],
+      "ranks": [
+        {
+          "peak_alloc_max": 4097.81494140625,
+          "peak_res_max": 5334.0,
+          "alloc_mean": 1723.1853841145833,
+          "res_mean": 4670.666666666667,
+          "res_max": 4728.0,
+          "inact_max": 0.0,
+          "cache_mean": 1222.5531260172527,
+          "ccache_mean": 2122.7845204671225,
+          "graph_ids": "13-14",
+          "graph_pool_mean": 411.3333333333333,
+          "heads": 0.0
+        },
+        {
+          "peak_alloc_max": 4341.5908203125,
+          "peak_res_max": 5340.0,
+          "alloc_mean": 1779.2301432291667,
+          "res_mean": 4812.0,
+          "res_max": 4912.0,
+          "inact_max": 0.0,
+          "cache_mean": 1277.799461364746,
+          "ccache_mean": 2278.7662658691406,
+          "graph_ids": "14-16",
+          "graph_pool_mean": 422.0,
+          "heads": 0.0
+        },
+        {
+          "peak_alloc_max": 3579.35302734375,
+          "peak_res_max": 4796.0,
+          "alloc_mean": 1793.0279947916667,
+          "res_mean": 4655.333333333333,
+          "res_max": 4688.0,
+          "inact_max": 0.0,
+          "cache_mean": 1304.2399571736653,
+          "ccache_mean": 2236.768226623535,
+          "graph_ids": "13-14",
+          "graph_pool_mean": 428.6666666666667,
+          "heads": 0.0
+        },
+        {
+          "peak_alloc_max": 4450.11767578125,
+          "peak_res_max": 5484.0,
+          "alloc_mean": 1917.55322265625,
+          "res_mean": 4956.0,
+          "res_max": 5058.0,
+          "inact_max": 0.0,
+          "cache_mean": 1423.8594640096028,
+          "ccache_mean": 2477.6743036905923,
+          "graph_ids": "13-14",
+          "graph_pool_mean": 416.0,
+          "heads": 0.0
+        }
+      ],
+      "sum_peak_res_max": 20266.0,
+      "sum_res_mean": 19094.0,
+      "sum_alloc_mean": 7212.996744791667,
+      "sum_cached_free_end_mean": 11881.003255208334,
+      "sum_trim_mean": 924.6666666666666,
+      "ranks_trimmed_mean": 3.6666666666666665,
+      "captures_mean": 594.3333333333334,
+      "smi_max": 21238.0,
+      "smi_mean": 19076.666666666668,
+      "smi_min": 17018.0,
+      "gap_lb_max": 1200.0,
+      "gap_end_mean": 1190.0
+    },
+    {
+      "index": 5,
+      "arm": "on",
+      "profiled": true,
+      "updates": [
+        917,
+        919
+      ],
+      "ranks": [
+        {
+          "peak_alloc_max": 3662.49169921875,
+          "peak_res_max": 4936.0,
+          "alloc_mean": 1871.4716796875,
+          "res_mean": 4918.666666666667,
+          "res_max": 4936.0,
+          "inact_max": 0.0,
+          "cache_mean": 1403.4987716674805,
+          "ccache_mean": 2420.214485168457,
+          "graph_ids": "1-1",
+          "graph_pool_mean": 42.0,
+          "heads": 32.82818603515625
+        },
+        {
+          "peak_alloc_max": 4152.15283203125,
+          "peak_res_max": 5250.0,
+          "alloc_mean": 1672.873046875,
+          "res_mean": 5071.333333333333,
+          "res_max": 5250.0,
+          "inact_max": 0.0,
+          "cache_mean": 1207.8656972249348,
+          "ccache_mean": 2155.347343444824,
+          "graph_ids": "1-1",
+          "graph_pool_mean": 42.0,
+          "heads": 32.82818603515625
+        },
+        {
+          "peak_alloc_max": 3339.0107421875,
+          "peak_res_max": 4594.0,
+          "alloc_mean": 1650.3590494791667,
+          "res_mean": 4594.0,
+          "res_max": 4594.0,
+          "inact_max": 0.0,
+          "cache_mean": 1194.5940526326497,
+          "ccache_mean": 2105.7947006225586,
+          "graph_ids": "1-1",
+          "graph_pool_mean": 22.0,
+          "heads": 32.82818603515625
+        },
+        {
+          "peak_alloc_max": 4288.58203125,
+          "peak_res_max": 5438.0,
+          "alloc_mean": 1719.6725260416667,
+          "res_mean": 5438.0,
+          "res_max": 5438.0,
+          "inact_max": 0.0,
+          "cache_mean": 1258.0133845011394,
+          "ccache_mean": 2182.854517618815,
+          "graph_ids": "1-1",
+          "graph_pool_mean": 42.0,
+          "heads": 32.82818603515625
+        }
+      ],
+      "sum_peak_res_max": 20218.0,
+      "sum_res_mean": 20022.0,
+      "sum_alloc_mean": 6914.376302083333,
+      "sum_cached_free_end_mean": 13107.623697916666,
+      "sum_trim_mean": 0.0,
+      "ranks_trimmed_mean": 0.0,
+      "captures_mean": 0.0,
+      "smi_max": 22230.0,
+      "smi_mean": 22010.44444444444,
+      "smi_min": 21586.0,
+      "gap_lb_max": 2012.0,
+      "gap_end_mean": 2012.0
+    }
+  ],
+  "pooled": {
+    "unprofiled_off": {
+      "n": 16,
+      "sum_res": 18402.875,
+      "sum_alloc": 6887.85009765625,
+      "cached": 11515.02490234375,
+      "trimmed": 2.6875,
+      "captures": 618.5,
+      "smi_mean": 18454.38125,
+      "gap_end": 98.875,
+      "gap_end_sd": 1630.2466020002414
+    },
+    "unprofiled_on": {
+      "n": 16,
+      "sum_res": 20341.25,
+      "sum_alloc": 6807.144744873047,
+      "cached": 13534.105255126953,
+      "trimmed": 0.0,
+      "captures": 0.0,
+      "smi_mean": 22334.041666666664,
+      "gap_end": 1244.625,
+      "gap_end_sd": 2161.49599043502
+    },
+    "all_off": {
+      "n": 19,
+      "sum_res": 18512.0,
+      "sum_alloc": 6939.189041940789,
+      "cached": 11572.81095805921,
+      "trimmed": 2.8421052631578947,
+      "captures": 614.6842105263158,
+      "smi_mean": 18552.63684210526,
+      "gap_end": 271.1578947368421,
+      "gap_end_sd": 1647.1432934750292
+    },
+    "all_on": {
+      "n": 19,
+      "sum_res": 20290.842105263157,
+      "sum_alloc": 6824.076043379934,
+      "cached": 13466.766061883223,
+      "trimmed": 0.0,
+      "captures": 0.0,
+      "smi_mean": 22282.94736842105,
+      "gap_end": 1365.7894736842106,
+      "gap_end_sd": 1993.9997653779917
+    }
+  },
+  "first_update_gap_end": 2766.0,
+  "sum_peak_alloc": {
+    "unprofiled_0": [
+      14615.421905517578,
+      15922.58544921875
+    ],
+    "unprofiled_1": [
+      14191.670715332031,
+      15274.29736328125
+    ],
+    "all_0": [
+      14723.590280633223,
+      15922.58544921875
+    ],
+    "all_1": [
+      14238.929841694078,
+      15274.29736328125
+    ]
+  },
+  "residual": {
+    "0": {
+      "max": 2058.0,
+      "median": -952.0
+    },
+    "1": {
+      "max": 2012.0,
+      "median": 2012.0
+    }
+  },
+  "trim_vs_capture": {
+    "off_True": [
+      100,
+      72
+    ],
+    "on_False": [
+      100,
+      0
+    ]
+  },
+  "samples_above_off_max": [
+    {
+      "update": 882,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 21406.0
+    },
+    {
+      "update": 882,
+      "arm": 1,
+      "phase": "learn",
+      "mib": 21438.0
+    },
+    {
+      "update": 882,
+      "arm": 1,
+      "phase": "learn",
+      "mib": 21458.0
+    },
+    {
+      "update": 883,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 21620.0
+    },
+    {
+      "update": 883,
+      "arm": 1,
+      "phase": "learn",
+      "mib": 21620.0
+    },
+    {
+      "update": 883,
+      "arm": 1,
+      "phase": "learn",
+      "mib": 21640.0
+    },
+    {
+      "update": 884,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 21640.0
+    },
+    {
+      "update": 884,
+      "arm": 1,
+      "phase": "learn",
+      "mib": 21642.0
+    },
+    {
+      "update": 884,
+      "arm": 1,
+      "phase": "learn",
+      "mib": 21642.0
+    },
+    {
+      "update": 885,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 21692.0
+    },
+    {
+      "update": 885,
+      "arm": 1,
+      "phase": "learn",
+      "mib": 21708.0
+    },
+    {
+      "update": 886,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 21708.0
+    },
+    {
+      "update": 886,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 21726.0
+    },
+    {
+      "update": 886,
+      "arm": 1,
+      "phase": "learn",
+      "mib": 21746.0
+    },
+    {
+      "update": 887,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 21746.0
+    },
+    {
+      "update": 887,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 21802.0
+    },
+    {
+      "update": 887,
+      "arm": 1,
+      "phase": "learn",
+      "mib": 21802.0
+    },
+    {
+      "update": 888,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 21802.0
+    },
+    {
+      "update": 888,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 21826.0
+    },
+    {
+      "update": 888,
+      "arm": 1,
+      "phase": "learn",
+      "mib": 21826.0
+    },
+    {
+      "update": 889,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 21826.0
+    },
+    {
+      "update": 889,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 21870.0
+    },
+    {
+      "update": 889,
+      "arm": 1,
+      "phase": "learn",
+      "mib": 21870.0
+    },
+    {
+      "update": 900,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 21778.0
+    },
+    {
+      "update": 900,
+      "arm": 1,
+      "phase": "learn",
+      "mib": 21920.0
+    },
+    {
+      "update": 900,
+      "arm": 1,
+      "phase": "learn",
+      "mib": 21920.0
+    },
+    {
+      "update": 901,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 21944.0
+    },
+    {
+      "update": 901,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 22502.0
+    },
+    {
+      "update": 901,
+      "arm": 1,
+      "phase": "learn",
+      "mib": 22502.0
+    },
+    {
+      "update": 902,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 22602.0
+    },
+    {
+      "update": 902,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 22772.0
+    },
+    {
+      "update": 902,
+      "arm": 1,
+      "phase": "learn",
+      "mib": 22780.0
+    },
+    {
+      "update": 903,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 22786.0
+    },
+    {
+      "update": 903,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 22798.0
+    },
+    {
+      "update": 903,
+      "arm": 1,
+      "phase": "learn",
+      "mib": 22798.0
+    },
+    {
+      "update": 904,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 22818.0
+    },
+    {
+      "update": 904,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 22818.0
+    },
+    {
+      "update": 904,
+      "arm": 1,
+      "phase": "learn",
+      "mib": 22818.0
+    },
+    {
+      "update": 904,
+      "arm": 1,
+      "phase": "learn",
+      "mib": 22818.0
+    },
+    {
+      "update": 905,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 22818.0
+    },
+    {
+      "update": 905,
+      "arm": 1,
+      "phase": "learn",
+      "mib": 22824.0
+    },
+    {
+      "update": 905,
+      "arm": 1,
+      "phase": "learn",
+      "mib": 22824.0
+    },
+    {
+      "update": 906,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 22940.0
+    },
+    {
+      "update": 906,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 22954.0
+    },
+    {
+      "update": 906,
+      "arm": 1,
+      "phase": "learn",
+      "mib": 22954.0
+    },
+    {
+      "update": 907,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 22954.0
+    },
+    {
+      "update": 907,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 22954.0
+    },
+    {
+      "update": 907,
+      "arm": 1,
+      "phase": "learn",
+      "mib": 22954.0
+    },
+    {
+      "update": 908,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 22954.0
+    },
+    {
+      "update": 908,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 23254.0
+    },
+    {
+      "update": 908,
+      "arm": 1,
+      "phase": "learn",
+      "mib": 23254.0
+    },
+    {
+      "update": 909,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 23494.0
+    },
+    {
+      "update": 909,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 23578.0
+    },
+    {
+      "update": 909,
+      "arm": 1,
+      "phase": "learn",
+      "mib": 23578.0
+    },
+    {
+      "update": 915,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 21276.0
+    },
+    {
+      "update": 915,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 21416.0
+    },
+    {
+      "update": 915,
+      "arm": 1,
+      "phase": "learn",
+      "mib": 21474.0
+    },
+    {
+      "update": 916,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 21474.0
+    },
+    {
+      "update": 916,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 21536.0
+    },
+    {
+      "update": 916,
+      "arm": 1,
+      "phase": "learn",
+      "mib": 21540.0
+    },
+    {
+      "update": 916,
+      "arm": 1,
+      "phase": "learn",
+      "mib": 21540.0
+    },
+    {
+      "update": 917,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 21586.0
+    },
+    {
+      "update": 917,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 21690.0
+    },
+    {
+      "update": 917,
+      "arm": 1,
+      "phase": "learn",
+      "mib": 21690.0
+    },
+    {
+      "update": 918,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 22170.0
+    },
+    {
+      "update": 918,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 22182.0
+    },
+    {
+      "update": 918,
+      "arm": 1,
+      "phase": "learn",
+      "mib": 22182.0
+    },
+    {
+      "update": 919,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 22182.0
+    },
+    {
+      "update": 919,
+      "arm": 1,
+      "phase": "collect",
+      "mib": 22182.0
+    },
+    {
+      "update": 919,
+      "arm": 1,
+      "phase": "learn",
+      "mib": 22230.0
+    }
+  ],
+  "regression": {
+    "sum_res|arm only": {
+      "terms": {
+        "arm": [
+          1778.8421052631566,
+          8.276785120231668
+        ]
+      },
+      "r2": 0.6555194414174708,
+      "n": 38
+    },
+    "sum_res|arm + collection cache": {
+      "terms": {
+        "arm": [
+          1813.592232959543,
+          8.137672951456043
+        ],
+        "sum_ccache": [
+          0.5691905234186818,
+          0.662973666957408
+        ]
+      },
+      "r2": 0.6597918154870742,
+      "n": 38
+    },
+    "sum_res|arm + prefix + resident + update": {
+      "terms": {
+        "arm": [
+          1460.386918356908,
+          7.453002728920643
+        ],
+        "sum_mean_prefix": [
+          0.18609295925694344,
+          0.023887766957159856
+        ],
+        "sum_resident": [
+          11.113483994765755,
+          0.24576821801636195
+        ],
+        "update": [
+          36.51272816195341,
+          5.922997795754761
+        ]
+      },
+      "r2": 0.8513025278818294,
+      "n": 38
+    },
+    "sum_res|no arm: ccache + prefix + resident + update": {
+      "terms": {
+        "sum_ccache": [
+          1.2257081824442286,
+          0.9851125877950212
+        ],
+        "sum_mean_prefix": [
+          -35.23239244404221,
+          -2.3081933452238124
+        ],
+        "sum_resident": [
+          -143.55387252962618,
+          -2.207939332884738
+        ],
+        "update": [
+          60.41080924136609,
+          6.867631435427522
+        ]
+      },
+      "r2": 0.6124056812254849,
+      "n": 38
+    },
+    "sum_alloc|arm only": {
+      "terms": {
+        "arm": [
+          -115.11299856085606,
+          -1.628399182919446
+        ]
+      },
+      "r2": 0.068604615153802,
+      "n": 38
+    },
+    "sum_alloc|arm + collection cache": {
+      "terms": {
+        "arm": [
+          -73.52337347195862,
+          -1.0902807878379714
+        ],
+        "sum_ccache": [
+          0.6812182297582533,
+          2.622268925274576
+        ]
+      },
+      "r2": 0.22154433667700113,
+      "n": 38
+    },
+    "sum_alloc|arm + prefix + resident + update": {
+      "terms": {
+        "arm": [
+          -175.8471019422467,
+          -4.024592670522864
+        ],
+        "sum_mean_prefix": [
+          5.4583432525707405,
+          3.1421710647697574
+        ],
+        "sum_resident": [
+          6.984794229678529,
+          0.6927116298851951
+        ],
+        "update": [
+          12.388020402347582,
+          9.012028771359704
+        ]
+      },
+      "r2": 0.815221827282895,
+      "n": 38
+    },
+    "sum_alloc|no arm: ccache + prefix + resident + update": {
+      "terms": {
+        "sum_ccache": [
+          0.4958409346007063,
+          2.5926597399068165
+        ],
+        "sum_mean_prefix": [
+          4.426519310128179,
+          1.886673615286281
+        ],
+        "sum_resident": [
+          24.94747282247636,
+          2.4963366041292447
+        ],
+        "update": [
+          10.251046935107395,
+          7.581670595824991
+        ]
+      },
+      "r2": 0.7711438962447399,
+      "n": 38
+    },
+    "sum_res_minus_alloc_end|arm only": {
+      "terms": {
+        "arm": [
+          1893.9551038240106,
+          11.939634099292814
+        ]
+      },
+      "r2": 0.7983812957481223,
+      "n": 38
+    },
+    "sum_res_minus_alloc_end|arm + collection cache": {
+      "terms": {
+        "arm": [
+          1887.1156064315014,
+          11.406115437741075
+        ],
+        "sum_ccache": [
+          -0.11202770633945779,
+          -0.1757691829616996
+        ]
+      },
+      "r2": 0.7985591093815888,
+      "n": 38
+    },
+    "sum_res_minus_alloc_end|arm + prefix + resident + update": {
+      "terms": {
+        "arm": [
+          1636.2340202991543,
+          9.73816879034758
+        ],
+        "sum_mean_prefix": [
+          -5.272250293313856,
+          -0.7892419565105553
+        ],
+        "sum_resident": [
+          4.128689765087182,
+          0.10647711521560736
+        ],
+        "update": [
+          24.124707759605684,
+          4.56381342704896
+        ]
+      },
+      "r2": 0.8825300625194696,
+      "n": 38
+    },
+    "sum_res_minus_alloc_end|no arm: ccache + prefix + resident + update": {
+      "terms": {
+        "sum_ccache": [
+          0.729867247843529,
+          0.5638550147531017
+        ],
+        "sum_mean_prefix": [
+          -39.658911754170376,
+          -2.49744326624098
+        ],
+        "sum_resident": [
+          -168.50134535210256,
+          -2.49115290437144
+        ],
+        "update": [
+          50.15976230625864,
+          5.481161326747922
+        ]
+      },
+      "r2": 0.549299495147666,
+      "n": 38
+    },
+    "smi_mean|arm only": {
+      "terms": {
+        "arm": [
+          3730.310526315788,
+          15.03704922258633
+        ]
+      },
+      "r2": 0.8626545776254247,
+      "n": 38
+    },
+    "smi_mean|arm + collection cache": {
+      "terms": {
+        "arm": [
+          3785.6527231350856,
+          14.800385029914649
+        ],
+        "sum_ccache": [
+          0.9064787977160841,
+          0.9199578424541835
+        ]
+      },
+      "r2": 0.8658972676418002,
+      "n": 38
+    },
+    "smi_mean|arm + prefix + resident + update": {
+      "terms": {
+        "arm": [
+          3387.4044412111575,
+          13.177591356709195
+        ],
+        "sum_mean_prefix": [
+          -2.8769148251029275,
+          -0.28149990497463956
+        ],
+        "sum_resident": [
+          17.439258675382217,
+          0.29397415364783835
+        ],
+        "update": [
+          37.55527265372905,
+          4.643803595634985
+        ]
+      },
+      "r2": 0.9234176840027124,
+      "n": 38
+    },
+    "smi_mean|no arm: ccache + prefix + resident + update": {
+      "terms": {
+        "sum_ccache": [
+          2.9120657242104224,
+          1.1748448536469458
+        ],
+        "sum_mean_prefix": [
+          -85.59902279633845,
+          -2.8150066136698744
+        ],
+        "sum_resident": [
+          -341.38648274007056,
+          -2.6357190030017668
+        ],
+        "update": [
+          93.06690522632803,
+          5.310900462644069
+        ]
+      },
+      "r2": 0.5396878257545532,
+      "n": 38
+    },
+    "smi_max|arm only": {
+      "terms": {
+        "arm": [
+          1767.2631578947344,
+          8.287028371760714
+        ]
+      },
+      "r2": 0.6560778094973148,
+      "n": 38
+    },
+    "smi_max|arm + collection cache": {
+      "terms": {
+        "arm": [
+          1799.372401191251,
+          8.130045678558934
+        ],
+        "sum_ccache": [
+          0.5259340960759484,
+          0.6168524455385048
+        ]
+      },
+      "r2": 0.6597765914390499,
+      "n": 38
+    },
+    "smi_max|arm + prefix + resident + update": {
+      "terms": {
+        "arm": [
+          1447.222707804506,
+          7.336014162185117
+        ],
+        "sum_mean_prefix": [
+          -0.2500488462845526,
+          -0.03188099837108432
+        ],
+        "sum_resident": [
+          9.125775385281054,
+          0.20045030157212806
+        ],
+        "update": [
+          35.993142233766484,
+          5.799339003488737
+        ]
+      },
+      "r2": 0.8471650010465301,
+      "n": 38
+    },
+    "smi_max|no arm: ccache + prefix + resident + update": {
+      "terms": {
+        "sum_ccache": [
+          1.1889287764774994,
+          0.9577697431333232
+        ],
+        "sum_mean_prefix": [
+          -35.13745481765622,
+          -2.3073147433514745
+        ],
+        "sum_resident": [
+          -144.12094555927868,
+          -2.221804375170682
+        ],
+        "update": [
+          59.64618390968509,
+          6.796439901339239
+        ]
+      },
+      "r2": 0.6087930638524002,
+      "n": 38
+    }
+  },
+  "adjacent_pairs": [
+    {
+      "pair": "on 882-889 - off 872-879",
+      "smi_mean": 3934.091666666667,
+      "smi_max": 1412.0,
+      "res": 1924.5,
+      "alloc": -36.55511474609375,
+      "cached": 1961.0551147460938,
+      "cc": -1.7860174179077148,
+      "pref": -2.674264138542412,
+      "res_n": -3.0
+    },
+    {
+      "pair": "on 882-889 - off 892-899",
+      "smi_mean": 2553.4791666666642,
+      "smi_max": 620.0,
+      "res": 668.75,
+      "alloc": -472.22894287109375,
+      "cached": 1140.9789428710938,
+      "cc": -40.94871520996094,
+      "pref": -12.650698899707322,
+      "res_n": -2.625
+    },
+    {
+      "pair": "on 902-909 - off 892-899",
+      "smi_mean": 3825.2291666666642,
+      "smi_max": 2328.0,
+      "res": 1952.25,
+      "alloc": -124.8555908203125,
+      "cached": 2077.1055908203125,
+      "cc": -48.79374694824219,
+      "pref": -11.00480315493644,
+      "res_n": -0.125
+    },
+    {
+      "pair": "on 902-909 - off 912-914",
+      "smi_mean": 3893.2499999999964,
+      "smi_max": 2340.0,
+      "res": 1889.0,
+      "alloc": -232.16532389322947,
+      "cached": 2121.1653238932286,
+      "cc": -168.44691371917725,
+      "pref": -16.337231369521078,
+      "res_n": -0.4583333333333357
+    },
+    {
+      "pair": "on 917-919 - off 912-914",
+      "smi_mean": 2933.7777777777737,
+      "smi_max": 992.0,
+      "res": 928.0,
+      "alloc": -298.62044270833394,
+      "cached": 1226.6204427083321,
+      "cc": -251.78226979573628,
+      "pref": -13.499884501073666,
+      "res_n": -1.0
+    }
+  ]
+}

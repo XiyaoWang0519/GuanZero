@@ -1,0 +1,136 @@
+{
+  "machine_ids": [
+    62158,
+    38639,
+    33405,
+    20082
+  ],
+  "kit_source": {
+    "revision": "b8c0c543ff20d9933029d4f5d3384d5a4d3edde7",
+    "source_sha256": "14e72581d628409032acf88b646f7eb7a1ded7e954fa06d2e367bcce67889270",
+    "engine_digest": "606ff1e735823cefb9968a974991bfc5ca325c2ef1cb8ea5a5540f174ce84096",
+    "source_files": 213,
+    "archive_sha256": "7e60ac5b418add61c996f79f907c7da0bf1cfc748d12e052a39379001434c3b7"
+  },
+  "payload_total_mb": 911.7,
+  "secrets": {
+    "api_key": "present, 0600",
+    "ssh_key": "present, 0600"
+  },
+  "rendered": {
+    "remote_guard.py": "101d197c247fa929be32afa29f4dc5b77ea12dbb2b8fd11b65d6e04355321329",
+    "deadlines.env": "d4051aa47056490f1d5ca1cff38eb4ac79804a53530c3efac30d4eb412c51cbe"
+  },
+  "manifest_exists": false,
+  "points": [
+    "u2623",
+    "u0844",
+    "u2201",
+    "u2542",
+    "u2480",
+    "u2418",
+    "u2263"
+  ],
+  "timeline_seconds": {
+    "ssh_wait": 1500,
+    "latest_start": 4800,
+    "eval_stop": 7500,
+    "sync_stop": 7680,
+    "guard_destroy": 8400,
+    "remote_stop": 8520,
+    "hard_cap": 9000,
+    "cost_cap_usd": 2.0
+  },
+  "worst_case_usd_at_ceiling": 1.939,
+  "create_body": {
+    "client_id": "me",
+    "image": "vastai/pytorch:cuda-12.8.1-auto",
+    "disk": 50,
+    "label": "guanzero-eval-cloud-20260929",
+    "runtype": "ssh_direct",
+    "env": {},
+    "onstart": "entrypoint.sh",
+    "cancel_unavail": true,
+    "target_state": "running"
+  },
+  "provider_instances": 0,
+  "matching_label": [],
+  "balance": {
+    "credit": 5.387486155630018,
+    "balance": 0
+  },
+  "search": {
+    "62158": {
+      "returned": 1,
+      "qualified": 1,
+      "dph_total": [
+        0.5519
+      ],
+      "cpu_cores_effective": [
+        64.0
+      ]
+    },
+    "38639": {
+      "returned": 0,
+      "qualified": 0,
+      "dph_total": [],
+      "cpu_cores_effective": []
+    },
+    "33405": {
+      "returned": 1,
+      "qualified": 1,
+      "dph_total": [
+        0.7431
+      ],
+      "cpu_cores_effective": [
+        32.0
+      ]
+    },
+    "20082": {
+      "returned": 1,
+      "qualified": 1,
+      "dph_total": [
+        0.7831
+      ],
+      "cpu_cores_effective": [
+        32.0
+      ]
+    }
+  },
+  "would_rent_machine": 62158,
+  "offers": [
+    {
+      "id": 43421243,
+      "machine_id": 62158,
+      "host_id": 152538,
+      "gpu_name": "RTX 5070 Ti",
+      "dph_total": 0.5518518518518518,
+      "cpu_name": "AMD EPYC 7V13 64-Core Processor",
+      "cpu_cores": 256,
+      "cpu_cores_effective": 64.0,
+      "cpu_ghz": 3.719583,
+      "cpu_ram": 128935,
+      "disk_space": 636.75,
+      "inet_up": 6534.5,
+      "inet_down": 8287.2,
+      "reliability2": 0.9990632,
+      "hosting_type": 1,
+      "verification": "verified",
+      "cuda_max_good": 13.2,
+      "driver_version": "595.58.03",
+      "geolocation": "Texas, US",
+      "inet_up_cost": 0.026041666666666668,
+      "inet_down_cost": 0.026041666666666668,
+      "storage_cost": 0.2666666666666666
+    }
+  ],
+  "would_create_offer": 43421243,
+  "worst_case_usd_at_offer": 1.34,
+  "balance_check": {
+    "credit": 5.387486155630018,
+    "needed": 2.439,
+    "ok": true
+  },
+  "stopped_before": "PUT /api/v0/asks/{offer}/ (create) -- dry run, nothing rented",
+  "launch_blocked_by": []
+}

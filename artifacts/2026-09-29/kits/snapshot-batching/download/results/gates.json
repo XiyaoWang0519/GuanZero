@@ -1,0 +1,42 @@
+{
+  "triton": {
+    "passed": true,
+    "file": "gate-triton.xml",
+    "tests": 80,
+    "failed": [],
+    "cuda_or_large_passed": 35,
+    "required_missing": []
+  },
+  "graphs": {
+    "passed": true,
+    "file": "gate-graphs.xml",
+    "tests": 224,
+    "failed": [],
+    "cuda_or_large_passed": 96,
+    "required_missing": []
+  },
+  "wide": {
+    "passed": true,
+    "file": "gate-wide.xml",
+    "tests": 69,
+    "failed": [],
+    "cuda_or_large_passed": 33,
+    "required_missing": []
+  },
+  "learner": {
+    "passed": true,
+    "file": "gate-learner.xml",
+    "tests": 10,
+    "failed": [],
+    "cuda_or_large_passed": 4,
+    "required_missing": []
+  },
+  "snapshot": {
+    "passed": true,
+    "file": "gate-snapshot.xml",
+    "tests": 49,
+    "failed": [],
+    "cuda_or_large_passed": 24,
+    "required_missing": []
+  }
+}

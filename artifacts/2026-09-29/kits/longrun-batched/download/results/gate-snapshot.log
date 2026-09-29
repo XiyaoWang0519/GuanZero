@@ -1,0 +1,24 @@
+max |merged - per-identity| log-prob cpu one-per-stream none: 2.384e-07
+.max |merged - per-identity| log-prob cpu one-per-stream auxiliary: 2.384e-07
+.max |merged - per-identity| log-prob cpu single-identity none: 1.192e-07
+.max |merged - per-identity| log-prob cpu single-identity auxiliary: 1.192e-07
+.max |merged - per-identity| log-prob cpu single-row-identity none: 0.000e+00
+.max |merged - per-identity| log-prob cpu single-row-identity auxiliary: 0.000e+00
+.max |merged - per-identity| log-prob cpu multi-decision none: 2.384e-07
+.max |merged - per-identity| log-prob cpu multi-decision auxiliary: 2.384e-07
+.max |merged - per-identity| log-prob cpu mixed none: 1.192e-07
+.max |merged - per-identity| log-prob cpu mixed auxiliary: 1.192e-07
+.max |merged - per-identity| log-prob cuda one-per-stream none: 2.384e-07
+.max |merged - per-identity| log-prob cuda one-per-stream auxiliary: 2.384e-07
+.max |merged - per-identity| log-prob cuda single-identity none: 1.192e-07
+.max |merged - per-identity| log-prob cuda single-identity auxiliary: 1.192e-07
+.max |merged - per-identity| log-prob cuda single-row-identity none: 0.000e+00
+.max |merged - per-identity| log-prob cuda single-row-identity auxiliary: 0.000e+00
+.max |merged - per-identity| log-prob cuda multi-decision none: 1.192e-07
+.max |merged - per-identity| log-prob cuda multi-decision auxiliary: 1.192e-07
+.max |merged - per-identity| log-prob cuda mixed none: 1.192e-07
+.max |merged - per-identity| log-prob cuda mixed auxiliary: 1.192e-07
+.max |merged - per-identity| log-prob cpu production-size: 9.537e-07
+.max |merged - per-identity| log-prob cuda production-size: 9.537e-07
+............................
+49 passed in 41.76s

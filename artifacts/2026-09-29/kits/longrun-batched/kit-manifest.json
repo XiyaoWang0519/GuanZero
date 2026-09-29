@@ -1,0 +1,59 @@
+{
+  "frozen_at": "2026-09-29T03:11:02Z",
+  "source": {
+    "revision": "5b7078e1cbd653209e9f4d8a923219429bff9249",
+    "dirty": false,
+    "source_sha256": "f36a296658a15fc74c7f69574d10ebef3d29dc6b72abf9d35c31dc0b904c0d71",
+    "dirty_source_sha256": null,
+    "archive_sha256": "ad08f23200cf4d079f146db29db996d2d7a165e697df76e8e675ca910964989e"
+  },
+  "source_branch": "longrun-batched-2026-09-28",
+  "source_root": "/Users/xiyaowang/Developer/Projects/GuanZero/.claude/worktrees/agent-a995b257f61e2e322",
+  "init_sha256": "b1c5503743fe69d7d997612ffeab139cb9d5ef2ecb55e02ee2c76f259e112bd7",
+  "source_files": 217,
+  "kit_files": {
+    "source.tar.gz": "ad08f23200cf4d079f146db29db996d2d7a165e697df76e8e675ca910964989e",
+    "init.pt": "b1c5503743fe69d7d997612ffeab139cb9d5ef2ecb55e02ee2c76f259e112bd7",
+    "longrun.py": "6d0c30d490a8e7ebf6eab7cd25574e3b68ac5190c85a613227c67269de21c3ed",
+    "summarize.py": "e406b476db566bc493d5ad0c6a4294bcfdd8fc65dd69894b764b33c770a0626a",
+    "gpu_sampler.py": "9b5df71a0d64492d176858a308bae2e7b15159453178acba89c9c168ac9787b3",
+    "remote_setup.sh": "de2ae72803bcc7636140823166d3f59fe395c9049a6ebe16d4f7eb74114ed856",
+    "remote_start.sh": "88ebc4c71e8033d3b30cc633a9719f7cbabb4b60fa54cda8db06ce7662b1205d"
+  },
+  "lifecycle_sha256": "7b7e11c6a37494f31458b77266e499913c4aaa2a06af7049c53c67c016607b31",
+  "remote_guard_template_sha256": "5c44d635ed7a07cf7c8b4ca9ae5b8130e087a93e9cf20b68cd1bc75372a1e071",
+  "machine_ids": [
+    20082,
+    67872
+  ],
+  "label": "guanzero-longrun-batched-20260928",
+  "image": "vastai/pytorch:cuda-12.8.1-auto",
+  "timelines": {
+    "8h": {
+      "sweep": 29640,
+      "sync": 30000,
+      "guard": 30300,
+      "remote": 30360,
+      "hard": 30600,
+      "cost_cap": 7.0
+    }
+  },
+  "max_hourly_usd": 0.8,
+  "min_reliability": 0.99,
+  "max_inet_up_usd_per_gb": 0.035,
+  "refreezes": [
+    {
+      "at": "2026-09-29T03:43:10Z",
+      "previous_machine_ids": [
+        20082,
+        67872
+      ],
+      "machine_ids": [
+        20082,
+        67872
+      ],
+      "previous_lifecycle_sha256": "d1db87c7c583b301fe9be759ef6c4c29c07b27c64de5739d4624278acdcc56a1",
+      "previous_kit_files": {}
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+[
+  {
+    "segment": "trim-check-diag",
+    "ranks": 4,
+    "status": "completed",
+    "seconds": 580.0437352657318,
+    "resume_update": 844,
+    "target_update": 884,
+    "updates": 40,
+    "last_update": 884,
+    "has_checkpoint": true,
+    "diagnostic_branch": true
+  }
+]

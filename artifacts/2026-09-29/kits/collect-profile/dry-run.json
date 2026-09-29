@@ -1,0 +1,70 @@
+{
+  "kit_source": {
+    "revision": "8303769908d5f1585e1f17f9e2782c28838b0b15",
+    "dirty": false,
+    "source_sha256": "d27672d6cad4bbb9bc4bf09913670dfd36816c194a1e8f6ccafe63544e1cb617",
+    "dirty_source_sha256": null,
+    "archive_sha256": "fd99bc5e819bc1f4c315629554c3ea84b30b11d67930aa5c906144ea9e640056"
+  },
+  "source_branch": "collect-profile-2026-09-28",
+  "kit_files": {
+    "source.tar.gz": "fd99bc5e819bc1f4c315629554c3ea84b30b11d67930aa5c906144ea9e640056",
+    "init.pt": "b1c5503743fe69d7d997612ffeab139cb9d5ef2ecb55e02ee2c76f259e112bd7",
+    "profile.py": "4b1c219778f90bb4c395141e42b1eb5d916a6df0c760a8890a8e1ebea767ba19",
+    "summarize.py": "c453d8eb5fa672dfa2fd305d2dc4d15e32f71eb1bc46f42e9dce8d1c90f6e961",
+    "gpu_sampler.py": "9b5df71a0d64492d176858a308bae2e7b15159453178acba89c9c168ac9787b3",
+    "remote_setup.sh": "b5b3a931a4b96bde62781af12bb8ca38ef3562578a67e50911d385bb57843cf8",
+    "remote_start.sh": "e915187ff6afbce8df39e4eebc447ae79f47ef557c890192d0ac287f8382bf29"
+  },
+  "secrets": {
+    "api_key": "present, 0600",
+    "ssh_key": "present, 0600"
+  },
+  "rendered": {
+    "remote_guard.py": "8cf031e7dfa344a9d7905c1a05042b960fc9f1f7cb19aa9224d0eea0a27ef854",
+    "deadlines.env": "6deed9aae2dfb51a784c5a3faf98263ad0499b8e57af9dc85da1affd77a4f59b"
+  },
+  "manifest_exists": false,
+  "upload": [
+    "source.tar.gz",
+    "init.pt",
+    "profile.py",
+    "summarize.py",
+    "gpu_sampler.py",
+    "remote_setup.sh",
+    "remote_start.sh",
+    "kit-files.sha256",
+    "remote_guard.py",
+    "deadlines.env"
+  ],
+  "timeline": "35m",
+  "timeline_seconds": {
+    "sweep": 1500,
+    "sync": 1620,
+    "guard": 2040,
+    "remote": 2070,
+    "hard": 2100,
+    "cost_cap": 0.47
+  },
+  "worst_case_usd": 0.453,
+  "create_body": {
+    "client_id": "me",
+    "image": "vastai/pytorch:cuda-12.8.1-auto",
+    "disk": 50,
+    "label": "guanzero-collect-profile-20260928",
+    "runtype": "ssh_direct",
+    "env": {},
+    "onstart": "entrypoint.sh",
+    "cancel_unavail": true,
+    "target_state": "running"
+  },
+  "provider_instances": 0,
+  "matching_label": [],
+  "balance": {
+    "credit": 10.398244421130014,
+    "balance": 0
+  },
+  "offers": [],
+  "would_create_offer": null,
+  "stopped_before": "PUT /api/v0/asks/{offer}/ (create) -- dry run, nothing rented"
+}

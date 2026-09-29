@@ -1,0 +1,114 @@
+{
+ "FAILED.json": {
+  "sha256": "65e3359f7848e64e1a7202eb1d275e2571058adf903c23349f2e15bb6f4536dc",
+  "bytes": 29
+ },
+ "cgroup.txt": {
+  "sha256": "e57fd7b21104f091de366ace1464596378a498b0a5e63f1b21147a8998c20107",
+  "bytes": 5
+ },
+ "engine-sha256.txt": {
+  "sha256": "9899651868179f3d136db585a60f0fb8956dfc3554451474140651d76a12534c",
+  "bytes": 117
+ },
+ "gate-graphs.log": {
+  "sha256": "448d0e7998d7ab3c571587fbae0327d2b05799f40c0670e2be8ce7939272aea8",
+  "bytes": 341
+ },
+ "gate-graphs.xml": {
+  "sha256": "92f3b4cdfded1916d7736d4b25e5161ebec0ac06df65460180d31ef7bb0b4c67",
+  "bytes": 32733
+ },
+ "gate-learner.log": {
+  "sha256": "9d12b2bf1e8d3c215bb83fa42026b23228dfdad802241bb88f8d0c8e0dc356c4",
+  "bytes": 99
+ },
+ "gate-learner.xml": {
+  "sha256": "7877b1ea13b4becda9c09851dca07c0d9e0f6e9a6122dca883ee263cebe42207",
+  "bytes": 1693
+ },
+ "gate-snapshot.log": {
+  "sha256": "dcbbd2ae6142bad472ed4cf564fbefdf7dc72577ebf25a2f16dbb6c02a616907",
+  "bytes": 1695
+ },
+ "gate-snapshot.xml": {
+  "sha256": "0642e5c0773427d2302ddee99cff8bd45429393bc0972ac9c22719bb597cf966",
+  "bytes": 7168
+ },
+ "gate-trim.log": {
+  "sha256": "e998738c18bfd80cb351eb60097c66eb1e6652ef2475cdfe347124b5a9b450c5",
+  "bytes": 2689
+ },
+ "gate-trim.xml": {
+  "sha256": "d9e33d9488cb10e2437fcc7fdf9918dcf82a250244626c6bdaba1d76d44ed2f5",
+  "bytes": 3496
+ },
+ "gate-triton.log": {
+  "sha256": "7dde1feb216ecc0bfd812113d2f66b3c1d1d5901eb12b95db95b0e1eb4d9307a",
+  "bytes": 191
+ },
+ "gate-triton.xml": {
+  "sha256": "28d0182ddc75792a509684543d6e1a68f28a7b605a59d360eb222b8cf0b8a1ee",
+  "bytes": 13042
+ },
+ "gate-wide.log": {
+  "sha256": "c5e763b0dc73a7eb4b92266d520648b08e81f55f5e76e5475c2650aa28b61588",
+  "bytes": 99
+ },
+ "gate-wide.xml": {
+  "sha256": "2cf3ae60b5ed0e91039064f62ab1903af2a78d30833cda4fa6bf1e4a02fb58a2",
+  "bytes": 9514
+ },
+ "gd-tests.log": {
+  "sha256": "6b3907f3061f2e0b508022ff0b5421399d4566ecd8934f98bcf4efef599ace33",
+  "bytes": 280
+ },
+ "gpu-sampler.log": {
+  "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "bytes": 0
+ },
+ "gpu-samples.jsonl": {
+  "sha256": "3881b941143333adcad75a478aa8bf6b8c042d851f36a8d68d614be51a71b046",
+  "bytes": 4024
+ },
+ "host-facts.json": {
+  "sha256": "6c8af3b1f43255d535e49318ca1c49d1f5934c522f2e197d7ae3a8d8290c160b",
+  "bytes": 622
+ },
+ "kit-verify.txt": {
+  "sha256": "c8b68c49c202811f35de2e8639dd3291a431afd43e42e734d6d608031c871285",
+  "bytes": 124
+ },
+ "machine.json": {
+  "sha256": "f87e0369b9dd87759f46fb163cbf33f494f6cb0c5e24ac6bf6c9917e1379799d",
+  "bytes": 77
+ },
+ "nvidia-smi.txt": {
+  "sha256": "dfb24dd4a0e182241904eb2af248e98d1ef141ce80661709ff3df6030f16cd7c",
+  "bytes": 1689
+ },
+ "pip-freeze.txt": {
+  "sha256": "e55a51033a4d01c2a35bcf5d6bc143c076a47e6ef6386ecef5d440a9938b9efa",
+  "bytes": 1754
+ },
+ "remote-guard-verify.log": {
+  "sha256": "4343662a8042d2a4a28acae4d6aadc6398ee53bd51cfb07a2a6ccfc4f04e4b11",
+  "bytes": 60
+ },
+ "remote-guard.log": {
+  "sha256": "f991563853e5836d1fcf33d1cb3cd8bee13a23b26c38b1fcd9744fc1fffe4f82",
+  "bytes": 71
+ },
+ "setup-started.txt": {
+  "sha256": "bba583ded2535de2d57a9d026dbdcbd52545e7da6307ac6794d88d0542c4e9da",
+  "bytes": 21
+ },
+ "setup.log": {
+  "sha256": "95ce3a2f1b9d138756418a7e00cd669667a7fd3b71e6ceaec0277c073455d133",
+  "bytes": 8511
+ },
+ "start.log": {
+  "sha256": "c83a44db02e6b7cb7615d2a85aba6242923d76437714eb05d6cca395fe26e4cf",
+  "bytes": 67
+ }
+}

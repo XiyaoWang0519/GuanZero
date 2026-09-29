@@ -1,0 +1,18 @@
+{
+  "machine_id": 67872,
+  "offer_id": 50569797,
+  "label": "guanzero-longrun-batched-20260928",
+  "created_at_epoch": 1790654090.4987772,
+  "offer_dph_total": 0.557037037037037,
+  "sweep_stop_epoch": 1790683730.4987772,
+  "sync_stop_epoch": 1790684090.4987772,
+  "guard_destroy_epoch": 1790684390.4987772,
+  "remote_stop_epoch": 1790684450.4987772,
+  "hard_cap_epoch": 1790684690.4987772,
+  "max_hourly_usd": 0.8,
+  "cost_cap_usd": 7.0,
+  "timeline": "8h",
+  "disk_gb": 50,
+  "image": "vastai/pytorch:cuda-12.8.1-auto",
+  "mode": "batched"
+}

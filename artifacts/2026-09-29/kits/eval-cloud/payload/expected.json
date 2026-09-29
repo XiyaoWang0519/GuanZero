@@ -1,0 +1,91 @@
+{
+  "source_sha256": "14e72581d628409032acf88b646f7eb7a1ded7e954fa06d2e367bcce67889270",
+  "source_revision": "b8c0c543ff20d9933029d4f5d3384d5a4d3edde7",
+  "engine_digest": "606ff1e735823cefb9968a974991bfc5ca325c2ef1cb8ea5a5540f174ce84096",
+  "freeze_pod_path": "/Users/xiyaowang/Developer/Projects/GuanZero/.work/history-budget-2026-09-27/evaluation/freeze.json",
+  "freeze_sha256": "f77ea34dbd4bae50dfb088b441a1c46868d7c0b1b013205975655517de3f7760",
+  "torch_version": "2.14.0",
+  "numpy_version": "2.5.3",
+  "python_version": "3.12.12",
+  "threads_per_eval": 4,
+  "points": [
+    {
+      "name": "u2623",
+      "update": 2623,
+      "source_path": "/Users/xiyaowang/Developer/Projects/GuanZero/.work/longrun-batched-2026-09-28/download/results/segments/main-overnight/latest.pt",
+      "sha256": "6fd3b94d9ce8f4ae42e5164c3b8645990c09cb4ab1b1e564897ef3732b7972a9",
+      "bytes": 110317043,
+      "reference": false
+    },
+    {
+      "name": "u0844",
+      "update": 844,
+      "source_path": "/Users/xiyaowang/Developer/Projects/GuanZero/.work/longrun-batched-eval-2026-09-29/ckpt/u0844.pt",
+      "sha256": "b1c5503743fe69d7d997612ffeab139cb9d5ef2ecb55e02ee2c76f259e112bd7",
+      "bytes": 104613518,
+      "reference": true
+    },
+    {
+      "name": "u2201",
+      "update": 2201,
+      "source_path": "/Users/xiyaowang/Developer/Projects/GuanZero/.work/longrun-batched-2026-09-28/download/results/segments/main-overnight/update-002201.pt",
+      "sha256": "8dd52066c0cfa4692ff9038c7d9bd985845070e4733a5e739abe5f79f179627d",
+      "bytes": 110314739,
+      "reference": true
+    },
+    {
+      "name": "u2542",
+      "update": 2542,
+      "source_path": "/Users/xiyaowang/Developer/Projects/GuanZero/.work/longrun-batched-2026-09-28/download/results/segments/main-overnight/update-002542.pt",
+      "sha256": "642fe4e4c6fa87fcd7e5d1969dc13b3a5259b7c1524f25c8d3994a6a2d37e892",
+      "bytes": 110316595,
+      "reference": false
+    },
+    {
+      "name": "u2480",
+      "update": 2480,
+      "source_path": "/Users/xiyaowang/Developer/Projects/GuanZero/.work/longrun-batched-2026-09-28/download/results/segments/main-overnight/update-002480.pt",
+      "sha256": "47260eb1884db3d3b3160343db77ea1e81a8f5caefe9a9e756e538813bd5486f",
+      "bytes": 116008920,
+      "reference": false
+    },
+    {
+      "name": "u2418",
+      "update": 2418,
+      "source_path": "/Users/xiyaowang/Developer/Projects/GuanZero/.work/longrun-batched-2026-09-28/download/results/segments/main-overnight/update-002418.pt",
+      "sha256": "5bdc3b66dfc7e07b2d30f9db3ae36b1fd10968cbe07a8f10eff142264feeeb74",
+      "bytes": 98930537,
+      "reference": false
+    },
+    {
+      "name": "u2263",
+      "update": 2263,
+      "source_path": "/Users/xiyaowang/Developer/Projects/GuanZero/.work/longrun-batched-2026-09-28/download/results/segments/main-overnight/update-002263.pt",
+      "sha256": "a99024158a24e960dfe843ffbebafadfa6b1eea5a8661cc48a5371e53acd35d1",
+      "bytes": 116007768,
+      "reference": false
+    }
+  ],
+  "assets": {
+    "freeze.json": {
+      "local": "/Users/xiyaowang/Developer/Projects/GuanZero/.work/history-budget-2026-09-27/evaluation/freeze.json",
+      "pod": "/Users/xiyaowang/Developer/Projects/GuanZero/.work/history-budget-2026-09-27/evaluation/freeze.json",
+      "sha256": "f77ea34dbd4bae50dfb088b441a1c46868d7c0b1b013205975655517de3f7760"
+    },
+    "development.json": {
+      "local": "/Users/xiyaowang/Developer/Projects/GuanZero/.work/history-budget-2026-09-27/evaluation/development.json",
+      "pod": "/Users/xiyaowang/Developer/Projects/GuanZero/.work/history-budget-2026-09-27/evaluation/development.json",
+      "sha256": "d7cbd9e021c42702e3d376b1487b7bf91d401f562d925964ee5c5f45fbc10705"
+    },
+    "b11-main.pt": {
+      "local": "/Users/xiyaowang/Developer/Projects/GuanZero/.work/runpod-longrun-2026-09-25/payload/artifacts/b11-main.pt",
+      "pod": "/Users/xiyaowang/Developer/Projects/GuanZero/.work/runpod-longrun-2026-09-25/payload/artifacts/b11-main.pt",
+      "sha256": "25e9e0bf549957b9d8b8aeb426b7225259cca714ec23d77de8eeda45bef063df"
+    },
+    "longrun-segment2-raw-endpoint.pt": {
+      "local": "/Users/xiyaowang/Developer/Projects/GuanZero/.work/runpod-seg2-2026-09-25/local/cont/final.pt",
+      "pod": "/Users/xiyaowang/Developer/Projects/GuanZero/.work/runpod-seg2-2026-09-25/local/cont/final.pt",
+      "sha256": "eda2efc844d3831615b8fa99b3102591a95f9c1a6dfc03f3b0ede0479b8f6aa6"
+    }
+  }
+}
