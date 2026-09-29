@@ -209,9 +209,10 @@ class BatchedHistoryCache:
             count -= offset
             if count:
                 end = begin + count
-                tokens[i, offset:offset+count] = np.stack(entry.stream.tokens[begin:end])
-                rounds[i, offset:offset+count] = entry.stream.rounds[begin:end]
-                phases[i, offset:offset+count] = entry.stream.phases[begin:end]
+                stream_tokens, stream_rounds, stream_phases = entry.stream.arrays()
+                tokens[i, offset:offset+count] = stream_tokens[begin:end]
+                rounds[i, offset:offset+count] = stream_rounds[begin:end]
+                phases[i, offset:offset+count] = stream_phases[begin:end]
         t, r, p, start_positions, end_positions = upload_arrays(
             (tokens, rounds, phases, np.asarray(starts, dtype=np.int64),
              np.asarray(ends, dtype=np.int64)), device)

@@ -88,22 +88,30 @@ class PublicStream:
     ``reset`` starts a new match. ``prefix`` is the number of tokens a
     decision taken now may read. Streams never store observations,
     candidates, hidden counts or the forced flag.
+
+    Storage is contiguous and grows by doubling. ``tokens`` (uint8
+    ``[prefix, TOKEN_DIM]``), ``rounds`` and ``phases`` (int64 ``[prefix]``)
+    and ``arrays()`` are views of it, without a copy: index or slice them,
+    never write through them. A view stays valid after later appends and
+    after ``reset``, which starts new storage rather than overwriting it.
     """
 
-    __slots__ = ("tokens", "rounds", "phases", "match_id", "generation")
+    __slots__ = ("_tokens", "_rounds", "_phases", "_size", "match_id", "generation")
 
     def __init__(self, match_id: int = -1) -> None:
-        self.tokens: list[np.ndarray] = []
-        self.rounds: list[int] = []
-        self.phases: list[int] = []
+        self._storage(0)
         self.match_id = int(match_id)
         self.generation = 0
 
+    def _storage(self, capacity: int) -> None:
+        self._tokens = np.zeros((capacity, TOKEN_DIM), dtype=np.uint8)
+        self._rounds = np.zeros(capacity, dtype=np.int64)
+        self._phases = np.zeros(capacity, dtype=np.int64)
+        self._size = 0
+
     def reset(self, match_id: int = -1) -> None:
         self.generation += 1
-        self.tokens.clear()
-        self.rounds.clear()
-        self.phases.clear()
+        self._storage(0)
         self.match_id = int(match_id)
 
     def append(self, event: Any) -> None:
@@ -119,19 +127,42 @@ class PublicStream:
             raise ValueError("private tribute flags must not enter the public stream")
         if round_index < 0 or phase < 0:
             raise ValueError("round index and phase must not be negative")
-        self.tokens.append(token)
-        self.rounds.append(int(round_index))
-        self.phases.append(int(phase))
+        size = self._size
+        if size == len(self._tokens):
+            # Amortized doubling; the filled prefix is copied, never changed.
+            tokens, rounds, phases = self._tokens, self._rounds, self._phases
+            self._storage(max(64, 2 * size))
+            self._tokens[:size] = tokens
+            self._rounds[:size] = rounds
+            self._phases[:size] = phases
+        self._tokens[size] = token
+        self._rounds[size] = int(round_index)
+        self._phases[size] = int(phase)
+        self._size = size + 1
 
     @property
     def prefix(self) -> int:
-        return len(self.tokens)
+        return self._size
+
+    @property
+    def tokens(self) -> np.ndarray:
+        """uint8 ``[prefix, TOKEN_DIM]`` view of the stored tokens."""
+        return self._tokens[:self._size]
+
+    @property
+    def rounds(self) -> np.ndarray:
+        """int64 ``[prefix]`` view of each token's round index."""
+        return self._rounds[:self._size]
+
+    @property
+    def phases(self) -> np.ndarray:
+        """int64 ``[prefix]`` view of each token's phase."""
+        return self._phases[:self._size]
 
     def arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        tokens = (np.stack(self.tokens) if self.tokens
-                  else np.zeros((0, TOKEN_DIM), dtype=np.uint8))
-        return (tokens, np.asarray(self.rounds, dtype=np.int64),
-                np.asarray(self.phases, dtype=np.int64))
+        """``(tokens, rounds, phases)`` views; no copy."""
+        size = self._size
+        return self._tokens[:size], self._rounds[:size], self._phases[:size]
 
 
 @dataclass

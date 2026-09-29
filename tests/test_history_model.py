@@ -563,6 +563,47 @@ def test_stream_batch_pads_and_records_lengths():
     assert empty.tokens.shape == (1, 0, TOKEN_DIM)
 
 
+
+def test_stream_storage_grows_contiguously_and_views_stay_valid():
+    import copy
+    stream = PublicStream(3)
+    empty = stream.arrays()
+    assert empty[0].shape == (0, TOKEN_DIM) and empty[0].dtype == np.uint8
+    assert empty[1].shape == empty[2].shape == (0,) and empty[1].dtype == empty[2].dtype == np.int64
+    expected = []
+    early = None
+    for i in range(200):                      # crosses several doublings
+        token = valid_token(seat=i % 4, action_bit=i % 90, cards_left=27 - i % 28)
+        stream.append_token(token, i // 30, i % 4)
+        expected.append((token, i // 30, i % 4))
+        if i == 9:
+            early = stream.arrays()
+    tokens, rounds, phases = stream.arrays()
+    assert stream.prefix == len(stream.tokens) == 200 and tokens.shape == (200, TOKEN_DIM)
+    np.testing.assert_array_equal(tokens, np.stack([t for t, _, _ in expected]))
+    assert rounds.tolist() == [r for _, r, _ in expected]
+    assert phases.tolist() == [p for _, _, p in expected]
+    # Views, not copies; row and slice access as the list-backed stream allowed.
+    assert np.shares_memory(tokens, stream.tokens) and np.shares_memory(rounds, stream.rounds)
+    np.testing.assert_array_equal(stream.tokens[5], expected[5][0])
+    np.testing.assert_array_equal(stream.tokens[3:7], tokens[3:7])
+    assert stream.rounds[199] == 6 and stream.phases[-1] == 3
+    # An earlier view survives growth; a reset starts new storage.
+    np.testing.assert_array_equal(early[0], tokens[:10])
+    duplicate = copy.deepcopy(stream)
+    generation = stream.generation
+    stream.reset(4)
+    assert stream.prefix == 0 and stream.generation == generation + 1 and stream.match_id == 4
+    stream.append_token(valid_token(seat=2), 0, PLAY)
+    np.testing.assert_array_equal(tokens[0], expected[0][0])
+    np.testing.assert_array_equal(duplicate.tokens, tokens)
+    assert duplicate.prefix == 200 and stream.prefix == 1 and stream.tokens[0][2] == 1
+    # The appended token is copied in; changing the caller's array changes nothing.
+    token = valid_token(seat=1)
+    stream.append_token(token, 0, PLAY)
+    token[:] = 0
+    assert stream.tokens[1][1] == 1
+
 # ---- 5. checkpoint marker -------------------------------------------------------------
 
 def test_history_checkpoint_round_trips_exactly(tmp_path):
