@@ -95,6 +95,10 @@ class HistoryPPOConfig:
     rollout_graph_policy_budget_mb: int = 128  # per-policy cap inside the total budget
     rollout_triton_cache: bool = False  # lossless KV update/packing; requires Triton
     rollout_triton_min_batch: int = 1
+    # One shared page pool for every identity's public KV cache
+    # (train/history_paged_cache.py): a fixed number of operations per encode
+    # call instead of several per cached match. Bitwise on CPU; replaces Triton.
+    rollout_paged_cache: bool = False
     profile_collection: bool = False   # synchronized phase timings; diagnostic only
     profile_collection_warmup: int = 0  # unprofiled updates of this process before profiling
     # All snapshot identities' play rows of a vector step in one merged actor call
@@ -154,8 +158,11 @@ class HistoryPPOConfig:
                 self.window or self.response_mode == "explicit"):
             raise ValueError("batch_snapshot_policies requires full history and no explicit "
                              "response bridge")
-        if (self.rollout_private_graphs or self.rollout_triton_cache) and not self.rollout_kv_cache:
-            raise ValueError('CUDA rollout optimizations require rollout_kv_cache')
+        if (self.rollout_private_graphs or self.rollout_triton_cache
+                or self.rollout_paged_cache) and not self.rollout_kv_cache:
+            raise ValueError('KV cache layouts and CUDA rollout optimizations require rollout_kv_cache')
+        if self.rollout_paged_cache and self.rollout_triton_cache:
+            raise ValueError('rollout_paged_cache replaces rollout_triton_cache; choose one')
         if self.rollout_wide_projection and not self.rollout_batched_attention:
             raise ValueError('rollout_wide_projection requires rollout_batched_attention')
         if self.rollout_device not in (None, 'cpu', 'cuda'):
@@ -214,15 +221,17 @@ def parse_arm_schedule(schedule: str) -> list[tuple[int, bool]]:
 # processes and threads, checkpoint cadence and graph budgets (the per-update batch
 # stays num_envs x world size), the diagnostic collection profile (timing only),
 # merged snapshot inference (tier 2: frozen snapshot seats' float-order noise only),
-# the allocator cache trim (allocator timing only), plus snapshot_updates, which
-# changes dynamics.
+# the allocator cache trim (allocator timing only), the public KV cache storage
+# (Triton copies or paged pool: same attention inputs), plus snapshot_updates,
+# which changes dynamics.
 RESUME_OVERRIDES = frozenset({"num_envs", "num_threads", "minibatch_matches", "torch_threads",
                               "checkpoint_updates", "ddp_global_minibatch",
                               "rollout_graph_budget_mb", "rollout_graph_policy_budget_mb",
                               "rollout_triton_min_batch", "snapshot_updates",
                               "profile_collection", "profile_collection_warmup",
                               "batch_snapshot_policies", "batch_snapshot_policies_schedule",
-                              "rollout_trim_cuda_cache"})
+                              "rollout_trim_cuda_cache", "rollout_paged_cache",
+                              "rollout_triton_cache"})
 
 
 def parse_resume_overrides(items: list[str] | None) -> dict[str, Any]:
@@ -399,7 +408,8 @@ class HistoryTrainer:
                                 profile=self.collection_profiled(),
                                 temperature=config.rollout_temperature,
                                 epsilon=config.rollout_epsilon,
-                                batch_snapshot_policies=self.snapshot_batching())
+                                batch_snapshot_policies=self.snapshot_batching(),
+                                paged_cache=config.rollout_paged_cache)
 
     def snapshot_batching(self) -> bool:
         """Merged snapshot inference for this update (the schedule's block, if any)."""
@@ -493,6 +503,7 @@ class HistoryTrainer:
                           "rollout_graph_policy_budget_mb": self.config.rollout_graph_policy_budget_mb,
                           "rollout_triton_cache": self.collector.triton_cache,
                           "rollout_triton_min_batch": self.collector.triton_min_batch,
+                          "rollout_paged_cache": self.collector.paged_cache,
                           "batch_snapshot_policies": self.config.batch_snapshot_policies,
                           "batch_snapshot_policies_schedule":
                               self.config.batch_snapshot_policies_schedule,
@@ -929,6 +940,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="per-policy private-graph cap within the total budget")
     parser.add_argument("--rollout-triton-cache", action="store_true")
     parser.add_argument("--rollout-triton-min-batch", type=int, default=1)
+    parser.add_argument("--rollout-paged-cache", action="store_true",
+                        help="one shared page pool for the public KV cache: fixed operations "
+                             "per encode call (bitwise on CPU; replaces --rollout-triton-cache)")
     parser.add_argument("--batch-snapshot-policies", action="store_true",
                         help="all snapshot identities' rows of a vector step in one merged "
                              "actor call (FP32; snapshot seats' reduction order differs)")

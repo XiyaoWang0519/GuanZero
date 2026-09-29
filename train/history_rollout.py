@@ -534,7 +534,8 @@ class HistoryCollector:
                  private_graph_budget_mb: int = 512, private_graph_policy_budget_mb: int = 128,
                  triton_cache: bool = False,
                  triton_min_batch: int = 1,
-                 batch_snapshot_policies: bool = False) -> None:
+                 batch_snapshot_policies: bool = False,
+                 paged_cache: bool = False) -> None:
         self.env = env
         self.actor = actor
         self.store = store
@@ -550,6 +551,8 @@ class HistoryCollector:
             raise ValueError("private CUDA graphs require CUDA rollout and the full-history KV cache")
         if triton_cache and (not kv_cache or self.device.type != "cuda"):
             raise ValueError("Triton cache copies require CUDA rollout and the full-history KV cache")
+        if paged_cache and (not kv_cache or triton_cache):
+            raise ValueError("the paged KV cache requires the KV cache and replaces Triton copies")
         if triton_min_batch < 1:
             raise ValueError("Triton minimum batch must be positive")
         if private_graph_budget_mb < 1 or private_graph_policy_budget_mb < 1:
@@ -563,6 +566,8 @@ class HistoryCollector:
         self._graph_collecting = False
         self.triton_cache = triton_cache
         self.triton_min_batch = triton_min_batch
+        self.paged_cache = paged_cache
+        self.kv_pool = None             # shared by every identity's paged cache
         self.batch_snapshot_policies = bool(batch_snapshot_policies)
         self.snapshot_heads = None      # stacked snapshot heads, created on first merged step
         if self.batch_snapshot_policies:
@@ -581,10 +586,15 @@ class HistoryCollector:
         self.version = 0
 
     def cache_metrics(self) -> dict:
-        return dict(bytes=sum(c.bytes for c in self.caches.values()),
-                    entries=sum(len(c.entries) for c in self.caches.values()),
-                    encoded_tokens=sum(c.encoded_tokens for c in self.caches.values()),
-                    rebuilds=sum(c.rebuilds for c in self.caches.values()))
+        metrics = dict(bytes=sum(c.bytes for c in self.caches.values()),
+                       entries=sum(len(c.entries) for c in self.caches.values()),
+                       encoded_tokens=sum(c.encoded_tokens for c in self.caches.values()),
+                       rebuilds=sum(c.rebuilds for c in self.caches.values()))
+        if self.kv_pool is not None:
+            metrics.update(pool_reserved_bytes=self.kv_pool.reserved_bytes,
+                           pool_used_pages=self.kv_pool.used_pages,
+                           pool_pages=self.kv_pool.pages, pool_grows=self.kv_pool.grows)
+        return metrics
 
     def invalidate_learner_cache(self) -> None:
         # Release before PPO allocates activations; rebuild with updated weights.
@@ -598,7 +608,7 @@ class HistoryCollector:
                 active.setdefault(identity, set()).add(key)
         for identity in list(self.caches):
             if identity not in active:
-                del self.caches[identity]
+                self.caches.pop(identity).clear()   # paged caches return their pages
             else:
                 self.caches[identity].prune(active[identity])
         for identity in list(self.decision_graphs):
@@ -647,7 +657,14 @@ class HistoryCollector:
         from train.history_inference import BatchedHistoryCache
         cache = self.caches.get(int(identity))
         if cache is None or cache.actor is not actor:
-            if self.triton_cache:
+            if cache is not None:
+                cache.clear()
+            if self.paged_cache:
+                from train.history_paged_cache import KVPagePool, PagedHistoryCache
+                if self.kv_pool is None:
+                    self.kv_pool = KVPagePool.for_actor(actor)
+                cache = PagedHistoryCache(actor, self.kv_pool)
+            elif self.triton_cache:
                 from train.history_triton_cache import TritonHistoryCache
                 cache = TritonHistoryCache(actor, min_batch=self.triton_min_batch)
             else:

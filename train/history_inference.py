@@ -150,15 +150,7 @@ class BatchedHistoryCache:
             self._append([entries[i] for i in indices],
                          [min(self.chunk_size, targets[i] - entries[i].length) for i in indices])
         # Power-of-two shapes reduce allocator churn without truncating history.
-        size = bucket(max(targets))
-        if all(entry.capacity >= size for entry in entries):
-            # Padding in each cache stays zero. stack also keeps the returned
-            # snapshot independent of later appends, including a single stream.
-            memory = torch.stack([entry.memory[:size] for entry in entries])
-        else:
-            memory = self.actor.bos.new_zeros(len(entries), size, self.actor.config.width)
-            for i, entry in enumerate(entries):
-                memory[i, :entry.length].copy_(entry.memory[:entry.length])
+        memory = self._gather_memory(entries, bucket(max(targets)))
         device = memory.device
         metadata = StreamBatch(torch.empty(len(entries), 0, TOKEN_DIM, dtype=torch.uint8, device=device),
                                torch.empty(len(entries), 0, dtype=torch.long, device=device),
@@ -166,6 +158,18 @@ class BatchedHistoryCache:
                                preuploaded_lengths if preuploaded_lengths is not None else
                                torch.tensor([n - 1 for n in targets], device=device))
         return metadata, memory
+
+    def _gather_memory(self, entries: list[Entry], size: int) -> Tensor:
+        """``[len(entries), size, width]`` top-layer memory, zero past each length,
+        in storage independent of the cache."""
+        if all(entry.capacity >= size for entry in entries):
+            # Padding in each cache stays zero. stack also keeps the returned
+            # snapshot independent of later appends, including a single stream.
+            return torch.stack([entry.memory[:size] for entry in entries])
+        memory = self.actor.bos.new_zeros(len(entries), size, self.actor.config.width)
+        for i, entry in enumerate(entries):
+            memory[i, :entry.length].copy_(entry.memory[:entry.length])
+        return memory
 
     def _pack_keys_values(self, entries: list[Entry], counts: list[int], layer_index: int,
                           new_k: Tensor, new_v: Tensor, capacity: int
