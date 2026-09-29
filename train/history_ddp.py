@@ -45,7 +45,8 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 
 from train import history_ppo
-from train.history_ppo import HistoryPPOConfig, HistoryTrainer, config_from_args, grad_norm
+from train.history_ppo import (HistoryPPOConfig, HistoryTrainer, config_from_args, grad_norm,
+                               minibatch_scalars)
 
 RANK_SEED_STRIDE = 7919
 RANK_ENV_STRIDE = 10_000_000
@@ -116,11 +117,15 @@ class HistoryDDPTrainer(HistoryTrainer):
         count = int(round(float(host[-1])))
         if count == 0:
             return 0
+        # A fresh tensor (the division allocates); each gradient is a view of
+        # its slice, the same values as the former per-parameter clones without
+        # one copy kernel per parameter. clip_grad_norm_ scales the views in
+        # place, which touches disjoint slices only.
         flat = host[:-1].to(flat.device) / count
         begin = 0
         for p in params:
             n = p.numel()
-            p.grad = flat[begin:begin + n].view_as(p).clone()
+            p.grad = flat[begin:begin + n].view_as(p)
             begin += n
         return count
 
@@ -196,18 +201,21 @@ class HistoryDDPTrainer(HistoryTrainer):
                     (scale * terms["value_total"]).backward()
                 if self.reduce_gradients(real) == 0:
                     continue
-                encoder = grad_norm(self.actor.stream.parameters())
-                actor = float(torch.nn.utils.clip_grad_norm_(self.actor.parameters(), cfg.grad_clip))
-                critic = float(torch.nn.utils.clip_grad_norm_(self.critic.parameters(), cfg.grad_clip))
+                # One device read per step: norms, loss statistics and the
+                # finite check, before the optimizer steps (see HistoryTrainer.learn).
+                encoder_norm = grad_norm(self.actor.stream.parameters(), self.device)
+                actor_norm = torch.nn.utils.clip_grad_norm_(self.actor.parameters(), cfg.grad_clip)
+                critic_norm = torch.nn.utils.clip_grad_norm_(self.critic.parameters(), cfg.grad_clip)
+                actor, critic, encoder, scalars = minibatch_scalars(
+                    actor_norm, critic_norm, encoder_norm, terms if real else {}, self.STAT_KEYS)
                 if not (math.isfinite(actor) and math.isfinite(critic)):
                     raise FloatingPointError("non-finite gradient; stopping before the step")
                 self.actor_optimizer.step()
                 self.critic_optimizer.step()
                 steps += 1
                 if real:
-                    for key in self.STAT_KEYS:
-                        if key in terms:
-                            totals[key] += float(terms[key].detach())
+                    for key, value in scalars.items():
+                        totals[key] += value
                     totals["actor_grad_norm"] += actor
                     totals["encoder_grad_norm"] += encoder
                     totals["critic_grad_norm"] += critic

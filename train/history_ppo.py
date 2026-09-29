@@ -255,12 +255,41 @@ def segment_entropy(log_probs: torch.Tensor, rows: torch.Tensor, count: int) -> 
         0, rows, terms)
 
 
-def grad_norm(parameters) -> float:
-    total = 0.0
-    for p in parameters:
-        if p.grad is not None:
-            total += float(p.grad.detach().float().norm() ** 2)
-    return math.sqrt(total)
+def grad_norm(parameters, device: torch.device | str = "cpu") -> torch.Tensor:
+    """L2 norm of the parameters' gradients: a float32 0-d tensor on their device.
+
+    Logging only (``encoder_grad_norm``). It is computed on the device without
+    a host synchronization: per-tensor float32 norms (``torch._foreach_norm``,
+    the kernels ``clip_grad_norm_`` uses) combined by one float32 norm. Until
+    September 29 2026 the squared per-tensor norms were accumulated as Python
+    doubles, one device read per tensor; logged values differ from that in
+    float32 rounding only. ``device`` places the zero returned when no
+    parameter has a gradient.
+    """
+    grads = [p.grad.detach() for p in parameters if p.grad is not None]
+    if not grads:
+        return torch.zeros((), device=device)
+    grads = [g if g.dtype == torch.float32 else g.float() for g in grads]
+    return torch.linalg.vector_norm(torch.stack(torch._foreach_norm(grads)))
+
+
+def minibatch_scalars(actor_norm: torch.Tensor, critic_norm: torch.Tensor,
+                      encoder_norm: torch.Tensor, terms: dict[str, torch.Tensor],
+                      keys: tuple[str, ...]) -> tuple[float, float, float, dict[str, float]]:
+    """Every per-minibatch scalar the learner logs, in ONE device-to-host read.
+
+    ``actor_norm``/``critic_norm`` are ``clip_grad_norm_``'s returned totals,
+    ``encoder_norm`` is ``grad_norm``'s tensor, and ``terms[key]`` for each
+    ``key`` in ``keys`` present in ``terms`` are the loss statistics. Values
+    are float32 on device, so each Python float equals the former per-scalar
+    ``float(tensor)`` read exactly. Returns (actor, critic, encoder, terms).
+    """
+    present = tuple(key for key in keys if key in terms)
+    device = encoder_norm.device   # clip_grad_norm_ returns a CPU zero without gradients
+    values = torch.stack([value.detach().to(device, torch.float32) for value in
+                          (actor_norm, critic_norm, encoder_norm,
+                           *(terms[key] for key in present))]).tolist()
+    return values[0], values[1], values[2], dict(zip(present, values[3:]))
 
 
 class HistoryTrainer:
@@ -668,18 +697,21 @@ class HistoryTrainer:
                 self.critic_optimizer.zero_grad(set_to_none=True)
                 terms["policy_total"].backward()
                 terms["value_total"].backward()
-                encoder = grad_norm(self.actor.stream.parameters())
-                actor = float(torch.nn.utils.clip_grad_norm_(self.actor.parameters(),
-                                                             cfg.grad_clip))
-                critic = float(torch.nn.utils.clip_grad_norm_(self.critic.parameters(),
-                                                              cfg.grad_clip))
+                # Norms and loss statistics stay on the device; one read below
+                # serves the logs and the finite check, still before the step.
+                encoder_norm = grad_norm(self.actor.stream.parameters(), self.device)
+                actor_norm = torch.nn.utils.clip_grad_norm_(self.actor.parameters(),
+                                                            cfg.grad_clip)
+                critic_norm = torch.nn.utils.clip_grad_norm_(self.critic.parameters(),
+                                                             cfg.grad_clip)
+                actor, critic, encoder, scalars = minibatch_scalars(
+                    actor_norm, critic_norm, encoder_norm, terms, self.STAT_KEYS)
                 if not (math.isfinite(actor) and math.isfinite(critic)):
                     raise FloatingPointError("non-finite gradient; stopping before the step")
                 self.actor_optimizer.step()
                 self.critic_optimizer.step()
-                for key in self.STAT_KEYS:
-                    if key in terms:
-                        totals[key] += float(terms[key].detach())
+                for key, value in scalars.items():
+                    totals[key] += value
                 totals["actor_grad_norm"] += actor
                 totals["encoder_grad_norm"] += encoder
                 totals["critic_grad_norm"] += critic
