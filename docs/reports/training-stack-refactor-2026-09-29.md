@@ -71,6 +71,13 @@ Arms diverge (tier 2 changes float order), so their histories differ a little
   compute-bound (SDPA is ~60% of collect). In a host-bound proxy (155 streams
   of ~40 tokens, width 16, one thread) a paged encode takes 2.7 ms against
   5.5 ms. Whether this matters on CUDA is the open question below.
+- **Launch-count proxy.** Tensor operations that would launch a kernel,
+  counted at the dispatcher (views and metadata excluded), per vector step in
+  steady state (64 envs, width 64, 4 layers, merged snapshot heads, 32 steps
+  after the learner rebuild): per-entry cache 1,926; paged cache 1,021;
+  paged cache + merged encoder 466 (4.1x fewer). The per-entry count includes
+  the pack copies that production's Triton kernel already fuses, so the gain
+  against the Triton path is smaller than this ratio.
 
 ## What is not known
 
@@ -78,8 +85,21 @@ Arms diverge (tier 2 changes float order), so their histories differ a little
   collection was host-bound: 0.3 ms per cached row per call, and ~11
   snapshot encode calls per step. The paged cache and merged encoder remove
   exactly that per-row and per-call work, but that is an expectation, not a
-  measurement. The learner length groups remove FLOPs, which should also help
-  on CUDA if learn is not launch-bound.
+  measurement. A parallel analysis of the same Sept 28 profile (branch
+  `XiyaoWang0519/find-training-speedups`) puts the GPU at 92% utilization but
+  only ~207 W, with ~3,100 kernel launches per step per rank (~2,750 in the
+  snapshot encodes) and learn at ~0.1 TFLOP per minibatch: kernel-count bound,
+  not FLOP bound. If so, the options that remove FLOPs (length groups, page
+  span) may gain little on the GPU, while the ones that remove launches (paged
+  cache, merged encoder) are the ones to test. Length groups add encoder
+  launches; include `learner_length_groups=1` (prefix truncation only) and `2`
+  arms.
+- **Overlap with that branch.** It independently implements contiguous public
+  streams, the learn-phase sync collapse and a merged snapshot encode (over the
+  Triton cache instead of a page pool), plus a stable Triton pointer table and
+  a CUDA MPS arm, with its own GPU A/B kit. The two branches conflict in
+  `history_model.py`, `history_ppo.py`, `history_rollout.py` and
+  `history_snapshot_batch.py`; only one set of those levers should be merged.
 - **Memory.** The page pool grows by 25% steps and never shrinks. Its peak is
   roughly the live cache peak; allocator trims do not release it.
 - **CUDA numerics.** The paged cache feeds SDPA strided key/value views. On
