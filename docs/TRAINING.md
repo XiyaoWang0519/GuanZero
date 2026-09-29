@@ -159,6 +159,18 @@ and charges a learner-cache rebuild each chunk unless explicitly disabled for
 a frozen-cache diagnostic. Source changes preserve the original T4 archive;
 they do not silently bypass checkpoint source identity for resume.
 
+Python profile (diagnostic, off by default): with
+`GUANZERO_CPROFILE_DIR=<dir>` in the environment, `train.history_ppo` and
+every `train.history_ddp` rank run `trainer.run()` under `cProfile` and write
+`<dir>/rank-<r>.prof` (`pstats` format; the single-process trainer is rank 0)
+when the run returns, including after a SIGTERM/SIGINT stop, or fails. Nothing
+trained or sampled changes, but profiler overhead inflates every timing field,
+so a profiled run is not a throughput measurement. It covers each rank's main
+thread only; read it with `python -m pstats <dir>/rank-0.prof`. C functions
+are folded into their Python callers' own time; `GUANZERO_CPROFILE_BUILTINS=1`
+lists them, but under Python 3.12 some torch C calls then drop the enclosing
+frames (`run`, `update`, `collect`) from the call tree.
+
 Use the existing Python environment with the matching C++ extension. Fresh
 installation uses Python 3.11+, C++20, CMake 3.24+ and Ninja:
 

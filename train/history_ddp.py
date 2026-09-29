@@ -271,7 +271,7 @@ def _rank_main(rank: int, world: int, port: int, argv: list[str]) -> None:
             trainer.stop_requested = True
         signal.signal(signal.SIGTERM, stop)
         signal.signal(signal.SIGINT, stop)
-        trainer.run()
+        history_ppo.run_profiled(trainer, rank)
     finally:
         dist.destroy_process_group()
 

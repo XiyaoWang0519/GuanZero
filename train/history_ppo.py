@@ -34,6 +34,7 @@ import copy
 from dataclasses import asdict, dataclass, fields
 import json
 import math
+import os
 import signal
 from pathlib import Path
 import sys
@@ -918,6 +919,43 @@ class HistoryTrainer:
         self.save()
 
 
+# ---- diagnostics ----------------------------------------------------------------
+
+CPROFILE_ENV = "GUANZERO_CPROFILE_DIR"
+CPROFILE_BUILTINS_ENV = "GUANZERO_CPROFILE_BUILTINS"
+
+
+def run_profiled(trainer: "HistoryTrainer", rank: int = 0) -> None:
+    """``trainer.run()``; with ``GUANZERO_CPROFILE_DIR`` set, under cProfile.
+
+    Diagnostic only and off by default: the profile of this process's main
+    thread is written to ``<dir>/rank-<rank>.prof`` (``pstats`` format) when
+    ``run`` returns, including after a SIGTERM/SIGINT stop request, or raises.
+    It changes nothing that is trained or sampled, but the profiler's per-call
+    overhead makes the run's timings unusable for throughput comparisons.
+
+    C functions are not entries by default: their time counts in the calling
+    Python function's own time. Under Python 3.12 recording them
+    (``GUANZERO_CPROFILE_BUILTINS=1``) drops every enclosing frame of some
+    torch C calls (``torch.save``'s zip writer, calls inside collection) from
+    the call tree, so ``run``/``update``/``collect`` would be missing.
+    """
+    directory = os.environ.get(CPROFILE_ENV)
+    if not directory:
+        trainer.run()
+        return
+    import cProfile
+    path = Path(directory) / f"rank-{rank}.prof"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    profiler = cProfile.Profile(builtins=os.environ.get(CPROFILE_BUILTINS_ENV) == "1")
+    profiler.enable()
+    try:
+        trainer.run()
+    finally:
+        profiler.disable()
+        profiler.dump_stats(str(path))
+
+
 # ---- CLI ------------------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1034,7 +1072,7 @@ def main(argv: list[str] | None = None) -> int:
         trainer.stop_requested = True
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    trainer.run()
+    run_profiled(trainer)
     return 0
 
 
