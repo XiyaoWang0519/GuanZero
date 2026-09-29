@@ -143,7 +143,10 @@ vector step in one merged actor call over stacked head weights. It is
 acceptance tier 2 for snapshot seats only (FP32 reduction-order noise; the
 same uniforms from the same generator in the same order); learner rows and
 sampling are unchanged and snapshot seats bypass private graphs. CPU tests
-pass; CUDA correctness and speed are not yet measured.
+pass. On one RTX 4090 the CUDA gate passed (max merged vs per-identity
+log-prob difference 9.5e-7 at production size) and an in-run A/B measured
+1.355x decisions/s with 4 ranks
+([report](reports/history-snapshot-batching-2026-09-28.md)); no strength claim.
 `rollout_trim_cuda_cache` (`--rollout-trim-cuda-cache auto|true|false`,
 resume-settable and recorded) calls `torch.cuda.empty_cache()` after collect and
 after learn; `auto` (default) follows the merged-snapshot arm, because with the
@@ -152,7 +155,10 @@ rank's reserved memory ratchets. Switching the arm on also trims right after
 the snapshot graphs are released. Allocator timing only: CPU tests show rows,
 choices, weights and sampler bitwise unchanged; every metrics line records
 reserved/allocated bytes before and after each trim and its seconds
-(`cuda_trim`, `cuda_trim_seconds`). Not yet run on CUDA.
+(`cuda_trim`, `cuda_trim_seconds`). The CUDA gate passed on one RTX 4090
+(bitwise apart from process-wide allocator counters) and a 30-update check kept
+nvidia-smi flat at 0.12 s per update
+([report](reports/history-snapshot-batching-2026-09-28.md)).
 `bench.history_stack` alternates dense/SDPA/KV cases with fixed learning rules
 and records full-update throughput/memory. CPU mode requires `--collect-only`
 and charges a learner-cache rebuild each chunk unless explicitly disabled for

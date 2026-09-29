@@ -9,3 +9,4 @@ __pycache__/
 ogd_traces/
 .work/
 runs/
+.DS_Store
