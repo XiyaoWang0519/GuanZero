@@ -6,12 +6,17 @@ trim is a no-op, so a run with it on must equal a run with it off bit for bit
 (rows, choices, metrics, weights, sampler). The CUDA variant checks the same on
 the device and that reserved memory does not grow across a trim.
 """
+import os
+
 import numpy as np
 import pytest
 import torch
 
 from train.history_ppo import (HistoryPPOConfig, HistoryTrainer, build_parser, config_from_args,
                                parse_resume_overrides)
+
+# Deterministic cuBLAS for the CUDA variants; set before any CUDA work in this process.
+os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 
 TRIM_KEYS = {"rollout_trim_cuda_cache", "cuda_trim", "cuda_trim_seconds"}
 TIMING_KEYS = {"collection_phase_seconds", "collection_profile_synchronized",
@@ -150,14 +155,17 @@ def test_trim_leaves_training_bitwise_unchanged_on_cpu(tmp_path, merge):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA allocator cache trim")
-def test_trim_leaves_training_bitwise_unchanged_on_cuda(tmp_path, monkeypatch):
-    monkeypatch.setenv("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+def test_trim_leaves_training_bitwise_unchanged_on_cuda(tmp_path):
     trainers, lines = run_pair(tmp_path, "cuda",
                                ["batch_snapshot_policies=true", "rollout_trim_cuda_cache=true"],
                                ["batch_snapshot_policies=true", "rollout_trim_cuda_cache=false"],
                                rollout_device="cuda")
     assert_identical(trainers, lines)
     for line in lines["on"]:
+        print(f"\nupdate {line['update']} trims (MiB): " + ", ".join(
+            f"{point} reserved {r['reserved_before'] / 2**20:.0f}->{r['reserved_after'] / 2**20:.0f} "
+            f"allocated {r['allocated_before'] / 2**20:.0f} in {r['seconds']:.4f}s"
+            for point, r in line["cuda_trim"].items()))
         for record in line["cuda_trim"].values():
             assert record["reserved_before"] > 0
             assert record["reserved_after"] <= record["reserved_before"]
@@ -165,19 +173,24 @@ def test_trim_leaves_training_bitwise_unchanged_on_cuda(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA private graphs")
-def test_switching_the_arm_on_releases_snapshot_graph_pools(tmp_path, monkeypatch):
+def test_switching_the_arm_on_releases_snapshot_graph_pools(tmp_path):
     # Off: snapshot seats capture private graphs. On: they are cleared before
     # collection and the trim right after returns their pools.
-    monkeypatch.setenv("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
-    pytest.importorskip("triton")
     config = HistoryPPOConfig(**base(rollout_device="cuda", rollout_private_graphs=True,
-                                     rollout_batched_attention=True, num_envs=8,
-                                     batch_snapshot_policies_schedule="4:off,2:on",
-                                     rollout_trim_cuda_cache=True))
-    trainer = HistoryTrainer(config, tmp_path / "switch", device="cuda")
+                                     rollout_batched_attention=True, num_envs=8))
+    start = HistoryTrainer(config, tmp_path / "start", device="cuda")
+    for _ in range(2):
+        start.update()
+    # A resume restarts the environments: every new match draws snapshot seats.
+    trainer = HistoryTrainer(HistoryPPOConfig(updates=8), tmp_path / "switch", device="cuda",
+                             resume=start.save(), resume_overrides=parse_resume_overrides(
+                                 ["batch_snapshot_policies_schedule=4:off,2:on",
+                                  "rollout_trim_cuda_cache=true"]))
     lines = [trainer.update() for _ in range(6)]
     had_snapshot_graphs = any(set(line["private_graphs"]) - {"0"} for line in lines[:4])
     released = [line["cuda_trim"].get("graphs_released") for line in lines[4:]]
+    print(f"\nsnapshot private graphs before the switch: {had_snapshot_graphs}; "
+          f"graphs_released trim: {released[0]}")
     if had_snapshot_graphs:
         assert released[0] is not None
         assert released[0]["reserved_after"] <= released[0]["reserved_before"]
