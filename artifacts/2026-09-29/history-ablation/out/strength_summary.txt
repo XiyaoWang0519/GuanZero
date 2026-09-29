@@ -1,0 +1,8 @@
+## single rounds (1000 duplicate deals, generate_deals(1000, seed=20260929))
+full_b11   deals=1000 net/round=+0.076 [-0.009,+0.162] first=0.512 double=0.238 opp_double=0.220
+none_b11   deals=1000 net/round=+0.114 [+0.028,+0.198] first=0.514 double=0.253 opp_double=0.216
+full_none  deals=1000 net/round=-0.015 [-0.070,+0.042] first=0.500 double=0.218 opp_double=0.226
+paired (FULL vs B11) - (NONE vs B11) per deal: -0.037 [-0.097,+0.022]
+
+## full matches (pair p: seed 29092600+p, A on team 0 and team 1)
+full_round pairs=185 matches=370 rounds=4067 win=0.486 [0.446,0.527] net/round=-0.010 [-0.071,+0.053] first=0.495 double=0.239

@@ -1,0 +1,45 @@
+{
+ "original_recorder": "RuntimeError: u2623.pt@ef83694ba7a5400a/history: select() before start_match(); the evaluator did not open a match for this history policy",
+ "checks": [
+  {
+   "check": "duplicate deal 0 (2 legs)",
+   "evaluator_decisions": 202,
+   "recorder_decisions": 202,
+   "identical": true,
+   "first_difference": null,
+   "history_decisions": 103,
+   "max_prefix": 124
+  },
+  {
+   "check": "duplicate deal 1 (2 legs)",
+   "evaluator_decisions": 135,
+   "recorder_decisions": 135,
+   "identical": true,
+   "first_difference": null,
+   "history_decisions": 67,
+   "max_prefix": 96
+  },
+  {
+   "check": "duplicate deal 2 (2 legs)",
+   "evaluator_decisions": 182,
+   "recorder_decisions": 182,
+   "identical": true,
+   "first_difference": null,
+   "history_decisions": 94,
+   "max_prefix": 122
+  },
+  {
+   "check": "full match seed 424242",
+   "evaluator_decisions": 1239,
+   "recorder_decisions": 1239,
+   "identical": true,
+   "first_difference": null,
+   "history_decisions": 609,
+   "max_prefix": 1747,
+   "evaluator_rounds": 17,
+   "recorder_rounds": 17,
+   "evaluator_winner": 0,
+   "recorder_winner": 0
+  }
+ ]
+}

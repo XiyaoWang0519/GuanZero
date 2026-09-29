@@ -1,0 +1,164 @@
+
+==== single rounds: 73548 probe decisions, 72192 with >=2 legal ====
+FULL vs NONE: n=72192 flips=1067 (1.48%) meanTV=0.0130 medianTV=0.0051 share TV>0.1=1.004% TV>0.3=0.003%
+ FULL vs NONE splits (single rounds):
+  by lead:
+    follow   n= 58623 flips=  759 ( 1.29%) meanTV=0.0112 p90TV=0.0306 maxTV=0.333
+    lead     n= 13569 flips=  308 ( 2.27%) meanTV=0.0207 p90TV=0.0562 maxTV=0.305
+  by third:
+    early    n= 29913 flips=  413 ( 1.38%) meanTV=0.0108 p90TV=0.0292 maxTV=0.274
+    late     n= 17379 flips=  277 ( 1.59%) meanTV=0.0150 p90TV=0.0425 maxTV=0.333
+    mid      n= 24900 flips=  377 ( 1.51%) meanTV=0.0143 p90TV=0.0395 maxTV=0.305
+  by own_left:
+    01-05    n= 10662 flips=  109 ( 1.02%) meanTV=0.0117 p90TV=0.0343 maxTV=0.333
+    06-10    n= 13164 flips=  207 ( 1.57%) meanTV=0.0151 p90TV=0.0411 maxTV=0.274
+    11-18    n= 22878 flips=  384 ( 1.68%) meanTV=0.0144 p90TV=0.0398 maxTV=0.305
+    19-27    n= 25488 flips=  367 ( 1.44%) meanTV=0.0112 p90TV=0.0299 maxTV=0.228
+  by opp_min_left:
+    1-2      n= 13493 flips=  230 ( 1.70%) meanTV=0.0153 p90TV=0.0435 maxTV=0.333
+    11+      n= 34415 flips=  455 ( 1.32%) meanTV=0.0111 p90TV=0.0299 maxTV=0.274
+    3-5      n=  9815 flips=  141 ( 1.44%) meanTV=0.0148 p90TV=0.0410 maxTV=0.258
+    6-10     n= 14469 flips=  241 ( 1.67%) meanTV=0.0141 p90TV=0.0394 maxTV=0.290
+  by partner_left:
+    01-05    n= 12265 flips=  214 ( 1.74%) meanTV=0.0153 p90TV=0.0435 maxTV=0.333
+    06-10    n= 11944 flips=  157 ( 1.31%) meanTV=0.0143 p90TV=0.0395 maxTV=0.264
+    11-18    n= 20583 flips=  288 ( 1.40%) meanTV=0.0126 p90TV=0.0346 maxTV=0.305
+    19-27    n= 22356 flips=  302 ( 1.35%) meanTV=0.0106 p90TV=0.0282 maxTV=0.274
+    out      n=  5044 flips=  106 ( 2.10%) meanTV=0.0165 p90TV=0.0462 maxTV=0.246
+  by chosen_type:
+    Bomb     n=  4311 flips=   44 ( 1.02%) meanTV=0.0165 p90TV=0.0409 maxTV=0.198
+    FullHouse n=  3536 flips=   64 ( 1.81%) meanTV=0.0205 p90TV=0.0530 maxTV=0.290
+    Pair     n=  8062 flips=   99 ( 1.23%) meanTV=0.0135 p90TV=0.0352 maxTV=0.305
+    Pass     n= 26020 flips=  303 ( 1.16%) meanTV=0.0090 p90TV=0.0269 maxTV=0.333
+    Plate    n=   373 flips=    6 ( 1.61%) meanTV=0.0211 p90TV=0.0618 maxTV=0.180
+    Single   n= 24950 flips=  472 ( 1.89%) meanTV=0.0147 p90TV=0.0377 maxTV=0.266
+    Straight n=  1939 flips=   29 ( 1.50%) meanTV=0.0152 p90TV=0.0465 maxTV=0.205
+    StraightFlush n=   778 flips=   12 ( 1.54%) meanTV=0.0171 p90TV=0.0433 maxTV=0.137
+    Triple   n=  1436 flips=   29 ( 2.02%) meanTV=0.0162 p90TV=0.0429 maxTV=0.192
+    Tube     n=   786 flips=    9 ( 1.15%) meanTV=0.0167 p90TV=0.0519 maxTV=0.218
+  by pass_play:
+    pass     n= 26020 flips=  303 ( 1.16%) meanTV=0.0090 p90TV=0.0269 maxTV=0.333
+    play     n= 46172 flips=  764 ( 1.65%) meanTV=0.0153 p90TV=0.0397 maxTV=0.305
+  by n_legal:
+    2        n= 16048 flips=  128 ( 0.80%) meanTV=0.0080 p90TV=0.0244 maxTV=0.333
+    21+      n=  8346 flips=  186 ( 2.23%) meanTV=0.0185 p90TV=0.0483 maxTV=0.305
+    3-5      n= 25524 flips=  327 ( 1.28%) meanTV=0.0120 p90TV=0.0330 maxTV=0.274
+    6-20     n= 22274 flips=  426 ( 1.91%) meanTV=0.0158 p90TV=0.0391 maxTV=0.264
+
+==== full matches: 8244 probe decisions, 8075 with >=2 legal ====
+FULL vs NONE: n=8075 flips=89 (1.10%) meanTV=0.0107 medianTV=0.0046 share TV>0.1=0.508% TV>0.3=0.000%
+FULL vs ROUND (rounds>0): n=7290 flips=60 (0.82%) meanTV=0.0072 medianTV=0.0030 share TV>0.1=0.178% TV>0.3=0.000%
+FULL vs SWAP (rounds>0 with donor): n=6122 flips=5 (0.08%) meanTV=0.0009 medianTV=0.0002 share TV>0.1=0.000% TV>0.3=0.000%
+same decisions (n=6122): meanTV FULL-ROUND=0.0074 FULL-SWAP=0.0009 SWAP-ROUND=0.0073; flips FULL-ROUND=55 FULL-SWAP=5 SWAP-ROUND=54
+  TV(FULL,ROUND)-TV(FULL,SWAP) = +0.0065 [+0.0060,+0.0070] (pair-clustered bootstrap)
+ FULL vs ROUND by round index:
+  by round_index:
+    1        n=   772 flips=    6 ( 0.78%) meanTV=0.0109 p90TV=0.0298 maxTV=0.153
+    2        n=   747 flips=    4 ( 0.54%) meanTV=0.0080 p90TV=0.0213 maxTV=0.134
+    3        n=   717 flips=    7 ( 0.98%) meanTV=0.0076 p90TV=0.0214 maxTV=0.163
+    4-5      n=  1365 flips=    9 ( 0.66%) meanTV=0.0058 p90TV=0.0159 maxTV=0.108
+    6-8      n=  1838 flips=   17 ( 0.92%) meanTV=0.0060 p90TV=0.0157 maxTV=0.103
+    9+       n=  1851 flips=   17 ( 0.92%) meanTV=0.0073 p90TV=0.0193 maxTV=0.124
+ FULL vs SWAP by round index:
+  by round_index:
+    1        n=   643 flips=    0 ( 0.00%) meanTV=0.0001 p90TV=0.0003 maxTV=0.002
+    2        n=   663 flips=    0 ( 0.00%) meanTV=0.0008 p90TV=0.0017 maxTV=0.023
+    3        n=   643 flips=    0 ( 0.00%) meanTV=0.0013 p90TV=0.0038 maxTV=0.025
+    4-5      n=  1298 flips=    0 ( 0.00%) meanTV=0.0007 p90TV=0.0019 maxTV=0.015
+    6-8      n=  1665 flips=    3 ( 0.18%) meanTV=0.0011 p90TV=0.0028 maxTV=0.022
+    9+       n=  1210 flips=    2 ( 0.17%) meanTV=0.0013 p90TV=0.0030 maxTV=0.067
+ FULL vs NONE by round index:
+  by round_index:
+    0        n=   785 flips=   12 ( 1.53%) meanTV=0.0125 p90TV=0.0331 maxTV=0.153
+    1        n=   772 flips=    6 ( 0.78%) meanTV=0.0119 p90TV=0.0324 maxTV=0.154
+    2        n=   747 flips=    6 ( 0.80%) meanTV=0.0103 p90TV=0.0276 maxTV=0.230
+    3        n=   717 flips=    5 ( 0.70%) meanTV=0.0094 p90TV=0.0254 maxTV=0.182
+    4-5      n=  1365 flips=   15 ( 1.10%) meanTV=0.0103 p90TV=0.0275 maxTV=0.152
+    6-8      n=  1838 flips=   24 ( 1.31%) meanTV=0.0111 p90TV=0.0297 maxTV=0.143
+    9+       n=  1851 flips=   21 ( 1.13%) meanTV=0.0100 p90TV=0.0263 maxTV=0.167
+ FULL vs ROUND splits (rounds>0):
+  by lead:
+    follow   n=  5841 flips=   42 ( 0.72%) meanTV=0.0064 p90TV=0.0170 maxTV=0.149
+    lead     n=  1449 flips=   18 ( 1.24%) meanTV=0.0104 p90TV=0.0255 maxTV=0.163
+  by third:
+    early    n=  2887 flips=   22 ( 0.76%) meanTV=0.0061 p90TV=0.0162 maxTV=0.096
+    late     n=  1818 flips=   19 ( 1.05%) meanTV=0.0084 p90TV=0.0223 maxTV=0.153
+    mid      n=  2585 flips=   19 ( 0.74%) meanTV=0.0075 p90TV=0.0213 maxTV=0.163
+  by own_left:
+    01-05    n=  1134 flips=    8 ( 0.71%) meanTV=0.0069 p90TV=0.0186 maxTV=0.149
+    06-10    n=  1314 flips=   14 ( 1.07%) meanTV=0.0082 p90TV=0.0226 maxTV=0.163
+    11-18    n=  2174 flips=   20 ( 0.92%) meanTV=0.0080 p90TV=0.0221 maxTV=0.120
+    19-27    n=  2668 flips=   18 ( 0.67%) meanTV=0.0062 p90TV=0.0162 maxTV=0.124
+  by opp_min_left:
+    1-2      n=  1388 flips=   17 ( 1.22%) meanTV=0.0082 p90TV=0.0221 maxTV=0.153
+    11+      n=  3508 flips=   25 ( 0.71%) meanTV=0.0062 p90TV=0.0167 maxTV=0.124
+    3-5      n=  1059 flips=   10 ( 0.94%) meanTV=0.0093 p90TV=0.0242 maxTV=0.163
+    6-10     n=  1335 flips=    8 ( 0.60%) meanTV=0.0069 p90TV=0.0188 maxTV=0.077
+  by partner_left:
+    01-05    n=  1307 flips=   15 ( 1.15%) meanTV=0.0084 p90TV=0.0228 maxTV=0.153
+    06-10    n=  1162 flips=    6 ( 0.52%) meanTV=0.0068 p90TV=0.0186 maxTV=0.124
+    11-18    n=  1921 flips=   17 ( 0.88%) meanTV=0.0072 p90TV=0.0204 maxTV=0.163
+    19-27    n=  2328 flips=   16 ( 0.69%) meanTV=0.0061 p90TV=0.0157 maxTV=0.085
+    out      n=   572 flips=    6 ( 1.05%) meanTV=0.0093 p90TV=0.0245 maxTV=0.134
+  by chosen_type:
+    Bomb     n=   449 flips=    1 ( 0.22%) meanTV=0.0084 p90TV=0.0218 maxTV=0.075
+    FullHouse n=   369 flips=    3 ( 0.81%) meanTV=0.0102 p90TV=0.0255 maxTV=0.149
+    Pair     n=   857 flips=   13 ( 1.52%) meanTV=0.0078 p90TV=0.0191 maxTV=0.163
+    Pass     n=  2540 flips=   10 ( 0.39%) meanTV=0.0054 p90TV=0.0156 maxTV=0.125
+    Plate    n=    32 flips=    0 ( 0.00%) meanTV=0.0104 p90TV=0.0260 maxTV=0.069
+    Single   n=  2510 flips=   26 ( 1.04%) meanTV=0.0076 p90TV=0.0188 maxTV=0.134
+    Straight n=   167 flips=    2 ( 1.20%) meanTV=0.0089 p90TV=0.0221 maxTV=0.153
+    StraightFlush n=    93 flips=    1 ( 1.08%) meanTV=0.0099 p90TV=0.0234 maxTV=0.109
+    Triple   n=   181 flips=    3 ( 1.66%) meanTV=0.0081 p90TV=0.0218 maxTV=0.043
+    Tube     n=    92 flips=    1 ( 1.09%) meanTV=0.0102 p90TV=0.0210 maxTV=0.124
+  by pass_play:
+    pass     n=  2540 flips=   10 ( 0.39%) meanTV=0.0054 p90TV=0.0156 maxTV=0.125
+    play     n=  4750 flips=   50 ( 1.05%) meanTV=0.0081 p90TV=0.0205 maxTV=0.163
+  by n_legal:
+    2        n=  1586 flips=    8 ( 0.50%) meanTV=0.0051 p90TV=0.0149 maxTV=0.149
+    21+      n=   857 flips=   10 ( 1.17%) meanTV=0.0103 p90TV=0.0247 maxTV=0.124
+    3-5      n=  2569 flips=   20 ( 0.78%) meanTV=0.0064 p90TV=0.0169 maxTV=0.134
+    6-20     n=  2278 flips=   22 ( 0.97%) meanTV=0.0083 p90TV=0.0206 maxTV=0.163
+ FULL vs NONE splits (full matches):
+  by lead:
+    follow   n=  6476 flips=   65 ( 1.00%) meanTV=0.0095 p90TV=0.0258 maxTV=0.230
+    lead     n=  1599 flips=   24 ( 1.50%) meanTV=0.0157 p90TV=0.0386 maxTV=0.182
+  by third:
+    early    n=  3199 flips=   29 ( 0.91%) meanTV=0.0084 p90TV=0.0217 maxTV=0.102
+    late     n=  2016 flips=   25 ( 1.24%) meanTV=0.0131 p90TV=0.0356 maxTV=0.230
+    mid      n=  2860 flips=   35 ( 1.22%) meanTV=0.0116 p90TV=0.0316 maxTV=0.182
+  by own_left:
+    01-05    n=  1246 flips=    8 ( 0.64%) meanTV=0.0103 p90TV=0.0274 maxTV=0.230
+    06-10    n=  1473 flips=   21 ( 1.43%) meanTV=0.0131 p90TV=0.0349 maxTV=0.182
+    11-18    n=  2414 flips=   35 ( 1.45%) meanTV=0.0121 p90TV=0.0321 maxTV=0.181
+    19-27    n=  2942 flips=   25 ( 0.85%) meanTV=0.0085 p90TV=0.0215 maxTV=0.167
+  by opp_min_left:
+    1-2      n=  1514 flips=   20 ( 1.32%) meanTV=0.0128 p90TV=0.0341 maxTV=0.230
+    11+      n=  3865 flips=   41 ( 1.06%) meanTV=0.0088 p90TV=0.0229 maxTV=0.167
+    3-5      n=  1155 flips=   14 ( 1.21%) meanTV=0.0140 p90TV=0.0354 maxTV=0.182
+    6-10     n=  1541 flips=   14 ( 0.91%) meanTV=0.0110 p90TV=0.0311 maxTV=0.152
+  by partner_left:
+    01-05    n=  1428 flips=   21 ( 1.47%) meanTV=0.0138 p90TV=0.0363 maxTV=0.230
+    06-10    n=  1279 flips=   13 ( 1.02%) meanTV=0.0104 p90TV=0.0276 maxTV=0.167
+    11-18    n=  2169 flips=   27 ( 1.24%) meanTV=0.0105 p90TV=0.0291 maxTV=0.182
+    19-27    n=  2557 flips=   22 ( 0.86%) meanTV=0.0086 p90TV=0.0220 maxTV=0.122
+    out      n=   642 flips=    6 ( 0.93%) meanTV=0.0134 p90TV=0.0363 maxTV=0.176
+  by chosen_type:
+    Bomb     n=   492 flips=    2 ( 0.41%) meanTV=0.0124 p90TV=0.0332 maxTV=0.150
+    FullHouse n=   414 flips=    3 ( 0.72%) meanTV=0.0152 p90TV=0.0375 maxTV=0.148
+    Pair     n=   943 flips=   19 ( 2.01%) meanTV=0.0115 p90TV=0.0273 maxTV=0.182
+    Pass     n=  2847 flips=   17 ( 0.60%) meanTV=0.0080 p90TV=0.0238 maxTV=0.230
+    Plate    n=    36 flips=    0 ( 0.00%) meanTV=0.0182 p90TV=0.0362 maxTV=0.153
+    Single   n=  2772 flips=   39 ( 1.41%) meanTV=0.0118 p90TV=0.0294 maxTV=0.181
+    Straight n=   186 flips=    2 ( 1.08%) meanTV=0.0119 p90TV=0.0331 maxTV=0.154
+    StraightFlush n=    99 flips=    1 ( 1.01%) meanTV=0.0113 p90TV=0.0259 maxTV=0.108
+    Triple   n=   189 flips=    5 ( 2.65%) meanTV=0.0131 p90TV=0.0342 maxTV=0.091
+    Tube     n=    97 flips=    1 ( 1.03%) meanTV=0.0144 p90TV=0.0307 maxTV=0.167
+  by pass_play:
+    pass     n=  2847 flips=   17 ( 0.60%) meanTV=0.0080 p90TV=0.0238 maxTV=0.230
+    play     n=  5228 flips=   72 ( 1.38%) meanTV=0.0122 p90TV=0.0304 maxTV=0.182
+  by n_legal:
+    2        n=  1746 flips=   15 ( 0.86%) meanTV=0.0074 p90TV=0.0233 maxTV=0.230
+    21+      n=   958 flips=   14 ( 1.46%) meanTV=0.0141 p90TV=0.0339 maxTV=0.167
+    3-5      n=  2854 flips=   33 ( 1.16%) meanTV=0.0101 p90TV=0.0273 maxTV=0.176
+    6-20     n=  2517 flips=   27 ( 1.07%) meanTV=0.0124 p90TV=0.0300 maxTV=0.182

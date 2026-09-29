@@ -1,0 +1,24 @@
+{
+  "candidate_sha_equal": true,
+  "source_sha_equal": true,
+  "evaluation_source_sha256": "14e72581d628409032acf88b646f7eb7a1ded7e954fa06d2e367bcce67889270",
+  "freeze_sha256_original": "f77ea34dbd4bae50dfb088b441a1c46868d7c0b1b013205975655517de3f7760",
+  "freeze_sha256_b11_only": "5926f7516786f0c34ef431dbb1bd98270f0aace05899a74b51960a4173864350",
+  "baselines_in_new": [
+    "b11-main"
+  ],
+  "n_pair_scores": [
+    256,
+    256
+  ],
+  "pair_scores_differing": 0,
+  "n_match_pairs": [
+    64,
+    64
+  ],
+  "match_pairs_differing": 0,
+  "duplicates_block_identical": true,
+  "full_matches_block_identical": true,
+  "whole_b11_report_identical": true,
+  "verdict": "PASS"
+}

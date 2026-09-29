@@ -1,0 +1,10 @@
+loaded u2623.pt@ef83694ba7a5400a/history b11-main.pt@8e872130189af48a/ppo
+original recorder: RuntimeError: u2623.pt@ef83694ba7a5400a/history: select() before start_match(); the evaluator did not open a match for this history policy
+duplicate deal 0 (2 legs): evaluator 202 decisions, recorder 202, identical=True
+  seconds 0.4
+duplicate deal 1 (2 legs): evaluator 135 decisions, recorder 135, identical=True
+  seconds 0.2
+duplicate deal 2 (2 legs): evaluator 182 decisions, recorder 182, identical=True
+  seconds 0.3
+evaluator match [{'seed': 424242, 'agent_team': 0, 'winner': 0, 'agent_won': True, 'rounds': 17}] 43.4
+full match seed 424242: evaluator 1239 decisions, recorder 1239, identical=True

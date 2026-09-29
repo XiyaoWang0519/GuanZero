@@ -1,0 +1,6 @@
+dup full_b11 0 500 out/dup_full_b11_0.json
+dup full_b11 500 500 out/dup_full_b11_1.json
+dup none_b11 0 500 out/dup_none_b11_0.json
+dup none_b11 500 500 out/dup_none_b11_1.json
+dup full_none 0 500 out/dup_full_none_0.json
+dup full_none 500 500 out/dup_full_none_1.json

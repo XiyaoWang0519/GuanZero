@@ -1,0 +1,356 @@
+{
+  "method": {
+    "evaluator": "eval.history_frozen.evaluate via run_point.py (copied unchanged from actor-ranks-2026-09-28/eval-256), torch 4 threads",
+    "freeze": ".work/history-budget-2026-09-27/evaluation/freeze.json (sha256 f77ea34d...), 256 development deals, 64 match seeds",
+    "opponent": "b11-main (frozen baseline, sha checked by evaluator)",
+    "per_checkpoint_ci": "evaluator's own bootstrap (2,000 samples) over 256 paired deals",
+    "paired_ci": "bootstrap_interval over per-deal score differences, 4,000 samples, seed 0"
+  },
+  "checkpoints": [
+    {
+      "name": "u0844",
+      "update": 844,
+      "global_decisions": 55312384,
+      "entropy_at_update": 0.6455391565958659,
+      "entropy_mean_31": 0.6308303427906813,
+      "entropy_min_31": 0.6084785120827811,
+      "entropy_max_31": 0.6460393210252126,
+      "candidate_sha256": "b1c5503743fe69d7d997612ffeab139cb9d5ef2ecb55e02ee2c76f259e112bd7",
+      "evaluation_source_sha256": "14e72581d628409032acf88b646f7eb7a1ded7e954fa06d2e367bcce67889270",
+      "freeze_sha256": "f77ea34dbd4bae50dfb088b441a1c46868d7c0b1b013205975655517de3f7760",
+      "vs_b11": -0.177734375,
+      "vs_b11_ci95": [
+        -0.3203125,
+        -0.037109375
+      ],
+      "match_win_rate": 0.2890625,
+      "match_win_ci95": [
+        0.21875,
+        0.359375
+      ],
+      "timing": "b11-main -0.177734375 [-0.3203125, -0.037109375] win 0.2890625\nlongrun-segment2-raw-endpoint -0.724609375 [-0.890673828125, -0.5604980468750003] win 0.1015625\nwall_seconds 2577",
+      "paired_vs_u0675": {
+        "mean": 0.185546875,
+        "ci95": [
+          -0.013671875,
+          0.380859375
+        ]
+      }
+    },
+    {
+      "name": "u1333",
+      "update": 1333,
+      "global_decisions": 87359488,
+      "entropy_at_update": 0.6153383042131152,
+      "entropy_mean_31": 0.6031746028948799,
+      "entropy_min_31": 0.5864146862711225,
+      "entropy_max_31": 0.6205626680300786,
+      "candidate_sha256": "4058b8ed8f2a5553cf0e9b212f1ed6c513cd386aeec59be18c16cf21ee85a7ef",
+      "evaluation_source_sha256": "14e72581d628409032acf88b646f7eb7a1ded7e954fa06d2e367bcce67889270",
+      "freeze_sha256": "f77ea34dbd4bae50dfb088b441a1c46868d7c0b1b013205975655517de3f7760",
+      "vs_b11": -0.349609375,
+      "vs_b11_ci95": [
+        -0.523486328125,
+        -0.181640625
+      ],
+      "match_win_rate": 0.359375,
+      "match_win_ci95": [
+        0.28125,
+        0.4375
+      ],
+      "timing": "start 2026-09-29T09:23:10Z\nexit 0 end 2026-09-29T10:10:51Z wall_seconds 2861",
+      "paired_vs_u0675": {
+        "mean": 0.013671875,
+        "ci95": [
+          -0.21484375,
+          0.244140625
+        ]
+      },
+      "paired_vs_u0844": {
+        "mean": -0.171875,
+        "ci95": [
+          -0.369140625,
+          0.041015625
+        ]
+      },
+      "paired_vs_previous": {
+        "previous": "u0844",
+        "mean": -0.171875,
+        "ci95": [
+          -0.369140625,
+          0.041015625
+        ]
+      }
+    },
+    {
+      "name": "u1612",
+      "update": 1612,
+      "global_decisions": 105644032,
+      "entropy_at_update": 0.611697752560888,
+      "entropy_mean_31": 0.6314877982722674,
+      "entropy_min_31": 0.60389332817151,
+      "entropy_max_31": 0.6547902478621557,
+      "candidate_sha256": "e380212005dd0f2d4b8c763d8fa310184aaf7d00dd5e80011f252372dbd926eb",
+      "evaluation_source_sha256": "14e72581d628409032acf88b646f7eb7a1ded7e954fa06d2e367bcce67889270",
+      "freeze_sha256": "f77ea34dbd4bae50dfb088b441a1c46868d7c0b1b013205975655517de3f7760",
+      "vs_b11": -0.095703125,
+      "vs_b11_ci95": [
+        -0.248046875,
+        0.060546875
+      ],
+      "match_win_rate": 0.3828125,
+      "match_win_ci95": [
+        0.3046875,
+        0.4609375
+      ],
+      "timing": "start 2026-09-29T10:15:32Z\nexit 0 end 2026-09-29T10:55:07Z wall_seconds 2375",
+      "paired_vs_u0675": {
+        "mean": 0.267578125,
+        "ci95": [
+          0.05078125,
+          0.484375
+        ]
+      },
+      "paired_vs_u0844": {
+        "mean": 0.08203125,
+        "ci95": [
+          -0.115234375,
+          0.291015625
+        ]
+      },
+      "paired_vs_previous": {
+        "previous": "u1333",
+        "mean": 0.25390625,
+        "ci95": [
+          0.025390625,
+          0.4707519531250002
+        ]
+      }
+    },
+    {
+      "name": "u1829",
+      "update": 1829,
+      "global_decisions": 119865344,
+      "entropy_at_update": 0.5987246228115899,
+      "entropy_mean_31": 0.606032957772435,
+      "entropy_min_31": 0.591727288705962,
+      "entropy_max_31": 0.6264810585058652,
+      "candidate_sha256": "448a79d092bde85d5ead0d5126375505b3f2fcd9dbb6f835f389fce3be0be7bc",
+      "evaluation_source_sha256": "14e72581d628409032acf88b646f7eb7a1ded7e954fa06d2e367bcce67889270",
+      "freeze_sha256": "f77ea34dbd4bae50dfb088b441a1c46868d7c0b1b013205975655517de3f7760",
+      "vs_b11": 0.021484375,
+      "vs_b11_ci95": [
+        -0.146484375,
+        0.19536132812499973
+      ],
+      "match_win_rate": 0.5078125,
+      "match_win_ci95": [
+        0.4296875,
+        0.5859375
+      ],
+      "timing": "start 2026-09-29T09:23:10Z\nexit 0 end 2026-09-29T10:15:08Z wall_seconds 3118",
+      "paired_vs_u0675": {
+        "mean": 0.384765625,
+        "ci95": [
+          0.16791992187500018,
+          0.59765625
+        ]
+      },
+      "paired_vs_u0844": {
+        "mean": 0.19921875,
+        "ci95": [
+          -0.009765625,
+          0.412109375
+        ]
+      },
+      "paired_vs_previous": {
+        "previous": "u1612",
+        "mean": 0.1171875,
+        "ci95": [
+          -0.109375,
+          0.3359375
+        ]
+      }
+    },
+    {
+      "name": "u2015",
+      "update": 2015,
+      "global_decisions": 132055040,
+      "entropy_at_update": 0.5318114172135081,
+      "entropy_mean_31": 0.5553975586084473,
+      "entropy_min_31": 0.5227618834802082,
+      "entropy_max_31": 0.5787900365315951,
+      "candidate_sha256": "89502270020e6994fd641d82e7843a22eb9a587f2ee4f694841d1f923d559baa",
+      "evaluation_source_sha256": "14e72581d628409032acf88b646f7eb7a1ded7e954fa06d2e367bcce67889270",
+      "freeze_sha256": "f77ea34dbd4bae50dfb088b441a1c46868d7c0b1b013205975655517de3f7760",
+      "vs_b11": -0.03125,
+      "vs_b11_ci95": [
+        -0.197265625,
+        0.13286132812499973
+      ],
+      "match_win_rate": 0.4453125,
+      "match_win_ci95": [
+        0.3671875,
+        0.53125
+      ],
+      "timing": "b11-main -0.03125 [-0.197265625, 0.13286132812499973] win 0.4453125\nlongrun-segment2-raw-endpoint -0.37109375 [-0.5234375, -0.212890625] win 0.21875\nwall_seconds 3250",
+      "paired_vs_u0675": {
+        "mean": 0.33203125,
+        "ci95": [
+          0.11713867187500018,
+          0.537109375
+        ]
+      },
+      "paired_vs_u0844": {
+        "mean": 0.146484375,
+        "ci95": [
+          -0.06840820312499982,
+          0.361328125
+        ]
+      },
+      "paired_vs_previous": {
+        "previous": "u1829",
+        "mean": -0.052734375,
+        "ci95": [
+          -0.267578125,
+          0.171875
+        ]
+      }
+    },
+    {
+      "name": "u2108",
+      "update": 2108,
+      "global_decisions": 138149888,
+      "entropy_at_update": 0.5419589323656899,
+      "entropy_mean_31": 0.5284676492926423,
+      "entropy_min_31": 0.5087656390208465,
+      "entropy_max_31": 0.5441786211270553,
+      "candidate_sha256": "2c91e70b41c68d0ecaa29ae841c3facf01d9ec2340336a194d3be305a734c89e",
+      "evaluation_source_sha256": "14e72581d628409032acf88b646f7eb7a1ded7e954fa06d2e367bcce67889270",
+      "freeze_sha256": "f77ea34dbd4bae50dfb088b441a1c46868d7c0b1b013205975655517de3f7760",
+      "vs_b11": 0.08984375,
+      "vs_b11_ci95": [
+        -0.072265625,
+        0.259765625
+      ],
+      "match_win_rate": 0.5078125,
+      "match_win_ci95": [
+        0.4140625,
+        0.6015625
+      ],
+      "timing": "start 2026-09-29T10:55:36Z\nexit 0 end 2026-09-29T11:36:45Z wall_seconds 2469",
+      "paired_vs_u0675": {
+        "mean": 0.453125,
+        "ci95": [
+          0.2265625,
+          0.6855957031250002
+        ]
+      },
+      "paired_vs_u0844": {
+        "mean": 0.267578125,
+        "ci95": [
+          0.05854492187500018,
+          0.490234375
+        ]
+      },
+      "paired_vs_previous": {
+        "previous": "u2015",
+        "mean": 0.12109375,
+        "ci95": [
+          -0.087890625,
+          0.34375
+        ]
+      }
+    },
+    {
+      "name": "u2201",
+      "update": 2201,
+      "global_decisions": 144244736,
+      "entropy_at_update": 0.5681830048561096,
+      "entropy_mean_31": 0.5407880485223341,
+      "entropy_min_31": 0.5160294089998517,
+      "entropy_max_31": 0.5681830048561096,
+      "candidate_sha256": "8dd52066c0cfa4692ff9038c7d9bd985845070e4733a5e739abe5f79f179627d",
+      "evaluation_source_sha256": "14e72581d628409032acf88b646f7eb7a1ded7e954fa06d2e367bcce67889270",
+      "freeze_sha256": "f77ea34dbd4bae50dfb088b441a1c46868d7c0b1b013205975655517de3f7760",
+      "vs_b11": 0.24609375,
+      "vs_b11_ci95": [
+        0.08203125,
+        0.41411132812499973
+      ],
+      "match_win_rate": 0.4765625,
+      "match_win_ci95": [
+        0.3984375,
+        0.546875
+      ],
+      "timing": "start 2026-09-29T10:15:32Z\nexit 0 end 2026-09-29T10:51:35Z wall_seconds 2163",
+      "paired_vs_u0675": {
+        "mean": 0.609375,
+        "ci95": [
+          0.404296875,
+          0.81640625
+        ]
+      },
+      "paired_vs_u0844": {
+        "mean": 0.423828125,
+        "ci95": [
+          0.21484375,
+          0.634765625
+        ]
+      },
+      "paired_vs_previous": {
+        "previous": "u2108",
+        "mean": 0.15625,
+        "ci95": [
+          -0.05083007812499982,
+          0.373046875
+        ]
+      }
+    },
+    {
+      "name": "u2356",
+      "update": 2356,
+      "global_decisions": 154402816,
+      "entropy_at_update": 0.5427221400397164,
+      "entropy_mean_31": 0.5465394517861754,
+      "entropy_min_31": 0.5177868942419688,
+      "entropy_max_31": 0.5799222767353058,
+      "candidate_sha256": "a48e8725f0d6059b4d3a46a9ddbf64524d196a4307a79643da3525e33811fa54",
+      "evaluation_source_sha256": "14e72581d628409032acf88b646f7eb7a1ded7e954fa06d2e367bcce67889270",
+      "freeze_sha256": "f77ea34dbd4bae50dfb088b441a1c46868d7c0b1b013205975655517de3f7760",
+      "vs_b11": 0.14453125,
+      "vs_b11_ci95": [
+        -0.017578125,
+        0.30668945312499973
+      ],
+      "match_win_rate": 0.4921875,
+      "match_win_ci95": [
+        0.40625,
+        0.578125
+      ],
+      "timing": "start 2026-09-29T10:55:36Z\nexit 0 end 2026-09-29T11:33:57Z wall_seconds 2301",
+      "paired_vs_u0675": {
+        "mean": 0.5078125,
+        "ci95": [
+          0.294921875,
+          0.7246582031250002
+        ]
+      },
+      "paired_vs_u0844": {
+        "mean": 0.322265625,
+        "ci95": [
+          0.115234375,
+          0.537109375
+        ]
+      },
+      "paired_vs_previous": {
+        "previous": "u2201",
+        "mean": -0.1015625,
+        "ci95": [
+          -0.328125,
+          0.11923828125000036
+        ]
+      }
+    }
+  ]
+}

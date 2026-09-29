@@ -1,0 +1,11 @@
+run_probe.py match 0 2 out/probe_match_0
+run_probe.py match 2 2 out/probe_match_1
+run_probe.py match 4 2 out/probe_match_2
+run_strength.py match full_round 112 10 out/match_full_round_b0.json
+run_strength.py match full_round 122 10 out/match_full_round_b1.json
+run_strength.py match full_round 132 10 out/match_full_round_b2.json
+run_strength.py match full_round 142 10 out/match_full_round_b3.json
+run_strength.py match full_round 152 10 out/match_full_round_b4.json
+run_strength.py match full_round 162 10 out/match_full_round_b5.json
+run_strength.py match full_round 172 10 out/match_full_round_b6.json
+run_strength.py match full_round 182 10 out/match_full_round_b7.json

@@ -1,0 +1,41 @@
+{
+  "engine_digest": "606ff1e735823cefb9968a974991bfc5ca325c2ef1cb8ea5a5540f174ce84096",
+  "final_test": {
+    "commitment_sha256": "a24e6b4d8ae7491cc41ff170c3ed0a82cf8349819810a275f65d581c6dec3688",
+    "opened": false,
+    "protocol": "256-bit seed material sealed locally; no final-test evaluation in T4"
+  },
+  "baselines": [
+    {
+      "name": "b11-main",
+      "path": "/Users/xiyaowang/Developer/Projects/GuanZero/.work/runpod-longrun-2026-09-25/payload/artifacts/b11-main.pt",
+      "sha256": "25e9e0bf549957b9d8b8aeb426b7225259cca714ec23d77de8eeda45bef063df",
+      "policy_config": {
+        "temperature": 0.02,
+        "top_k": 32,
+        "chunk_size": 32768
+      },
+      "stage": "ppo",
+      "training_seed": 11,
+      "action_mode": "canonical",
+      "tribute_policy": "heuristic",
+      "settings": {
+        "sample": false,
+        "margin": 0.0,
+        "precision": "fp32",
+        "search": false,
+        "embedded_reference": "evaluation only"
+      }
+    }
+  ],
+  "development": {
+    "file": "/Users/xiyaowang/Developer/Projects/GuanZero/.work/history-budget-2026-09-27/evaluation/development.json",
+    "sha256": "d7cbd9e021c42702e3d376b1487b7bf91d401f562d925964ee5c5f45fbc10705"
+  },
+  "selection": "final.pt at exactly 2048 updates; never select by scores",
+  "derived_from": {
+    "path": "/Users/xiyaowang/Developer/Projects/GuanZero/.work/history-budget-2026-09-27/evaluation/freeze.json",
+    "sha256": "f77ea34dbd4bae50dfb088b441a1c46868d7c0b1b013205975655517de3f7760",
+    "change": "baselines reduced to b11-main only; development.file made absolute (same file, same sha256)"
+  }
+}

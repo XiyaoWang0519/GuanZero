@@ -1,0 +1,142 @@
+sample: 2000 rounds, 1000 deals; non-forced decisions {'u2623': 73548, 'b11': 72998}
+
+[  of_which_single_is_highest_card]
+  u2623: 40/317 = 12.6% (Wilson 95% 9.4%–16.7%)
+  b11: 21/240 = 8.8% (Wilson 95% 5.8%–13.0%)
+  diff u2623-b11 cluster-bootstrap 95%: -1.3% .. +9.1%
+
+[bomb_as_lead]
+  u2623: 74/5090 = 1.5% (Wilson 95% 1.2%–1.8%)
+  b11: 208/5109 = 4.1% (Wilson 95% 3.6%–4.6%)
+  diff u2623-b11 cluster-bootstrap 95%: -3.2% .. -2.1%
+
+[bomb_on_partner]
+  u2623: 14/5090 = 0.3% (Wilson 95% 0.2%–0.5%)
+  b11: 63/5109 = 1.2% (Wilson 95% 1.0%–1.6%)
+  diff u2623-b11 cluster-bootstrap 95%: -1.3% .. -0.6%
+
+[bomb_opp_le5]
+  u2623: 814/5090 = 16.0% (Wilson 95% 15.0%–17.0%)
+  b11: 583/5109 = 11.4% (Wilson 95% 10.6%–12.3%)
+  diff u2623-b11 cluster-bootstrap 95%: +3.3% .. +5.9%
+
+[bomb_when_only_bombs_vs_opp]
+  u2623: 3308/9152 = 36.1% (Wilson 95% 35.2%–37.1%)
+  b11: 2775/7795 = 35.6% (Wilson 95% 34.5%–36.7%)
+  diff u2623-b11 cluster-bootstrap 95%: -0.7% .. +1.8%
+
+[bomb_when_only_bombs_vs_opp_opp_gt5]
+  u2623: 2696/8012 = 33.6% (Wilson 95% 32.6%–34.7%)
+  b11: 2324/6831 = 34.0% (Wilson 95% 32.9%–35.2%)
+  diff u2623-b11 cluster-bootstrap 95%: -1.7% .. +1.0%
+
+[bomb_when_only_bombs_vs_opp_opp_le5]
+  u2623: 612/1140 = 53.7% (Wilson 95% 50.8%–56.6%)
+  b11: 451/964 = 46.8% (Wilson 95% 43.7%–49.9%)
+  diff u2623-b11 cluster-bootstrap 95%: +2.5% .. +11.4%
+
+[break_any]
+  u2623: 6225/34147 = 18.2% (Wilson 95% 17.8%–18.6%)
+  b11: 5999/34028 = 17.6% (Wilson 95% 17.2%–18.0%)
+  diff u2623-b11 cluster-bootstrap 95%: +0.2% .. +1.0%
+
+[break_any_follow]
+  u2623: 5529/23790 = 23.2% (Wilson 95% 22.7%–23.8%)
+  b11: 5147/23757 = 21.7% (Wilson 95% 21.1%–22.2%)
+  diff u2623-b11 cluster-bootstrap 95%: +1.0% .. +2.1%
+
+[break_any_lead]
+  u2623: 696/10357 = 6.7% (Wilson 95% 6.3%–7.2%)
+  b11: 852/10271 = 8.3% (Wilson 95% 7.8%–8.8%)
+  diff u2623-b11 cluster-bootstrap 95%: -2.2% .. -0.9%
+
+[lead_bomb]
+  u2623: 74/14925 = 0.5% (Wilson 95% 0.4%–0.6%)
+  b11: 208/14915 = 1.4% (Wilson 95% 1.2%–1.6%)
+  diff u2623-b11 cluster-bootstrap 95%: -1.1% .. -0.7%
+
+[lead_has_min]
+  u2623: 6726/13264 = 50.7% (Wilson 95% 49.9%–51.6%)
+  b11: 9608/13382 = 71.8% (Wilson 95% 71.0%–72.6%)
+  diff u2623-b11 cluster-bootstrap 95%: -22.5% .. -19.8%
+
+[lead_pair]
+  u2623: 2806/14925 = 18.8% (Wilson 95% 18.2%–19.4%)
+  b11: 3129/14915 = 21.0% (Wilson 95% 20.3%–21.6%)
+  diff u2623-b11 cluster-bootstrap 95%: -3.1% .. -1.3%
+
+[lead_single]
+  u2623: 7614/14925 = 51.0% (Wilson 95% 50.2%–51.8%)
+  b11: 7186/14915 = 48.2% (Wilson 95% 47.4%–49.0%)
+  diff u2623-b11 cluster-bootstrap 95%: +1.8% .. +3.8%
+
+[lead_single_is_min]
+  u2623: 3233/6258 = 51.7% (Wilson 95% 50.4%–52.9%)
+  b11: 4313/5907 = 73.0% (Wilson 95% 71.9%–74.1%)
+  diff u2623-b11 cluster-bootstrap 95%: -23.4% .. -19.4%
+
+[lead_single_notmin__min_card_in_pair_or_combo]
+  u2623: 1514/3025 = 50.0% (Wilson 95% 48.3%–51.8%)
+  b11: 305/1594 = 19.1% (Wilson 95% 17.3%–21.1%)
+  diff u2623-b11 cluster-bootstrap 95%: +27.9% .. +34.0%
+
+[lead_single_vs_1card_opp_when_multi_possible]
+  u2623: 317/1263 = 25.1% (Wilson 95% 22.8%–27.6%)
+  b11: 240/1156 = 20.8% (Wilson 95% 18.5%–23.2%)
+  diff u2623-b11 cluster-bootstrap 95%: +0.8% .. +8.1%
+
+[overtake_is_bomb]
+  u2623: 14/2159 = 0.6% (Wilson 95% 0.4%–1.1%)
+  b11: 63/2122 = 3.0% (Wilson 95% 2.3%–3.8%)
+  diff u2623-b11 cluster-bootstrap 95%: -3.1% .. -1.6%
+
+[pass_nonbomb_opponent]
+  u2623: 8807/35943 = 24.5% (Wilson 95% 24.1%–25.0%)
+  b11: 9144/36770 = 24.9% (Wilson 95% 24.4%–25.3%)
+  diff u2623-b11 cluster-bootstrap 95%: -0.9% .. +0.2%
+
+[pass_nonbomb_partner]
+  u2623: 7946/10101 = 78.7% (Wilson 95% 77.9%–79.5%)
+  b11: 7909/10016 = 79.0% (Wilson 95% 78.2%–79.8%)
+  diff u2623-b11 cluster-bootstrap 95%: -1.5% .. +0.8%
+
+[pass_opponent]
+  u2623: 14651/45095 = 32.5% (Wilson 95% 32.1%–32.9%)
+  b11: 14164/44565 = 31.8% (Wilson 95% 31.4%–32.2%)
+  diff u2623-b11 cluster-bootstrap 95%: +0.2% .. +1.3%
+
+[pass_partner]
+  u2623: 11369/13528 = 84.0% (Wilson 95% 83.4%–84.6%)
+  b11: 11396/13518 = 84.3% (Wilson 95% 83.7%–84.9%)
+  diff u2623-b11 cluster-bootstrap 95%: -1.2% .. +0.7%
+
+[lead type distribution]
+  u2623 (n=14925): 单张 7614 (51%), 对子 2806 (19%), 三带二 1673 (11%), 顺子 1218 (8%), 三张 662 (4%), 三连对 573 (4%), 钢板 305 (2%), 炸弹 72 (0%), 同花顺 2 (0%)
+  b11 (n=14915): 单张 7186 (48%), 对子 3129 (21%), 三带二 1780 (12%), 顺子 922 (6%), 三张 914 (6%), 三连对 448 (3%), 钢板 328 (2%), 炸弹 192 (1%), 同花顺 16 (0%)
+
+[lead power of singles/pairs] (power 0=2 .. 11=A, 12=level card, 13/14 jokers)
+  u2623 Single: n=6258 mean=4.62 median=4.0 share power<=5 (2..7-ish): 64%
+  u2623 Pair: n=2602 mean=3.86 median=3.0 share power<=5 (2..7-ish): 71%
+  b11 Single: n=5907 mean=4.48 median=4.0 share power<=5 (2..7-ish): 65%
+  b11 Pair: n=2953 mean=3.62 median=3.0 share power<=5 (2..7-ish): 73%
+
+[bombs]
+  u2623: 5090 bomb plays over 4000 player-rounds = 1.27 per player-round
+    own cards before bomb: mean 19.3, median 20; min active opponent cards: median 15
+    types: {('Bomb', 4): 3622, ('StraightFlush', None): 778, ('Bomb', 5): 621, ('Bomb', 6): 62, ('Bomb', 7): 6, ('JokerBomb', None): 1}
+  b11: 5109 bomb plays over 4000 player-rounds = 1.28 per player-round
+    own cards before bomb: mean 20.4, median 22; min active opponent cards: median 17
+    types: {('Bomb', 4): 3557, ('StraightFlush', None): 787, ('Bomb', 5): 698, ('Bomb', 6): 63, ('Bomb', 7): 4}
+
+[break categories among single/pair plays]
+  u2623: {'straight': 3366, 'plate': 797, 'tube': 2444, 'bomb': 526, 'jokerbomb': 11}
+  b11: {'straight': 3315, 'tube': 2306, 'plate': 755, 'bomb': 510, 'jokerbomb': 12}
+
+[wild card plays]
+  u2623: {'single': 216, 'with other ranks: Tube': 110, 'level-rank group (pair/triple/bomb of level)': 35, 'with other ranks: FullHouse': 189, 'with other ranks: StraightFlush': 205, 'with other ranks: Straight': 227, 'with other ranks: Bomb': 665, 'with other ranks: Pair': 160, 'with other ranks: Triple': 58, 'with other ranks: Plate': 7}; wild cards held at start of play: 2000 over 4000 player-rounds
+  b11: {'with other ranks: FullHouse': 214, 'with other ranks: Bomb': 547, 'with other ranks: Straight': 210, 'with other ranks: Triple': 73, 'single': 257, 'with other ranks: StraightFlush': 210, 'with other ranks: Plate': 10, 'with other ranks: Pair': 228, 'with other ranks: Tube': 84, 'level-rank group (pair/triple/bomb of level)': 32}; wild cards held at start of play: 2000 over 4000 player-rounds
+
+[finishing order]
+  u2623: rounds 2000; first place 1024 (51.2%); double win 477 (23.8%); team won round 1024; own team has 1st but partner last (1st+4th) 305; team holds last place in a non-double round 518; mean seat_return +0.076
+  b11: rounds 2000; first place 976 (48.8%); double win 439 (21.9%); team won round 976; own team has 1st but partner last (1st+4th) 324; team holds last place in a non-double round 566; mean seat_return -0.076
+  u2623 net levels/round vs b11 (duplicate): +0.076, bootstrap 95% -0.008..+0.160, deals 1000

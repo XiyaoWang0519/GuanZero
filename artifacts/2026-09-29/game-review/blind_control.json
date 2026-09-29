@@ -1,0 +1,62 @@
+[
+ {
+  "deal": 0,
+  "fed_decisions": 89,
+  "blind_decisions": 92,
+  "first_divergence": 82
+ },
+ {
+  "deal": 1,
+  "fed_decisions": 68,
+  "blind_decisions": 68,
+  "first_divergence": null
+ },
+ {
+  "deal": 2,
+  "fed_decisions": 97,
+  "blind_decisions": 97,
+  "first_divergence": null
+ },
+ {
+  "deal": 3,
+  "fed_decisions": 94,
+  "blind_decisions": 91,
+  "first_divergence": 48
+ },
+ {
+  "deal": 4,
+  "fed_decisions": 75,
+  "blind_decisions": 75,
+  "first_divergence": null
+ },
+ {
+  "deal": 5,
+  "fed_decisions": 61,
+  "blind_decisions": 61,
+  "first_divergence": 32
+ },
+ {
+  "deal": 6,
+  "fed_decisions": 89,
+  "blind_decisions": 89,
+  "first_divergence": null
+ },
+ {
+  "deal": 7,
+  "fed_decisions": 85,
+  "blind_decisions": 85,
+  "first_divergence": null
+ },
+ {
+  "deal": 8,
+  "fed_decisions": 61,
+  "blind_decisions": 61,
+  "first_divergence": null
+ },
+ {
+  "deal": 9,
+  "fed_decisions": 57,
+  "blind_decisions": 57,
+  "first_divergence": null
+ }
+]

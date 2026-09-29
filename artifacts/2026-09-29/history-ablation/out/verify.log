@@ -1,0 +1,7 @@
+{'dup_full_equals_evaluator': {'deals': 20, 'identical_deals': 20, 'decisions': 3015}}
+{'seed': 424242, 'evaluator_decisions': 1239, 'wrapper_decisions': 1239, 'identical': True, 'evaluator_rounds': 17, 'wrapper_rounds': 17, 'evaluator_winner': 0, 'wrapper_winner': 0, 'max_prefix': 1747}
+round {'decisions': 613, 'violations': 0, 'mean_prefix': 46.858075040783035, 'max_prefix': 126, 'withheld_events': 0, 'rounds': 17}
+none {'decisions': 448, 'violations': 0, 'mean_prefix': 0.0, 'max_prefix': 0, 'withheld_events': 1228, 'rounds': 12}
+{'seed': 555000, 'probe_first_flip': 248, 'traj_first_diff': 248, 'flip_at_same_decision': True, 'probe_decisions': 350}
+{'seed': 555001, 'probe_first_flip': 238, 'traj_first_diff': 238, 'flip_at_same_decision': True, 'probe_decisions': 374}
+{'seed': 555002, 'probe_first_flip': 129, 'traj_first_diff': 129, 'flip_at_same_decision': True, 'probe_decisions': 582}

@@ -1,0 +1,9 @@
+legal 67
+prefix     0:      4.8 ms per decision
+prefix   100:      1.8 ms per decision
+prefix   300:      9.2 ms per decision
+prefix   600:     32.3 ms per decision
+prefix  1000:     87.2 ms per decision
+prefix  1500:    193.5 ms per decision
+prefix  2000:    353.9 ms per decision
+B11: 0.5 ms per decision

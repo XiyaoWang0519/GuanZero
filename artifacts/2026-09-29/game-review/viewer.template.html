@@ -1,0 +1,289 @@
+<title>掼蛋牌局回放</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@600;900&family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@500;700&display=swap">
+<style>
+:root{
+  color-scheme: dark;
+  --felt:#0d3a31; --felt-2:#0a2f28; --felt-line:#1c5a4b;
+  --ink:#e8efe9; --ink-2:#a9c2b8; --ink-3:#6f9186;
+  --card:#fbf7ee; --card-edge:#d9d0bd; --red:#c4331f; --black:#1c2422;
+  --t0:#58c79f; --t0-soft:rgba(88,199,159,.16);
+  --t1:#e0a44a; --t1-soft:rgba(224,164,74,.16);
+  --gold:#e6c35c; --panel:#0f2823; --panel-line:#23473e;
+  --serif:"Noto Serif SC","Songti SC",serif; --sans:"Noto Sans SC","PingFang SC","Microsoft YaHei",sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+}
+html,body{background:var(--felt-2);color:var(--ink)}
+body{font-family:var(--sans);font-size:14px;line-height:1.5}
+.wrap{max-width:1180px;margin:0 auto;padding-inline:16px;padding-block:18px 40px;display:grid;gap:16px}
+header{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 18px;justify-content:space-between}
+h1{font-family:var(--serif);font-weight:900;font-size:28px;letter-spacing:.04em;margin:0;text-wrap:balance}
+.sub{color:var(--ink-2);font-size:13px}
+.controls{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;box-shadow:0 6px 16px rgba(0,0,0,.35);display:flex;flex-wrap:wrap;gap:10px;align-items:center;background:var(--panel);border:1px solid var(--panel-line);border-radius:10px;padding:10px 12px}
+select,button,input[type=range]{font-family:var(--sans);font-size:13px}
+select{background:var(--felt);color:var(--ink);border:1px solid var(--panel-line);border-radius:6px;padding:6px 8px;max-width:100%}
+button{background:var(--felt);color:var(--ink);border:1px solid var(--panel-line);border-radius:6px;padding:6px 12px;cursor:pointer}
+button:hover{border-color:var(--ink-3)}
+button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+button.primary{background:var(--gold);color:#1d1a10;border-color:var(--gold);font-weight:700;min-width:64px}
+.stepinfo{font-family:var(--mono);color:var(--ink-2);font-size:12px;font-variant-numeric:tabular-nums}
+.speed{display:flex;align-items:center;gap:6px;color:var(--ink-2);font-size:12px}
+.status{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;font-size:13px;color:var(--ink-2)}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;font-weight:500;color:var(--ink)}
+.chip.t0{background:var(--t0-soft);box-shadow:inset 0 0 0 1px var(--t0)}
+.chip.t1{background:var(--t1-soft);box-shadow:inset 0 0 0 1px var(--t1)}
+.chip .lv{font-family:var(--mono);font-weight:700}
+.main{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px;align-items:start}
+@media (max-width:900px){.main{grid-template-columns:1fr}}
+.table{position:relative;background:radial-gradient(ellipse at center,var(--felt) 0%,var(--felt-2) 78%);border:1px solid var(--felt-line);border-radius:18px;padding:14px;display:grid;
+  grid-template-columns:minmax(0,1fr) minmax(0,1.3fr) minmax(0,1fr);grid-template-rows:auto auto auto;gap:12px;grid-template-areas:"n n n" "w c e" "s s s"}
+.seat{display:grid;gap:6px;align-content:start;min-width:0}
+.seat.n{grid-area:n}.seat.s{grid-area:s}.seat.w{grid-area:w}.seat.e{grid-area:e}
+.seat-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.name{font-weight:700;font-size:13px}
+.team0 .name{color:var(--t0)} .team1 .name{color:var(--t1)}
+.left{font-family:var(--mono);font-size:12px;color:var(--ink-2);font-variant-numeric:tabular-nums}
+.place{font-family:var(--serif);font-size:12px;padding:1px 8px;border-radius:999px;background:var(--gold);color:#1d1a10;font-weight:600}
+.turn{width:8px;height:8px;border-radius:50%;background:var(--gold);box-shadow:0 0 0 4px rgba(230,195,92,.25)}
+.hand{display:flex;flex-wrap:wrap;gap:4px 0;padding-left:9px}
+.hand .card{margin-left:-9px}
+.center{grid-area:c;display:grid;grid-template-columns:1fr 1fr 1fr;grid-template-rows:auto 1fr auto;grid-template-areas:". pn ." "pw mid pe" ". ps .";gap:6px;align-items:center;justify-items:center;min-height:210px;border:1px dashed var(--felt-line);border-radius:14px;padding:10px}
+.pile{display:flex;flex-direction:column;align-items:center;gap:3px;min-height:52px}
+.pile.n{grid-area:pn}.pile.s{grid-area:ps}.pile.w{grid-area:pw}.pile.e{grid-area:pe}
+.pile .cards{display:flex;flex-wrap:wrap;justify-content:center;padding-left:8px}.pile .cards .card{margin-left:-8px}
+.pile .tag{font-size:11px;color:var(--ink-2)}
+.pile.latest .tag{color:var(--gold);font-weight:700}
+.pass{font-family:var(--serif);color:var(--ink-3);font-size:15px}
+.mid{grid-area:mid;text-align:center;font-family:var(--serif);color:var(--ink-2);font-size:13px;line-height:1.4}
+.mid b{display:block;font-size:18px;color:var(--ink);font-weight:900;white-space:nowrap}
+.card{width:30px;height:42px;background:var(--card);border:1px solid var(--card-edge);border-radius:5px;display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1;box-shadow:-1px 1px 2px rgba(0,0,0,.25);flex:none;position:relative}
+.card .r{font-family:var(--mono);font-weight:700;font-size:13px;letter-spacing:-1px}
+.card .su{font-size:12px;margin-top:2px}
+.card.red{color:var(--red)}.card.black{color:var(--black)}
+.card.joker .r{font-family:var(--serif);font-size:11px;writing-mode:vertical-rl;letter-spacing:-1px}
+.card.wild{box-shadow:inset 0 0 0 2px var(--gold),-1px 1px 2px rgba(0,0,0,.25)}
+.card.wild::after{content:"配";position:absolute;top:-6px;right:-5px;font-size:9px;background:var(--gold);color:#1d1a10;border-radius:4px;padding:0 2px;font-family:var(--sans);font-weight:700}
+.card.lvl .r{text-decoration:underline;text-decoration-color:var(--gold);text-underline-offset:2px}
+.big .card{width:36px;height:50px}.big .card .r{font-size:15px}
+.side{display:grid;gap:12px}
+.panel{background:var(--panel);border:1px solid var(--panel-line);border-radius:12px;padding:12px}
+.panel h2{font-family:var(--serif);font-size:15px;margin:0 0 8px;font-weight:600}
+.tribute{display:grid;gap:6px;font-size:13px;color:var(--ink-2)}
+.tribute .row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.log{position:relative;max-height:420px;overflow-y:auto;overflow-x:hidden;min-width:0;display:grid;gap:2px;font-size:12.5px}
+.log .li{display:grid;grid-template-columns:38px minmax(0,1fr);gap:6px;padding:3px 6px;border-radius:6px;cursor:pointer}
+.log .li:hover{background:rgba(255,255,255,.04)}
+.log .li.cur{background:rgba(230,195,92,.14)}
+.log .li.future{opacity:.35}
+.log .no{font-family:var(--mono);color:var(--ink-3);font-variant-numeric:tabular-nums}
+.log .who.t0{color:var(--t0)} .log .who.t1{color:var(--t1)}
+.log .trick{border-top:1px solid var(--panel-line);margin-top:4px;padding-top:4px}
+.result{font-size:13px;color:var(--ink-2);display:grid;gap:4px}
+.result strong{color:var(--ink)}
+.note{color:var(--ink-3);font-size:12px;max-width:70ch}
+@media (max-width:640px){
+  .table{grid-template-columns:1fr;grid-template-areas:"n" "c" "w" "e" "s"}
+  .center{min-height:180px}
+  h1{font-size:22px}
+}
+@media (prefers-reduced-motion:no-preference){.pile.latest .cards{animation:drop .25s ease-out}}
+@keyframes drop{from{transform:translateY(-6px);opacity:.3}to{transform:none;opacity:1}}
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>掼蛋牌局回放</h1>
+    <div class="sub" id="gen"></div>
+  </header>
+
+  <div class="controls">
+    <select id="game" aria-label="选择对局"></select>
+    <select id="round" aria-label="选择回合"></select>
+    <button id="prev" title="上一步 (←)">上一步</button>
+    <button id="play" class="primary" title="播放/暂停 (空格)">播放</button>
+    <button id="next" title="下一步 (→)">下一步</button>
+    <button id="end" title="跳到本回合结束">本回合结束</button>
+    <span class="stepinfo" id="stepinfo"></span>
+    <label class="speed" for="speed">速度 <input id="speed" type="range" min="1" max="10" value="5"></label>
+  </div>
+
+  <div class="status" id="status"></div>
+
+  <div class="main">
+    <div class="table" id="table">
+      <div class="seat n" id="seat-n"></div>
+      <div class="seat w" id="seat-w"></div>
+      <div class="center" id="center">
+        <div class="pile n" id="pile-n"></div>
+        <div class="pile w" id="pile-w"></div>
+        <div class="mid" id="mid"></div>
+        <div class="pile e" id="pile-e"></div>
+        <div class="pile s" id="pile-s"></div>
+      </div>
+      <div class="seat e" id="seat-e"></div>
+      <div class="seat s" id="seat-s"></div>
+    </div>
+
+    <aside class="side">
+      <div class="panel"><h2>进贡与还贡</h2><div class="tribute" id="tribute"></div></div>
+      <div class="panel"><h2>出牌记录</h2><div class="log" id="log"></div></div>
+      <div class="panel"><h2>本回合结果</h2><div class="result" id="result"></div></div>
+    </aside>
+  </div>
+  <p class="note">四家的牌全部明牌显示，方便看模型怎么出牌；模型实际对局时只能看到自己的手牌和公开信息。金色“配”标记为逢人配（红桃级牌），下划线为级牌。</p>
+</div>
+
+<script>
+const DATA = /*GAMES_JSON*/null;
+const POS = ["s","e","n","w"];              // seat 0 south, play order counterclockwise: 0 s -> 1 e -> 2 n -> 3 w
+const SUIT = {S:"♠",H:"♥",C:"♣",D:"♦"};
+const PLACE = ["上游","二游","三游","下游"];
+const $ = id => document.getElementById(id);
+let g = 0, r = 0, k = 0, timer = null;
+
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]))}
+function teamOf(seat){return seat % 2}
+function seatName(game, seat){
+  const side = ["南","东","北","西"][seat];
+  return `${side} · ${game.team_names[teamOf(seat)]}`;
+}
+function cardHTML(c, level){
+  if (c.r === "RJ" || c.r === "BJ"){
+    const red = c.r === "RJ";
+    return `<span class="card joker ${red?"red":"black"}" title="${red?"大王":"小王"}"><span class="r">${red?"大王":"小王"}</span></span>`;
+  }
+  const red = c.s === "H" || c.s === "D";
+  const cls = ["card", red ? "red" : "black", c.w ? "wild" : "", c.r === level ? "lvl" : ""].join(" ");
+  return `<span class="${cls}" title="${SUIT[c.s]||""}${c.r}${c.w?"（逢人配）":""}"><span class="r">${c.r}</span><span class="su">${SUIT[c.s]||""}</span></span>`;
+}
+function sameCard(a,b){return a.r===b.r && a.s===b.s}
+
+function game(){return DATA.games[g]}
+function round(){return game().rounds[r]}
+
+function state(){
+  const rd = round();
+  const hands = rd.hands.map(h => h.slice());
+  const trick = [null,null,null,null];
+  let latest = -1, lastPlay = null;
+  const out = [];
+  for (let i = 0; i < k; i++){
+    const st = rd.steps[i];
+    if (st.new_trick){ for (let s=0;s<4;s++) trick[s]=null; }
+    if (!st.pass){
+      for (const c of st.cards){
+        const h = hands[st.seat]; const j = h.findIndex(x => sameCard(x,c));
+        if (j >= 0) h.splice(j,1);
+      }
+      lastPlay = st;
+    }
+    trick[st.seat] = st;
+    latest = st.seat;
+    if (st.left && st.left[st.seat] === 0 && !out.includes(st.seat)) out.push(st.seat);
+  }
+  const next = k < rd.steps.length ? rd.steps[k].seat : null;
+  return {hands, trick, latest, lastPlay, out, next};
+}
+
+function render(){
+  const gm = game(), rd = round(), st = state(), level = rd.level_rank;
+  const done = k >= rd.steps.length;
+  $("stepinfo").textContent = `第 ${k} / ${rd.steps.length} 手`;
+  const owner = rd.owner_team === null ? "首局" : `打 ${gm.team_names[rd.owner_team]} 的级`;
+  $("status").innerHTML =
+    `<span class="chip t0">${esc(gm.team_names[0])}（南北） <span class="lv">${esc(rd.levels_before[0])}</span></span>` +
+    `<span class="chip t1">${esc(gm.team_names[1])}（东西） <span class="lv">${esc(rd.levels_before[1])}</span></span>` +
+    `<span>本回合打 <b style="color:var(--ink)">${esc(level)}</b> · ${owner} · 第 ${rd.index+1} 回合</span>`;
+  for (let s=0;s<4;s++){
+    const p = POS[s], el = $("seat-"+p);
+    el.className = `seat ${p} team${teamOf(s)}`;
+    const place = st.out.indexOf(s);
+    const left = st.hands[s].length;
+    el.innerHTML = `<div class="seat-head">${st.next===s && !done ? '<span class="turn" aria-label="轮到出牌"></span>':''}
+        <span class="name">${esc(seatName(gm,s))}</span><span class="left">剩 ${left} 张</span>
+        ${place>=0?`<span class="place">${PLACE[place]}</span>`:''}</div>
+      <div class="hand">${st.hands[s].map(c=>cardHTML(c,level)).join("")}</div>`;
+    const pile = $("pile-"+p);
+    const t = st.trick[s];
+    pile.className = `pile ${p}` + (st.latest===s ? " latest" : "");
+    if (!t){ pile.innerHTML = ""; }
+    else if (t.pass){ pile.innerHTML = `<span class="pass">过</span><span class="tag">${esc(["南","东","北","西"][s])}</span>`; }
+    else { pile.innerHTML = `<div class="cards big">${t.cards.map(c=>cardHTML(c,level)).join("")}</div><span class="tag">${esc(["南","东","北","西"][s])} · ${esc(t.type_zh||t.type||"")}</span>`; }
+  }
+  if (k === 0){
+    $("mid").innerHTML = `<b>${esc(["南","东","北","西"][rd.leader])}</b>先出`;
+  } else if (done){
+    $("mid").innerHTML = `<b>${esc(gm.team_names[rd.winning_team])}</b>赢下本回合 · 升 ${rd.gain} 级`;
+  } else {
+    $("mid").innerHTML = st.lastPlay ? `当前最大<b>${esc(st.lastPlay.type_zh||st.lastPlay.type||"")}</b>` : "";
+  }
+  // tribute
+  let tr = rd.tribute || [];
+  if (tr.some(x=>x.kind==="anti")) tr = [{kind:"anti"}];
+  $("tribute").innerHTML = tr.length ? tr.map(t=>{
+    if (t.kind === "anti") return `<div class="row">抗贡：输家持有两张大王，不进贡</div>`;
+    const verb = t.kind === "tribute" ? "进贡给" : "还贡给";
+    return `<div class="row">${esc(["南","东","北","西"][t.from])} ${verb} ${esc(["南","东","北","西"][t.to])} ${t.card?cardHTML(t.card,level):""}</div>`;
+  }).join("") : `<div class="row">本回合没有进贡</div>`;
+  // log
+  let html = "";
+  rd.steps.forEach((s,i)=>{
+    const who = ["南","东","北","西"][s.seat];
+    const what = s.pass ? "过" : `${esc(s.type_zh||s.type||"")} ${s.cards.map(c=>c.r==="RJ"?"大王":c.r==="BJ"?"小王":(SUIT[c.s]||"")+c.r+(c.w?"*":"")).join(" ")}`;
+    html += `<div class="li ${s.new_trick&&i>0?"trick":""} ${i===k-1?"cur":""} ${i>=k?"future":""}" data-i="${i+1}"><span class="no">${i+1}</span><span><span class="who t${teamOf(s.seat)}">${who}</span> ${what}</span></div>`;
+  });
+  $("log").innerHTML = html;
+  const logEl = $("log"), cur = logEl.querySelector(".cur");
+  if (cur){ const top = cur.offsetTop - logEl.offsetTop, bot = top + cur.offsetHeight;
+    if (top < logEl.scrollTop) logEl.scrollTop = top;
+    else if (bot > logEl.scrollTop + logEl.clientHeight) logEl.scrollTop = bot - logEl.clientHeight; }
+  // result
+  const fin = rd.finish_order.map((s,i)=>`${PLACE[i]} ${["南","东","北","西"][s]}（${esc(gm.team_names[teamOf(s)])}）`).join("<br>");
+  $("result").innerHTML = done
+    ? `<div>${fin}</div><div><strong>${esc(gm.team_names[rd.winning_team])}</strong> 升 ${rd.gain} 级 · 级数 ${esc(rd.levels_after[0])} : ${esc(rd.levels_after[1])}</div>${rd.match_over?`<div><strong>整场结束，${esc(gm.team_names[gm.winner_team])} 获胜</strong></div>`:""}`
+    : `<div>打完后显示名次和升级</div>`;
+}
+
+function fillRounds(){
+  const gm = game();
+  $("round").innerHTML = gm.rounds.map((rd,i)=>`<option value="${i}">第 ${i+1} 回合 · 打 ${rd.level_rank}</option>`).join("");
+  $("round").value = r;
+}
+function stop(){ if (timer){ clearInterval(timer); timer=null; } $("play").textContent="播放"; }
+function step(d){
+  const rd = round();
+  if (d > 0 && k >= rd.steps.length){
+    if (r < game().rounds.length-1){ r++; k=0; fillRounds(); } else { stop(); return; }
+  } else k = Math.max(0, Math.min(rd.steps.length, k+d));
+  render();
+}
+function play(){
+  if (timer){ stop(); return; }
+  $("play").textContent = "暂停";
+  const ms = 1300 - Number($("speed").value)*110;
+  timer = setInterval(()=>step(1), ms);
+}
+
+function init(){
+  if (!DATA || !DATA.games || !DATA.games.length){ document.querySelector(".wrap").insertAdjacentHTML("beforeend","<p>没有牌局数据。</p>"); return; }
+  $("gen").textContent = `${DATA.games.length} 场对局 · 均为模型之间的真实对局，按引擎规则逐步回放`;
+  $("game").innerHTML = DATA.games.map((gm,i)=>`<option value="${i}">${esc(gm.title)}${gm.winner_team!==null?` · ${esc(gm.team_names[gm.winner_team])}胜`:""}</option>`).join("");
+  $("game").onchange = e => { stop(); g = +e.target.value; r = 0; k = 0; fillRounds(); render(); };
+  $("round").onchange = e => { stop(); r = +e.target.value; k = 0; render(); };
+  $("prev").onclick = () => { stop(); step(-1); };
+  $("next").onclick = () => { stop(); step(1); };
+  $("end").onclick = () => { stop(); k = round().steps.length; render(); };
+  $("play").onclick = play;
+  $("speed").oninput = () => { if (timer){ stop(); play(); } };
+  $("log").onclick = e => { const li = e.target.closest(".li"); if (li){ stop(); k = +li.dataset.i; render(); } };
+  document.addEventListener("keydown", e => {
+    if (e.target.tagName === "SELECT") return;
+    if (e.key === "ArrowRight"){ stop(); step(1); }
+    else if (e.key === "ArrowLeft"){ stop(); step(-1); }
+    else if (e.key === " "){ e.preventDefault(); play(); }
+  });
+  fillRounds(); render();
+}
+init();
+</script>
