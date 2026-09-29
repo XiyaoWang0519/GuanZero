@@ -105,6 +105,8 @@ def schedule(arms: list[str], warmup: int, blocks: int, block_updates: int) -> l
 def measure(trainer, plan: list[str], arms: dict[str, dict], rank: int, log: Path | None
             ) -> list[dict]:
     rows, current, origin = [], None, trainer.config
+    for settings in arms.values():
+        replace(origin, **settings)    # every arm is valid on this lineage before warmup
     for index, name in enumerate(plan):
         first = name != current
         if first:

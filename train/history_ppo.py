@@ -243,8 +243,10 @@ def parse_arm_schedule(schedule: str) -> list[tuple[int, bool]]:
 # stays num_envs x world size), the diagnostic collection profile (timing only),
 # merged snapshot inference and encoding (tier 2: frozen snapshot seats' float-order noise only),
 # the allocator cache trim (allocator timing only), the public KV cache storage
-# (Triton copies or paged pool: same attention inputs; private graphs replay the same
-# kernels; page-padded spans are tier 2), the learner's length-grouped
+# (Triton copies: same attention inputs; paged pool: bitwise on CPU, but SDPA reads
+# strided K/V views, so tier 2 on CUDA for learner seats too until the CUDA gate says
+# otherwise; private graphs replay the same kernels; page-padded spans are tier 2),
+# the learner's length-grouped
 # encode (tier 2: same loss, learner float-order noise), plus snapshot_updates,
 # which changes dynamics.
 RESUME_OVERRIDES = frozenset({"num_envs", "num_threads", "minibatch_matches", "torch_threads",

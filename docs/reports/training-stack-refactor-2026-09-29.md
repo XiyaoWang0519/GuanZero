@@ -101,7 +101,14 @@ Arms diverge (tier 2 changes float order), so their histories differ a little
   `history_model.py`, `history_ppo.py`, `history_rollout.py` and
   `history_snapshot_batch.py`; only one set of those levers should be merged.
 - **Memory.** The page pool grows by 25% steps and never shrinks. Its peak is
-  roughly the live cache peak; allocator trims do not release it.
+  roughly the live cache peak; allocator trims do not release it. Found in
+  review: `invalidate_learner_cache` now only returns the learner's pages to
+  the free list, so, unlike the per-entry cache, that memory stays reserved
+  through PPO learn (on the order of hundreds of MB per rank at width 128), and
+  a growth briefly holds old and new pools (about 2.25x). With four ranks on a
+  GPU already at 23.6 of 24 GB, the paged-cache arm may run out of memory;
+  watch peak memory in the A/B. Possible fixes: size the pool once, or give
+  the learner its own pool that is freed before learn.
 - **CUDA numerics.** The paged cache feeds SDPA strided key/value views. On
   CPU this is bitwise; on CUDA it may be float-order noise (tier 2) until the
   CUDA test variants pass.
@@ -127,3 +134,16 @@ Arms diverge (tier 2 changes float order), so their histories differ a little
    options. The tier-2 options change float order only; per the acceptance
    rules they need no strength A/B, but the next 256-deal evaluation should
    name the source change.
+
+## Review and merge (September 29, 2026)
+
+Merged into `history-budget-2026-09-27` with two commits from
+`XiyaoWang0519/find-training-speedups` that this branch did not cover: the
+Triton cache-wide pointer table and the cProfile hook, plus its learner
+changes ported onto the shared PPO loop (foreach encoder norms, DDP gradients
+as views; bitwise on CPU against the merge, 4 configurations and 2-rank DDP).
+Its PublicStream rewrite duplicated this branch's; its Triton-based
+`--batch-snapshot-encode` competes with `--batch-snapshot-encoder` and stays
+on that branch until the GPU A/B picks a cache. An independent review found
+the default path clean (a 3-rank DDP run with an empty rank matched the base
+bitwise) and raised the memory point above and the paged cache's CUDA tier.
