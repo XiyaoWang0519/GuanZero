@@ -4,10 +4,6 @@ CPU only; run the same script on two source revisions and compare. Measures:
 
 * ``from_streams``: ``StreamBatch.from_streams`` on 16 streams of 600 tokens
   (one learner minibatch of 16 matches);
-* ``grad_norm``: ``train.history_ppo.grad_norm`` over the stream-encoder
-  parameters of a width-128, 4-layer, 8-head actor (float-per-parameter host
-  accumulation before, one device reduction after; on CPU there is no device
-  synchronization to save, so this is Python overhead only);
 * ``metadata``: ``TritonHistoryCache._metadata`` bookkeeping on 155 of 256 live
   entries with a different subset each call (the learner's pending set). CPU has
   no Triton path, so the eligibility gate is patched open, pinned memory and
@@ -24,7 +20,7 @@ import numpy as np
 import torch
 
 from train.history_inference import Entry
-from train.history_model import HistoryPolicyConfig, PublicStream, StreamBatch, fresh_player
+from train.history_model import HistoryPolicyConfig, PublicStream, StreamBatch
 from train.logs import TOKEN_DIM
 
 
@@ -56,18 +52,6 @@ def bench_from_streams() -> float:
             stream.append_token(token(i + s), i // 40, i % 4)
         streams.append(stream)
     return best(lambda: StreamBatch.from_streams(streams, "cpu"), 50)
-
-
-def bench_grad_norm() -> dict[str, float]:
-    from train.history_ppo import grad_norm
-    torch.manual_seed(0)
-    actor, _ = fresh_player(HistoryPolicyConfig(width=128, layers=4, heads=8), 0)
-    params = list(actor.stream.parameters())
-    for p in params:
-        p.grad = torch.randn_like(p)
-    return dict(grad_norm_ms=best(lambda: grad_norm(params), 200),
-                grad_norm_to_float_ms=best(lambda: float(grad_norm(params)), 200),
-                tensors=len(params))
 
 
 def bench_metadata() -> dict[str, float]:
@@ -108,7 +92,7 @@ def bench_metadata() -> dict[str, float]:
 
 def main() -> None:
     torch.set_num_threads(1)
-    result = dict(from_streams_ms=bench_from_streams(), **bench_grad_norm(), **bench_metadata())
+    result = dict(from_streams_ms=bench_from_streams(), **bench_metadata())
     print(json.dumps(result, indent=1))
 
 
