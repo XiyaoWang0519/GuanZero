@@ -142,6 +142,54 @@ def _head_values(actor: HistoryActor) -> dict[str, Tensor]:
     }
 
 
+def encoder_parameters(actor: HistoryActor) -> tuple[Tensor, ...]:
+    """Every parameter of the public stream encoder, from the live registries."""
+    result = [actor.public.weight, actor.public.bias, actor.round_embedding.weight,
+              actor.phase_embedding.weight, actor.bos, actor.stream_norm.weight,
+              actor.stream_norm.bias]
+    for layer in actor.stream.layers:
+        attention = layer.self_attn
+        result += [layer.norm1.weight, layer.norm1.bias, attention.in_proj_weight,
+                   attention.in_proj_bias, attention.out_proj.weight, attention.out_proj.bias,
+                   layer.norm2.weight, layer.norm2.bias, layer.linear1.weight, layer.linear1.bias,
+                   layer.linear2.weight, layer.linear2.bias]
+    return tuple(result)
+
+
+def validate_encoder(actor: HistoryActor) -> None:
+    """Refuse encoders the merged snapshot encode does not implement exactly."""
+    from train.history_attention import validate
+    validate(actor.stream)
+    width = actor.config.width
+    norms = [actor.stream_norm] + [n for layer in actor.stream.layers
+                                   for n in (layer.norm1, layer.norm2)]
+    if (actor.stream.norm is not None
+            or any(layer.activation is not F.relu for layer in actor.stream.layers)
+            or any(not n.elementwise_affine or n.bias is None or n.normalized_shape != (width,)
+                   or n.eps != actor.stream_norm.eps for n in norms)
+            or any(t.dtype != torch.float32 for t in encoder_parameters(actor))):
+        raise ValueError("merged snapshot encoding requires the standard FP32 history encoder")
+
+
+def _encoder_values(actor: HistoryActor) -> dict[str, Tensor]:
+    """One identity's stream encoder in the stacked layout (see ``_head_values``)."""
+    linear = lambda layer, name: {f"{name}_w": layer.weight.t(), f"{name}_b": layer.bias[None]}
+    norm = lambda layer, name: {f"{name}_w": layer.weight[None], f"{name}_b": layer.bias[None]}
+    values = {**linear(actor.public, "e_pub"), "e_round": actor.round_embedding.weight,
+              "e_phase": actor.phase_embedding.weight, "e_bos": actor.bos.reshape(-1),
+              **norm(actor.stream_norm, "e_out")}
+    for index, layer in enumerate(actor.stream.layers):
+        attention = layer.self_attn
+        values.update({**norm(layer.norm1, f"e{index}_n1"),
+                       f"e{index}_in_w": attention.in_proj_weight.t(),
+                       f"e{index}_in_b": attention.in_proj_bias[None],
+                       **linear(attention.out_proj, f"e{index}_o"),
+                       **norm(layer.norm2, f"e{index}_n2"),
+                       **linear(layer.linear1, f"e{index}_l1"),
+                       **linear(layer.linear2, f"e{index}_l2")})
+    return values
+
+
 @dataclass
 class _Slot:
     index: int
@@ -158,14 +206,16 @@ class SnapshotHeads:
     (re)writes the slot first, so a stale stacked copy is never read.
     ``retain`` frees the slots of identities no longer assigned to any match,
     driven by the collector's cache-pruning signal. Only the head is stacked
-    (the stream encoder stays in each snapshot); the extra memory is
+    unless ``encoder`` is set, which also stacks the public stream encoder for
+    ``train.history_paged_cache.merged_encode``; the extra memory is
     ``bytes``. Collector-owned: never actor or checkpoint state.
     """
 
-    def __init__(self, capacity: int = 4) -> None:
+    def __init__(self, capacity: int = 4, *, encoder: bool = False) -> None:
         if capacity < 1:
             raise ValueError("slot capacity must be positive")
         self.capacity = capacity
+        self.encoder = encoder
         self.tensors: dict[str, Tensor] | None = None
         self.eps: float | None = None
         self.config = None
@@ -192,15 +242,24 @@ class SnapshotHeads:
     @torch.no_grad()
     def slot(self, identity: int, actor: HistoryActor) -> int:
         signature = head_signature(actor)
+        if self.encoder:
+            signature += tuple((id(t), t._version, t.data_ptr(), t.dtype, t.device)
+                               for t in encoder_parameters(actor))
         record = self.slots.get(int(identity))
         if record is not None and record.actor() is actor and record.signature == signature:
             return record.index
         validate_actor(actor)
         eps = actor.attention_norm.eps
+        if self.encoder:
+            validate_encoder(actor)
+            if actor.stream_norm.eps != eps:
+                raise ValueError("stacked snapshot weights need one layer norm epsilon")
         if self.config is not None and (actor.config != self.config or eps != self.eps
                                         or actor.output_norm.eps != eps):
             raise ValueError("stacked snapshot heads require one architecture")
         values = _head_values(actor)
+        if self.encoder:
+            values.update(_encoder_values(actor))
         index = record.index if record is not None else self._free_index()
         if self.tensors is None or index >= self.capacity:
             self._allocate(values, max(self.capacity, 2 * index, index + 1))

@@ -91,6 +91,9 @@ class HistoryPPOConfig:
     rollout_wide_projection: bool = False  # with batched attention: one q/out GEMM; FP32, not bitwise
     rollout_private_graphs: bool = False  # bounded CUDA inference graphs; sampling stays eager
     learner_batched_attention: bool = False  # one padded attention call per minibatch; FP32, not bitwise
+    # Learner encode in up to N length groups, each stream only as far as its rows
+    # read (history_model.length_groups): same loss, far less padding; FP32, not bitwise.
+    learner_length_groups: int = 0
     rollout_graph_budget_mb: int = 512
     rollout_graph_policy_budget_mb: int = 128  # per-policy cap inside the total budget
     rollout_triton_cache: bool = False  # lossless KV update/packing; requires Triton
@@ -108,6 +111,10 @@ class HistoryPPOConfig:
     # Diagnostic A/B inside one process: "N:on,M:off,..." blocks of this process's
     # updates; the last block's arm persists. Empty: batch_snapshot_policies throughout.
     batch_snapshot_policies_schedule: str = ""
+    # With merged snapshot inference and the paged cache: those identities' public
+    # streams are encoded in one pass per step over stacked encoder weights
+    # (train/history_paged_cache.merged_encode); tier 2, snapshot seats only.
+    batch_snapshot_encoder: bool = False
     # Release the CUDA caching allocator's free blocks (torch.cuda.empty_cache)
     # after collect and after learn. Allocator timing only; no numeric change.
     # None follows the update's merged-snapshot arm: with the arm on, no snapshot
@@ -163,10 +170,17 @@ class HistoryPPOConfig:
             raise ValueError('KV cache layouts and CUDA rollout optimizations require rollout_kv_cache')
         if self.rollout_paged_cache and self.rollout_triton_cache:
             raise ValueError('rollout_paged_cache replaces rollout_triton_cache; choose one')
+        if self.batch_snapshot_encoder and not (
+                self.rollout_paged_cache
+                and (self.batch_snapshot_policies or self.batch_snapshot_policies_schedule)):
+            raise ValueError('batch_snapshot_encoder requires rollout_paged_cache and merged '
+                             'snapshot policies')
         if self.rollout_wide_projection and not self.rollout_batched_attention:
             raise ValueError('rollout_wide_projection requires rollout_batched_attention')
         if self.rollout_device not in (None, 'cpu', 'cuda'):
             raise ValueError('rollout_device must be cpu, cuda, or None')
+        if self.learner_length_groups < 0 or (self.learner_length_groups and self.window):
+            raise ValueError("learner_length_groups must not be negative and needs full history")
         if min(self.num_envs, self.steps_per_update, self.epochs, self.minibatch_matches,
                self.checkpoint_updates) <= 0:
             raise ValueError("environment, step, epoch, minibatch and checkpoint counts "
@@ -220,9 +234,10 @@ def parse_arm_schedule(schedule: str) -> list[tuple[int, bool]]:
 # Config fields a resume may change (``--resume-set``): the layout of the batch over
 # processes and threads, checkpoint cadence and graph budgets (the per-update batch
 # stays num_envs x world size), the diagnostic collection profile (timing only),
-# merged snapshot inference (tier 2: frozen snapshot seats' float-order noise only),
+# merged snapshot inference and encoding (tier 2: frozen snapshot seats' float-order noise only),
 # the allocator cache trim (allocator timing only), the public KV cache storage
-# (Triton copies or paged pool: same attention inputs), plus snapshot_updates,
+# (Triton copies or paged pool: same attention inputs), the learner's length-grouped
+# encode (tier 2: same loss, learner float-order noise), plus snapshot_updates,
 # which changes dynamics.
 RESUME_OVERRIDES = frozenset({"num_envs", "num_threads", "minibatch_matches", "torch_threads",
                               "checkpoint_updates", "ddp_global_minibatch",
@@ -231,7 +246,8 @@ RESUME_OVERRIDES = frozenset({"num_envs", "num_threads", "minibatch_matches", "t
                               "profile_collection", "profile_collection_warmup",
                               "batch_snapshot_policies", "batch_snapshot_policies_schedule",
                               "rollout_trim_cuda_cache", "rollout_paged_cache",
-                              "rollout_triton_cache"})
+                              "rollout_triton_cache", "batch_snapshot_encoder",
+                              "learner_length_groups"})
 
 
 def parse_resume_overrides(items: list[str] | None) -> dict[str, Any]:
@@ -409,7 +425,8 @@ class HistoryTrainer:
                                 temperature=config.rollout_temperature,
                                 epsilon=config.rollout_epsilon,
                                 batch_snapshot_policies=self.snapshot_batching(),
-                                paged_cache=config.rollout_paged_cache)
+                                paged_cache=config.rollout_paged_cache,
+                                batch_snapshot_encoder=config.batch_snapshot_encoder)
 
     def snapshot_batching(self) -> bool:
         """Merged snapshot inference for this update (the schedule's block, if any)."""
@@ -499,11 +516,13 @@ class HistoryTrainer:
                           "rollout_wide_projection": self.rollout_actor.wide_private_projection,
                           "rollout_private_graphs": self.collector.private_graphs,
                           "learner_batched_attention": self.actor.batched_match_attention,
+                          "learner_length_groups": self.config.learner_length_groups,
                           "rollout_graph_budget_mb": self.config.rollout_graph_budget_mb,
                           "rollout_graph_policy_budget_mb": self.config.rollout_graph_policy_budget_mb,
                           "rollout_triton_cache": self.collector.triton_cache,
                           "rollout_triton_min_batch": self.collector.triton_min_batch,
                           "rollout_paged_cache": self.collector.paged_cache,
+                          "batch_snapshot_encoder": self.collector.batch_snapshot_encoder,
                           "batch_snapshot_policies": self.config.batch_snapshot_policies,
                           "batch_snapshot_policies_schedule":
                               self.config.batch_snapshot_policies_schedule,
@@ -581,7 +600,9 @@ class HistoryTrainer:
         extra = ({"response_target": opponent_response_labels(self.buffer, self.store, rows)}
                  if predict else None)
         # Actor inputs, stored row data and response targets: one packed upload.
-        batch = self.buffer.training_batch(rows, self.store, self.device, extra=extra)
+        batch = self.buffer.training_batch(rows, self.store, self.device, extra=extra,
+                                           length_groups=cfg.learner_length_groups,
+                                           width=cfg.width)
         inputs, chosen, row = batch.inputs, batch.chosen, batch.fields
         response_stats = {}
         if not predict:
@@ -935,6 +956,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--learner-batched-attention", action="store_true",
                         help="learner: all matches of a minibatch in one padded attention "
                              "call (FP32; reduction order differs, not bitwise)")
+    parser.add_argument("--learner-length-groups", type=int, default=0,
+                        help="learner: encode each minibatch in up to N length groups, each "
+                             "stream only as far as its rows read (FP32; not bitwise)")
     parser.add_argument("--rollout-graph-budget-mb", type=int, default=512)
     parser.add_argument("--rollout-graph-policy-budget-mb", type=int, default=128,
                         help="per-policy private-graph cap within the total budget")
@@ -946,6 +970,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-snapshot-policies", action="store_true",
                         help="all snapshot identities' rows of a vector step in one merged "
                              "actor call (FP32; snapshot seats' reduction order differs)")
+    parser.add_argument("--batch-snapshot-encoder", action="store_true",
+                        help="with --batch-snapshot-policies and --rollout-paged-cache: encode "
+                             "all snapshot identities' public streams in one pass per step "
+                             "(FP32; snapshot seats' reduction order differs)")
     parser.add_argument("--batch-snapshot-policies-schedule", default="",
                         help="diagnostic A/B: N:on|off blocks of this process's updates")
     parser.add_argument("--rollout-trim-cuda-cache", type=optional_bool, default=None,

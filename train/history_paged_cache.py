@@ -108,7 +108,7 @@ class KVPagePool:
         if count <= 0:
             return []
         if len(self.free) < count:
-            self._grow(max(self.pages + self.pages // 2, self.pages + count - len(self.free)))
+            self._grow(max(self.pages + self.pages // 4, self.pages + count - len(self.free)))
         pages = self.free[-count:]
         del self.free[-count:]
         return pages
@@ -263,3 +263,141 @@ class PagedHistoryCache(BatchedHistoryCache):
         for entry, end in zip(entries, ends.tolist()):
             entry.length = end
         self.encoded_tokens += int(count_array.sum())
+
+
+# ---- merged snapshot encoding ----------------------------------------------------
+
+def merged_encode(parts: list[tuple[PagedHistoryCache, list[tuple[int, int]], list[PublicStream], int]],
+                  heads, size: int) -> Tensor:
+    """Encode several frozen identities' streams in ONE append pass per chunk.
+
+    ``parts`` are ``(cache, keys, streams, slot)`` per identity, in identity
+    order; ``slot`` indexes ``heads`` (a ``SnapshotHeads`` built with
+    ``encoder=True``), whose stacked weights stand in for each identity's
+    encoder. Entries, pages, chunking and counters stay per identity cache;
+    only the arithmetic is shared: every linear layer runs as one batched
+    matrix multiply over the identities' slots, attention as one SDPA over all
+    rows. Returns ``[sum of streams, size, width]`` memory in part order, zero
+    past each stream's length. Same function as ``cache.encode`` per part,
+    with FP32 reduction-order differences (acceptance tier 2).
+    """
+    if not parts:
+        raise ValueError("nothing to encode")
+    pool, chunk = parts[0][0].pool, parts[0][0].chunk_size
+    entries, targets, slots, owners = [], [], [], []
+    for cache, keys, streams, slot in parts:
+        if cache.pool is not pool or cache.chunk_size != chunk:
+            raise ValueError("merged encoding needs one page pool and one prefill chunk")
+        if not keys or len(keys) != len(streams) or len(set(keys)) != len(keys):
+            raise ValueError("one distinct match key per public stream required")
+        if cache._signature() != cache.signature:
+            cache.clear()
+        for key, stream in zip(keys, streams):
+            entries.append(cache._entry(key, stream))
+            targets.append(stream.prefix + 1)
+            slots.append(int(slot))
+            owners.append(cache)
+    while True:
+        short = [i for i, (e, n) in enumerate(zip(entries, targets)) if e.length < n]
+        if not short:
+            break
+        counts = [min(chunk, targets[i] - entries[i].length) for i in short]
+        _merged_append(parts[0][0], [entries[i] for i in short], counts,
+                       [slots[i] for i in short], heads)
+        for i, count in zip(short, counts):
+            owners[i].encoded_tokens += count
+    return parts[0][0]._gather_memory(entries, size)
+
+
+def _merged_append(cache: PagedHistoryCache, entries: list[PagedEntry], counts: list[int],
+                   slots: list[int], heads) -> None:
+    """``PagedHistoryCache._append`` for entries of several identities.
+
+    Linear layers, layer norms and embeddings run slot-padded: row ``b`` of
+    slot ``s`` sits at ``s * M + rank``, ``M`` the most rows of one slot, and
+    every layer is one ``baddbmm`` against the stacked ``[slot, in, out]``
+    weights. Padding rows are zero tokens whose outputs are never written.
+    Attention runs over the real rows only.
+    """
+    from train.history_snapshot_batch import _linear, _norm
+    pool, tensors, cfg, eps = cache.pool, heads.tensors, heads.config, heads.eps
+    device = pool.device
+    batch, width = len(entries), max(counts)
+    S = max(slots) + 1
+    rank = np.zeros(batch, np.int64)
+    seen: dict[int, int] = {}
+    for i, slot in enumerate(slots):
+        rank[i] = seen.get(slot, 0)
+        seen[slot] = rank[i] + 1
+    M = max(seen.values())
+    R = S * M
+    pad = np.asarray(slots, np.int64) * M + rank
+    starts = np.asarray([e.length for e in entries], np.int64)
+    count_array = np.asarray(counts, np.int64)
+    ends = starts + count_array
+    capacity = bucket(int(ends.max()))
+    P = pool.page_tokens
+    for entry, end in zip(entries, ends.tolist()):
+        missing = -(-end // P) - len(entry.pages)
+        if missing > 0:
+            entry.pages.extend(pool.allocate(missing))
+    tokens = np.zeros((R, width, TOKEN_DIM), np.uint8)
+    rounds, phases = np.zeros((R, width), np.int64), np.zeros((R, width), np.int64)
+    starts_pad = np.zeros(R, np.int64)
+    starts_pad[pad] = starts
+    for i, (entry, count) in enumerate(zip(entries, counts)):
+        begin = max(entry.length - 1, 0)
+        offset = int(entry.length == 0)  # first new item is BOS
+        count -= offset
+        if count:
+            end = begin + count
+            tokens[pad[i], offset:offset + count] = entry.stream.tokens[begin:end]
+            rounds[pad[i], offset:offset + count] = entry.stream.rounds[begin:end]
+            phases[pad[i], offset:offset + count] = entry.stream.phases[begin:end]
+    table = cache._page_table(entries, capacity)
+    write_batch = np.repeat(np.arange(batch, dtype=np.int64), count_array)
+    write_slot = np.arange(len(write_batch), dtype=np.int64) - np.repeat(
+        np.cumsum(count_array) - count_array, count_array)
+    position = starts[write_batch] + write_slot
+    write_rows = table[write_batch, position // P] * P + position % P
+    fresh = np.flatnonzero(starts == 0)
+    (t, r, p, starts_pad_d, start_positions, end_positions, table_d, pad_d, write_pad_d,
+     write_slot_d, write_rows_d, fresh_pad_d, fresh_slot_d) = upload_arrays(
+        (tokens, rounds, phases, starts_pad, starts, ends, table, pad, pad[write_batch],
+         write_slot, write_rows, pad[fresh], np.asarray(slots, np.int64)[fresh]), device)
+    W, H = cfg.width, cfg.heads
+    depth = W // H
+    flat = lambda x: x.reshape(S, M * width, x.shape[-1])
+    state = _linear(flat(t.float()), tensors, "e_pub", S).view(R, width, W)
+    slot_of = (torch.arange(R, device=device) // M)[:, None]
+    state = (state + tensors["e_round"][slot_of, r.clamp(0, cfg.max_rounds - 1)]
+             + tensors["e_phase"][slot_of, p.clamp(0, 3)])
+    if len(fresh):
+        state[fresh_pad_d, 0] = tensors["e_bos"][fresh_slot_d]
+    position_table, key_positions = cache._position_buffers(capacity)
+    state = state + position_table[(starts_pad_d[:, None] + key_positions[:width])
+                                   .clamp(max=capacity - 1)]
+    positions = start_positions[:, None] + key_positions[:width]
+    allowed = ((key_positions[None, None] <= positions[:, :, None])
+               & (key_positions[None, None] < end_positions[:, None, None]))
+    rows = cache._rows(table_d, end_positions, key_positions).view(-1)
+    for index in range(cfg.layers):
+        hidden = _norm(flat(state), tensors, f"e{index}_n1", S, eps)
+        qkv = _linear(hidden, tensors, f"e{index}_in", S).view(R, width, 3, H, depth)
+        kv = pool.kv[index]
+        kv[write_rows_d] = qkv[write_pad_d, write_slot_d, 1:]
+        q = qkv[pad_d][:, :, 0].transpose(1, 2)
+        packed = kv[rows].view(batch, capacity, 2, H, depth).permute(2, 0, 3, 1, 4)
+        attended = F.scaled_dot_product_attention(q, packed[0], packed[1],
+                                                  attn_mask=allowed[:, None], dropout_p=0.0)
+        attended = state.new_zeros(R, width, W).index_copy_(
+            0, pad_d, attended.transpose(1, 2).reshape(batch, width, W))
+        state = state + _linear(flat(attended), tensors, f"e{index}_o", S).view(R, width, W)
+        hidden = _norm(flat(state), tensors, f"e{index}_n2", S, eps)
+        hidden = _linear(torch.relu(_linear(hidden, tensors, f"e{index}_l1", S)), tensors,
+                         f"e{index}_l2", S)
+        state = state + hidden.view(R, width, W)
+    state = _norm(flat(state), tensors, "e_out", S, eps).view(R, width, W)
+    pool.memory[write_rows_d] = state[write_pad_d, write_slot_d]
+    for entry, end in zip(entries, ends.tolist()):
+        entry.length = end

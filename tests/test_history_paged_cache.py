@@ -114,3 +114,112 @@ def test_returned_memory_is_independent_of_later_appends():
     append(stream, 50)
     cache.encode([(0, 0)], [stream])
     assert torch.equal(before, snapshot)
+
+
+@pytest.mark.parametrize("device", devices())
+def test_merged_snapshot_encode_matches_per_identity_encodes(device):
+    """One merged pass over three identities equals their separate encodes up to
+    FP32 reduction order, including prefill chunks, fresh BOS rows, uneven row
+    counts per slot and a slot gap; counters and pages stay per identity."""
+    skip_without(device)
+    from train.history_paged_cache import merged_encode
+    from train.history_snapshot_batch import SnapshotHeads
+    config = HistoryPolicyConfig(width=32, layers=2, heads=4)
+    actors = [fresh_player(config, seed)[0].to(device).train() for seed in (1, 2, 3)]
+    pool = KVPagePool.for_actor(actors[0], page_tokens=16, pages=2)
+    merged = [PagedHistoryCache(actor, pool, chunk_size=32) for actor in actors]
+    separate = [PagedHistoryCache(actor, chunk_size=32) for actor in actors]
+    heads = SnapshotHeads(encoder=True)
+    slots = [heads.slot(identity, actor) for identity, actor in zip((5, 9, 11), actors)]
+    heads.retain({5, 11})               # slot 1 unused: a gap in the slot layout
+    slots = [slots[0], slots[2]]
+    use = [0, 2]
+    streams = {i: PublicStream(i) for i in range(7)}
+    for s, n in zip(streams.values(), [0, 5, 70, 33, 1, 100, 12]):
+        append(s, n)
+    picks = [[0, 2, 3, 5], [1, 4]]
+    rng = np.random.default_rng(4)
+    for step in range(8):
+        parts = [(merged[a], [(i, i) for i in pick], [streams[i] for i in pick], slot)
+                 for a, pick, slot in zip(use, picks, slots)]
+        size = max(streams[i].prefix for pick in picks for i in pick) + 1
+        actual = merged_encode(parts, heads, size)
+        expected = []
+        for a, pick in zip(use, picks):
+            _, memory = separate[a].encode([(i, i) for i in pick], [streams[i] for i in pick])
+            out = memory.new_zeros(len(pick), size, config.width)
+            span = min(size, memory.shape[1])
+            out[:, :span] = memory[:, :span]
+            expected.append(out)
+        expected = torch.cat(expected)
+        torch.testing.assert_close(actual, expected, rtol=2e-5, atol=2e-5)
+        for a in use:
+            assert merged[a].encoded_tokens == separate[a].encoded_tokens
+            assert merged[a].rebuilds == separate[a].rebuilds
+        check_pool(pool, [merged[a] for a in use])
+        for pick in picks:
+            for i in pick:
+                append(streams[i], step % 3 + 1, offset=step)
+        order = [int(i) for i in rng.permutation(7)]
+        cut = int(rng.integers(1, 6))
+        picks = [order[:cut], order[cut:cut + int(rng.integers(1, 7 - cut + 1))]]
+
+
+# ---- collector wiring ------------------------------------------------------------
+
+@pytest.mark.parametrize("device", devices())
+@pytest.mark.parametrize("encoder", [False, True])
+def test_collector_paged_and_merged_encoder_match_the_plain_rollout(device, encoder):
+    """Paged cache: bitwise. Merged snapshot encoding: tier 2 on snapshot seats
+    only; on these seeds the float noise flips no choice, so the whole rollout
+    (learner rows, sampler state, snapshot choices) is identical."""
+    skip_without(device)
+    from test_history_snapshot_batch import assert_same_collection, run_collector
+    plain = run_collector(device, False, kv_cache=True)[0]
+    fast = run_collector(device, True, kv_cache=True, paged_cache=True,
+                         batch_snapshot_encoder=encoder)[0]
+    assert_same_collection(plain, fast)
+    assert fast.kv_pool is not None and fast.snapshot_heads.encoder is encoder
+    assert fast.cache_metrics()["pool_used_pages"] > 0
+
+
+@pytest.mark.parametrize("device", devices())
+def test_merged_encoder_refreshes_when_snapshots_change(device):
+    skip_without(device)
+    from test_history_snapshot_batch import (assert_same_collection, config, players,
+                                             run_collector)
+
+    def seats(env, match):
+        base = 1 + (env + 2 * match) % 5
+        return [0, base, 1 + (base % 5), 1 + ((base + 2) % 5)]
+
+    def between(chunk, policies, collector):
+        with torch.no_grad():
+            if chunk == 0:      # identity 2 replaced by a new actor object
+                policies[2] = fresh_player(config(), 77)[0].to(device)
+            if chunk == 1:      # identity 1's ENCODER updated in place
+                policies[1].public.weight.mul_(-4.0)
+
+    policies = [players(range(6), device) for _ in range(2)]
+    runs = [run_collector(device, merge, kv_cache=True, steps=60, seat_policy=seats,
+                          between=between, policies=pols, **extra)[0]
+            for pols, (merge, extra) in zip(policies, (
+                (False, {}), (True, dict(paged_cache=True, batch_snapshot_encoder=True))))]
+    assert_same_collection(*runs)
+    # Random snapshots barely read their memory, so choices alone cannot show a
+    # stale encoder: every live slot must hold its actor's current weights.
+    from train.history_snapshot_batch import _encoder_values
+    heads = runs[1].snapshot_heads
+    assert 1 in heads.slots and 2 in heads.slots
+    for identity, record in heads.slots.items():
+        for name, value in _encoder_values(policies[1][identity]).items():
+            assert torch.equal(heads.tensors[name][record.index], value), (identity, name)
+
+
+def test_merged_encoder_requires_the_paged_cache():
+    from train.history_ppo import HistoryPPOConfig
+    with pytest.raises(ValueError, match="paged"):
+        HistoryPPOConfig(rollout_kv_cache=True, batch_snapshot_policies=True,
+                         batch_snapshot_encoder=True)
+    HistoryPPOConfig(rollout_kv_cache=True, batch_snapshot_policies=True,
+                     rollout_paged_cache=True, batch_snapshot_encoder=True)

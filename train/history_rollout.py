@@ -412,10 +412,13 @@ class SequenceRolloutBuffer:
     def training_batch(self, rows: np.ndarray, store: MatchEventStore, device,
                        streams: dict[tuple[int, int], PublicStream] | None = None, *,
                        fields: Sequence[str] = TRAINING_FIELDS,
-                       extra: dict[str, np.ndarray] | None = None) -> "TrainingBatch":
+                       extra: dict[str, np.ndarray] | None = None,
+                       length_groups: int = 0, width: int = 0) -> "TrainingBatch":
         """``decision_inputs`` plus the rows' ``fields`` (stored row data, or
         ``advantage``/``returns`` from ``finalize``) and ``extra`` host arrays,
-        all uploaded with one packed copy."""
+        all uploaded with one packed copy. ``length_groups > 0`` plans the
+        learner's grouped encode (``DecisionInputs.match_groups``) for an actor
+        of ``width``; streams are then only uploaded as far as a row reads."""
         data = self.compact()
         rows = np.asarray(rows, np.int64)
         keys = list(zip(data["env"][rows].tolist(), data["match"][rows].tolist()))
@@ -432,15 +435,35 @@ class SequenceRolloutBuffer:
         named = {name: (getattr(self, name) if name in ("advantage", "returns") else data[name])[rows]
                  for name in fields}
         named.update(extra or {})
-        host = (*StreamBatch.host_arrays([stream.arrays() for stream in picked]),
-                np.asarray([index[key] for key in keys], np.int64), prefix,
+        match_index = np.asarray([index[key] for key in keys], np.int64)
+        arrays = [stream.arrays() for stream in picked]
+        plan = []
+        if length_groups > 0 and len(rows):
+            from train.history_model import length_groups as plan_groups
+            cited = np.zeros(len(unique), np.int64)
+            np.maximum.at(cited, match_index, prefix)
+            # Causal encoding: tokens past every row's prefix are never read.
+            arrays = [tuple(a[:n] for a in arrs) for arrs, n in zip(arrays, cited.tolist())]
+            local = np.zeros(len(unique), np.int64)
+            for matches in plan_groups(cited, length_groups, width):
+                local[matches] = np.arange(len(matches))
+                members = np.flatnonzero(np.isin(match_index, matches))
+                plan.append((int(cited[matches].max()),
+                             (matches.astype(np.int64), members, local[match_index[members]])))
+        host = (*StreamBatch.host_arrays(arrays), match_index, prefix,
                 data["obs"][rows], data["seat"][rows], data["cand"][src], offsets,
-                offsets[:-1] + data["chosen"][rows], *named.values())
+                offsets[:-1] + data["chosen"][rows], *named.values(),
+                *(array for _, group in plan for array in group))
         uploaded = upload_arrays(host, device)
         inputs = DecisionInputs(streams=StreamBatch(*uploaded[:4]), match_index=uploaded[4],
                                 prefix=uploaded[5], obs=uploaded[6], seat=uploaded[7],
                                 cand=uploaded[8], offsets=uploaded[9])
-        return TrainingBatch(inputs, uploaded[10], dict(zip(named, uploaded[11:])))
+        base = 11 + len(named)
+        if plan:
+            from train.history_model import MatchGroup
+            inputs.match_groups = [MatchGroup(*uploaded[base + 3 * g:base + 3 * g + 3], tokens)
+                                   for g, (tokens, _) in enumerate(plan)]
+        return TrainingBatch(inputs, uploaded[10], dict(zip(named, uploaded[11:base])))
 
 
 # ---- collector -------------------------------------------------------------------
@@ -519,7 +542,11 @@ class HistoryCollector:
     drawn per identity in identity order after the learner, as before, so the
     generator advances identically; snapshot log-probabilities carry FP32
     reduction-order noise (acceptance tier 2). It may be switched between
-    ``collect`` calls.
+    ``collect`` calls. ``batch_snapshot_encoder`` (opt-in, with the merged
+    call and ``paged_cache``) also encodes those identities' public streams in
+    one pass per step over stacked encoder weights
+    (``train.history_paged_cache.merged_encode``), again tier 2 on snapshot
+    seats only.
     """
 
     def __init__(self, env: Any, actor: HistoryActor, store: MatchEventStore,
@@ -535,7 +562,8 @@ class HistoryCollector:
                  triton_cache: bool = False,
                  triton_min_batch: int = 1,
                  batch_snapshot_policies: bool = False,
-                 paged_cache: bool = False) -> None:
+                 paged_cache: bool = False,
+                 batch_snapshot_encoder: bool = False) -> None:
         self.env = env
         self.actor = actor
         self.store = store
@@ -553,6 +581,8 @@ class HistoryCollector:
             raise ValueError("Triton cache copies require CUDA rollout and the full-history KV cache")
         if paged_cache and (not kv_cache or triton_cache):
             raise ValueError("the paged KV cache requires the KV cache and replaces Triton copies")
+        if batch_snapshot_encoder and not paged_cache:
+            raise ValueError("merged snapshot encoding requires the paged KV cache")
         if triton_min_batch < 1:
             raise ValueError("Triton minimum batch must be positive")
         if private_graph_budget_mb < 1 or private_graph_policy_budget_mb < 1:
@@ -568,6 +598,7 @@ class HistoryCollector:
         self.triton_min_batch = triton_min_batch
         self.paged_cache = paged_cache
         self.kv_pool = None             # shared by every identity's paged cache
+        self.batch_snapshot_encoder = bool(batch_snapshot_encoder)
         self.batch_snapshot_policies = bool(batch_snapshot_policies)
         self.snapshot_heads = None      # stacked snapshot heads, created on first merged step
         if self.batch_snapshot_policies:
@@ -702,12 +733,20 @@ class HistoryCollector:
         return seats
 
     @torch.no_grad()
-    def _merged_snapshot_step(self, groups, actors, layout, fields, prefix, mark):
-        """Per-identity public encodes into one padded memory, then one merged
-        actor call and one Gumbel-max draw per row (uniforms per identity)."""
+    def _merged_snapshot_step(self, groups, actors, slots, layout, fields, prefix, mark):
+        """Per-identity public encodes into one padded memory (or one merged
+        encode), then one merged actor call and one Gumbel-max draw per row
+        (uniforms per identity)."""
         from train.history_snapshot_batch import merged_log_probs, merged_sample
         width = self.actor.config.width
         memory = None
+        if self.batch_snapshot_encoder and self.kv_cache:
+            from train.history_paged_cache import merged_encode
+            parts = [(self._cache(group.identity, actor), group.keys, group.streams, slot)
+                     for group, actor, slot in zip(groups, actors, slots)]
+            memory = merged_encode(parts, self.snapshot_heads, layout.length)
+            mark("public_cache_or_collation", "snapshot")
+            groups = ()     # memory is complete
         for group, actor, (begin, end), (first, last) in zip(
                 groups, actors, layout.group_rows, layout.group_streams):
             if self.kv_cache:
@@ -819,7 +858,7 @@ class HistoryCollector:
         if merged_groups:
             from train.history_snapshot_batch import SnapshotHeads, merged_layout
             if self.snapshot_heads is None:
-                self.snapshot_heads = SnapshotHeads()
+                self.snapshot_heads = SnapshotHeads(encoder=self.batch_snapshot_encoder)
             merged_actors = [self.resolve_policy(g.identity) for g in merged_groups]
             slots = [self.snapshot_heads.slot(g.identity, actor)
                      for g, actor in zip(merged_groups, merged_actors)]
@@ -883,7 +922,7 @@ class HistoryCollector:
             # After the learner, as the per-identity calls were: identical
             # generator order. One merged actor call for every snapshot row.
             fields = dict(zip(LAYOUT_FIELDS, uploaded[7 * len(groups):]))
-            downloads = self._merged_snapshot_step(merged_groups, merged_actors, layout, fields,
+            downloads = self._merged_snapshot_step(merged_groups, merged_actors, slots, layout, fields,
                                                    prefix, mark)
             pending_downloads.append((-1, layout.rows, downloads))
             for group in merged_groups:
@@ -939,12 +978,17 @@ class HistoryCollector:
             self.version = int(version)
         self.results.clear()
         stats = CollectStats()
-        if not self.batch_snapshot_policies:
-            self.snapshot_heads = None      # switched off: release the stacked copy
-        else:
+        if self.batch_snapshot_encoder and not self.paged_cache:
+            raise ValueError("merged snapshot encoding requires the paged KV cache")
+        if (not self.batch_snapshot_policies or (self.snapshot_heads is not None and
+                                                 self.snapshot_heads.encoder != self.batch_snapshot_encoder)):
+            self.snapshot_heads = None      # switched off or re-laid out: release the stacked copy
+        if self.batch_snapshot_policies:
             if self.snapshot_heads is None:
-                from train.history_snapshot_batch import validate_actor
+                from train.history_snapshot_batch import validate_actor, validate_encoder
                 validate_actor(self.actor)
+                if self.batch_snapshot_encoder:
+                    validate_encoder(self.actor)
             # Snapshot seats no longer use private graphs; free their budget.
             self.release_snapshot_graphs()
         if not self.private_graphs:

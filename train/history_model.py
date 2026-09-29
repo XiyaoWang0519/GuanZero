@@ -210,6 +210,53 @@ class StreamBatch:
 
 
 @dataclass
+class MatchGroup:
+    """Matches of one learner length group (``length_groups``) and their decisions."""
+    matches: Tensor       # int64 [m], stream indices in the StreamBatch
+    rows: Tensor          # int64 [r], decision indices whose match is in this group
+    local_match: Tensor   # int64 [r], each decision's position in ``matches``
+    tokens: int           # public tokens to encode: the longest cited prefix
+
+
+def length_groups(cited: np.ndarray, groups: int, width: int) -> list[np.ndarray]:
+    """Partition matches into at most ``groups`` sets of similar encode length.
+
+    ``cited[m]`` is the number of tokens match ``m``'s decisions read. Sorted by
+    length, contiguous runs are chosen by dynamic programming to minimise the
+    padded encoder work, ``sum_g n_g * T_g * (1 + T_g / (6 * width))`` (linear
+    layers plus attention, in units of a width-sized token row). Returns match
+    index arrays, longest group first.
+    """
+    order = np.argsort(-cited, kind="stable")
+    ordered = cited[order].astype(np.float64) + 1.0          # + BOS
+    n = len(order)
+    groups = max(1, min(int(groups), n))
+    unit = ordered * (1.0 + ordered / (6.0 * width))          # cost per match, group led by i
+    best = np.full(n + 1, np.inf)
+    best[0] = 0.0
+    choice = np.zeros((groups + 1, n + 1), np.int64)
+    layers = [best]
+    ends = np.arange(1, n + 1)
+    for g in range(1, groups + 1):
+        previous, current = layers[-1], np.full(n + 1, np.inf)
+        for start in range(n):
+            if not np.isfinite(previous[start]):
+                continue
+            cost = previous[start] + (ends[start:] - start) * unit[start]
+            better = cost < current[start + 1:]
+            current[start + 1:][better] = cost[better]
+            choice[g, start + 1:][better] = start
+        layers.append(current)
+    g = int(np.argmin([layer[n] for layer in layers[1:]])) + 1
+    bounds, end = [], n
+    while g > 0 and end > 0:
+        start = int(choice[g, end])
+        bounds.append((start, end))
+        end, g = start, g - 1
+    return [order[a:b] for a, b in reversed(bounds)]
+
+
+@dataclass
 class DecisionInputs:
     """Everything the actor needs for a batch of decisions.
 
@@ -217,6 +264,9 @@ class DecisionInputs:
     ``StreamBatch``; ``prefix[i]`` is how many of its tokens the decision may
     read. Candidates are ragged: ``cand[offsets[i]:offsets[i + 1]]`` are the
     full canonical candidates of decision ``i`` in engine order.
+    ``match_groups`` (learner only, optional) encodes the streams in length
+    groups, each only as far as its decisions read, instead of one batch
+    padded to the longest stream.
     """
     streams: StreamBatch
     match_index: Tensor   # int64 [n]
@@ -227,6 +277,7 @@ class DecisionInputs:
     offsets: Tensor       # int64 [n + 1]
     candidate_rows: Tensor | None = None  # optional precomputed ragged integer index
     one_decision_per_stream: bool = False  # rows match stream order; collector only
+    match_groups: list[MatchGroup] | None = None
 
     @property
     def decisions(self) -> int:
@@ -483,35 +534,57 @@ class HistoryActor(nn.Module):
             keys, values = self.kv_proj(stream).chunk(2, dim=-1)
             allowed = torch.arange(stream.shape[1], device=stream.device)[None] <= lengths[:, None]
             attended = self._attend(query, keys, values, allowed)
+        elif encoded is None and inputs.match_groups is not None:
+            attended = self._attend_length_groups(query, inputs)
         else:
             if encoded is None:
                 encoded = self.encode_batch(inputs.streams)
-            keys, values = self.kv_proj(encoded).chunk(2, dim=-1)
-            positions = torch.arange(encoded.shape[1], device=encoded.device)
-            if (self.batched_private_attention and inputs.one_decision_per_stream
-                    and len(query) > 1):
-                allowed = positions[None] <= inputs.prefix[:, None]
-                attended = self._attend_independent(query, keys, values, allowed)
-            elif (self.batched_match_attention and not inputs.one_decision_per_stream
-                  and len(query) > 1):
-                attended = self._attend_by_match(query, keys, values, inputs.match_index,
-                                                 inputs.prefix)
-            else:
-                attended = torch.empty_like(query)
-                for b in range(encoded.shape[0]):
-                    if inputs.one_decision_per_stream:
-                        # The collector already knows this layout on the host.
-                        # Keep the same per-match attention shapes, avoiding a
-                        # device nonzero (and its CUDA synchronization) per row.
-                        rows = slice(b, b + 1)
-                    else:
-                        rows = (inputs.match_index == b).nonzero(as_tuple=True)[0]
-                        if not len(rows):
-                            continue
-                    allowed = positions[None] <= inputs.prefix[rows][:, None]
-                    attended[rows] = self._attend(query[rows], keys[b:b + 1], values[b:b + 1], allowed)
+            attended = self._attend_encoded(query, encoded, inputs.match_index, inputs.prefix,
+                                            inputs.one_decision_per_stream)
         state = self.attention_norm(query + attended)
         return self.output_norm(state + self.feed_forward(state))
+
+    def _attend_encoded(self, query: Tensor, encoded: Tensor, match_index: Tensor,
+                        prefix: Tensor, one_decision_per_stream: bool) -> Tensor:
+        """Each decision's attention over its encoded stream, positions ``<= prefix``."""
+        keys, values = self.kv_proj(encoded).chunk(2, dim=-1)
+        positions = torch.arange(encoded.shape[1], device=encoded.device)
+        if self.batched_private_attention and one_decision_per_stream and len(query) > 1:
+            allowed = positions[None] <= prefix[:, None]
+            return self._attend_independent(query, keys, values, allowed)
+        if self.batched_match_attention and not one_decision_per_stream and len(query) > 1:
+            return self._attend_by_match(query, keys, values, match_index, prefix)
+        attended = torch.empty_like(query)
+        for b in range(encoded.shape[0]):
+            if one_decision_per_stream:
+                # The collector already knows this layout on the host.
+                # Keep the same per-match attention shapes, avoiding a
+                # device nonzero (and its CUDA synchronization) per row.
+                rows = slice(b, b + 1)
+            else:
+                rows = (match_index == b).nonzero(as_tuple=True)[0]
+                if not len(rows):
+                    continue
+            allowed = positions[None] <= prefix[rows][:, None]
+            attended[rows] = self._attend(query[rows], keys[b:b + 1], values[b:b + 1], allowed)
+        return attended
+
+    def _attend_length_groups(self, query: Tensor, inputs: DecisionInputs) -> Tensor:
+        """``_attend_encoded`` per length group: each group's streams are encoded
+        only as far as its decisions read (causal, so every visible position is
+        exactly what the full-length encode gives) and padded only to the
+        group's own longest. Same function; FP32 reduction order may differ."""
+        s = inputs.streams
+        parts, rows = [], []
+        for group in inputs.match_groups:
+            n = group.tokens
+            encoded = self.encode_stream(s.tokens[group.matches, :n], s.rounds[group.matches, :n],
+                                         s.phases[group.matches, :n],
+                                         s.lengths[group.matches].clamp(max=n))
+            parts.append(self._attend_encoded(query[group.rows], encoded, group.local_match,
+                                              inputs.prefix[group.rows], False))
+            rows.append(group.rows)
+        return torch.zeros_like(query).index_copy(0, torch.cat(rows), torch.cat(parts))
 
     def candidate_outputs(self, state: Tensor, cand: Tensor, offsets: Tensor,
                           *, predict: bool = False,
