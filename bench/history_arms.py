@@ -66,8 +66,11 @@ def switch(trainer, origin, settings: dict) -> None:
     """Apply one arm's settings, relative to the resumed ``origin`` config, to a
     live trainer without restarting environments."""
     config = replace(origin, **settings)              # validated by __post_init__
-    trainer.config = config
     collector = trainer.collector
+    if ((config.rollout_private_graphs or config.rollout_triton_cache)
+            and collector.device.type != "cuda"):
+        raise ValueError("private graphs and Triton cache copies need a CUDA rollout device")
+    trainer.config = config
     for cache in collector.caches.values():
         cache.clear()
     collector.caches.clear()
@@ -199,8 +202,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--blocks", type=int, default=6)
     parser.add_argument("--block-updates", type=int, default=6)
     args = parser.parse_args(argv)
-    if len(args.arm) < 2:
-        parser.error("compare at least two arms")
+    names = [parse_arm(text)[0] for text in args.arm]
+    if len(set(names)) != len(names) or len(names) < 2:
+        parser.error("compare at least two arms with distinct names")
     try:
         check_arms(dict(parse_arm(text) for text in args.arm))
     except ValueError as error:

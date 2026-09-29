@@ -40,3 +40,9 @@ def test_switch_rebuilds_caches_in_place_and_measures(tmp_path):
     with pytest.raises(SystemExit):     # never reuse a non-empty directory
         history_arms.main(["--resume", str(source / "latest.pt"), "--output", str(output),
                            "--device", "cpu", "--arm", "a=", "--arm", "b="])
+
+
+def test_rejects_duplicate_arm_names(tmp_path):
+    with pytest.raises(SystemExit):
+        history_arms.main(["--resume", str(tmp_path / "x.pt"), "--output", str(tmp_path / "o"),
+                           "--arm", "a=", "--arm", "a=learner_length_groups=2"])

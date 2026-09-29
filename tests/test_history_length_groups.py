@@ -80,3 +80,9 @@ def test_config_and_resume_override():
         HistoryPPOConfig(learner_length_groups=2, window=8)
     assert "learner_length_groups" in RESUME_OVERRIDES
     assert parse_resume_overrides(["learner_length_groups=4"]) == {"learner_length_groups": 4}
+
+
+def test_length_groups_require_the_actor_width(tmp_path):
+    t = trainer(tmp_path)
+    with pytest.raises(ValueError, match="width"):
+        t.buffer.training_batch(t.buffer.samples, t.store, "cpu", length_groups=2)

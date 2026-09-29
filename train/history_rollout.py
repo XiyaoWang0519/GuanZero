@@ -419,6 +419,8 @@ class SequenceRolloutBuffer:
         all uploaded with one packed copy. ``length_groups > 0`` plans the
         learner's grouped encode (``DecisionInputs.match_groups``) for an actor
         of ``width``; streams are then only uploaded as far as a row reads."""
+        if length_groups > 0 and width < 1:
+            raise ValueError("length groups need the actor width for their cost model")
         data = self.compact()
         rows = np.asarray(rows, np.int64)
         keys = list(zip(data["env"][rows].tolist(), data["match"][rows].tolist()))
@@ -809,6 +811,7 @@ class HistoryCollector:
         return self._cache(group.identity, actor).encode(group.keys, group.streams,
                                                          **lengths_hint)
 
+    @torch.no_grad()
     def _merged_snapshot_step(self, plan: _StepPlan, fields: dict[str, torch.Tensor],
                               prefix: np.ndarray, mark: _PhaseTimer):
         """Per-identity public encodes into one padded memory (or one merged
