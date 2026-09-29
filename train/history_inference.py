@@ -150,7 +150,7 @@ class BatchedHistoryCache:
             self._append([entries[i] for i in indices],
                          [min(self.chunk_size, targets[i] - entries[i].length) for i in indices])
         # Power-of-two shapes reduce allocator churn without truncating history.
-        memory = self._gather_memory(entries, bucket(max(targets)))
+        memory = self._gather_memory(entries, self._memory_size(max(targets)))
         device = memory.device
         metadata = StreamBatch(torch.empty(len(entries), 0, TOKEN_DIM, dtype=torch.uint8, device=device),
                                torch.empty(len(entries), 0, dtype=torch.long, device=device),
@@ -158,6 +158,10 @@ class BatchedHistoryCache:
                                preuploaded_lengths if preuploaded_lengths is not None else
                                torch.tensor([n - 1 for n in targets], device=device))
         return metadata, memory
+
+    def _memory_size(self, longest: int) -> int:
+        """Padded length of the memory ``encode`` returns for ``longest`` positions."""
+        return bucket(longest)
 
     def _gather_memory(self, entries: list[Entry], size: int) -> Tensor:
         """``[len(entries), size, width]`` top-layer memory, zero past each length,

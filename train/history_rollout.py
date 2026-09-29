@@ -563,7 +563,8 @@ class HistoryCollector:
                  triton_min_batch: int = 1,
                  batch_snapshot_policies: bool = False,
                  paged_cache: bool = False,
-                 batch_snapshot_encoder: bool = False) -> None:
+                 batch_snapshot_encoder: bool = False,
+                 page_span: bool = False) -> None:
         self.env = env
         self.actor = actor
         self.store = store
@@ -583,6 +584,8 @@ class HistoryCollector:
             raise ValueError("the paged KV cache requires the KV cache and replaces Triton copies")
         if batch_snapshot_encoder and not paged_cache:
             raise ValueError("merged snapshot encoding requires the paged KV cache")
+        if page_span and (not paged_cache or private_graphs):
+            raise ValueError("page-padded spans require the paged KV cache and no private graphs")
         if triton_min_batch < 1:
             raise ValueError("Triton minimum batch must be positive")
         if private_graph_budget_mb < 1 or private_graph_policy_budget_mb < 1:
@@ -599,6 +602,7 @@ class HistoryCollector:
         self.paged_cache = paged_cache
         self.kv_pool = None             # shared by every identity's paged cache
         self.batch_snapshot_encoder = bool(batch_snapshot_encoder)
+        self.page_span = bool(page_span)
         self.batch_snapshot_policies = bool(batch_snapshot_policies)
         self.snapshot_heads = None      # stacked snapshot heads, created on first merged step
         if self.batch_snapshot_policies:
@@ -694,7 +698,7 @@ class HistoryCollector:
                 from train.history_paged_cache import KVPagePool, PagedHistoryCache
                 if self.kv_pool is None:
                     self.kv_pool = KVPagePool.for_actor(actor)
-                cache = PagedHistoryCache(actor, self.kv_pool)
+                cache = PagedHistoryCache(actor, self.kv_pool, page_span=self.page_span)
             elif self.triton_cache:
                 from train.history_triton_cache import TritonHistoryCache
                 cache = TritonHistoryCache(actor, min_batch=self.triton_min_batch)

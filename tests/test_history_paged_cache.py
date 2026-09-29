@@ -223,3 +223,35 @@ def test_merged_encoder_requires_the_paged_cache():
                          batch_snapshot_encoder=True)
     HistoryPPOConfig(rollout_kv_cache=True, batch_snapshot_policies=True,
                      rollout_paged_cache=True, batch_snapshot_encoder=True)
+
+
+@pytest.mark.parametrize("device", devices())
+def test_page_span_matches_within_fp32_order(device):
+    """Page-padded spans: same values on every real position (tier 2), memory
+    padded to whole pages rather than powers of two."""
+    skip_without(device)
+    actor, _ = fresh_player(HistoryPolicyConfig(width=32, layers=2, heads=4), 7)
+    actor.to(device).train()
+    reference = BatchedHistoryCache(actor, chunk_size=32)
+    tight = PagedHistoryCache(actor, KVPagePool.for_actor(actor, page_tokens=16),
+                              chunk_size=32, page_span=True)
+    streams = [PublicStream(i) for i in range(4)]
+    for s, n in zip(streams, [0, 20, 70, 150]):
+        append(s, n)
+    for step in range(5):
+        keys = [(i, i) for i in range(4)]
+        _, expected = reference.encode(keys, streams)
+        _, actual = tight.encode(keys, streams)
+        longest = max(s.prefix for s in streams) + 1
+        assert actual.shape[1] == -(-longest // 16) * 16 <= expected.shape[1]
+        torch.testing.assert_close(actual, expected[:, :actual.shape[1]], rtol=1e-5, atol=1e-6)
+        assert not expected[:, actual.shape[1]:].any()
+        for s in streams:
+            append(s, step + 1, offset=step)
+
+
+def test_page_span_configuration():
+    from train.history_ppo import HistoryPPOConfig
+    with pytest.raises(ValueError, match="page_span"):
+        HistoryPPOConfig(rollout_kv_cache=True, rollout_page_span=True)
+    HistoryPPOConfig(rollout_kv_cache=True, rollout_paged_cache=True, rollout_page_span=True)

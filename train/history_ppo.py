@@ -102,6 +102,9 @@ class HistoryPPOConfig:
     # (train/history_paged_cache.py): a fixed number of operations per encode
     # call instead of several per cached match. Bitwise on CPU; replaces Triton.
     rollout_paged_cache: bool = False
+    # Paged cache: pad attention keys and the decision memory to the next 64-token
+    # page instead of the next power of two. Tier 2 (FP32 reduction shapes change).
+    rollout_page_span: bool = False
     profile_collection: bool = False   # synchronized phase timings; diagnostic only
     profile_collection_warmup: int = 0  # unprofiled updates of this process before profiling
     # All snapshot identities' play rows of a vector step in one merged actor call
@@ -170,6 +173,9 @@ class HistoryPPOConfig:
             raise ValueError('KV cache layouts and CUDA rollout optimizations require rollout_kv_cache')
         if self.rollout_paged_cache and self.rollout_triton_cache:
             raise ValueError('rollout_paged_cache replaces rollout_triton_cache; choose one')
+        if self.rollout_page_span and (not self.rollout_paged_cache
+                                       or self.rollout_private_graphs):
+            raise ValueError('rollout_page_span requires rollout_paged_cache and no private graphs')
         if self.batch_snapshot_encoder and not (
                 self.rollout_paged_cache
                 and (self.batch_snapshot_policies or self.batch_snapshot_policies_schedule)):
@@ -236,7 +242,8 @@ def parse_arm_schedule(schedule: str) -> list[tuple[int, bool]]:
 # stays num_envs x world size), the diagnostic collection profile (timing only),
 # merged snapshot inference and encoding (tier 2: frozen snapshot seats' float-order noise only),
 # the allocator cache trim (allocator timing only), the public KV cache storage
-# (Triton copies or paged pool: same attention inputs), the learner's length-grouped
+# (Triton copies or paged pool: same attention inputs; private graphs replay the same
+# kernels; page-padded spans are tier 2), the learner's length-grouped
 # encode (tier 2: same loss, learner float-order noise), plus snapshot_updates,
 # which changes dynamics.
 RESUME_OVERRIDES = frozenset({"num_envs", "num_threads", "minibatch_matches", "torch_threads",
@@ -247,7 +254,8 @@ RESUME_OVERRIDES = frozenset({"num_envs", "num_threads", "minibatch_matches", "t
                               "batch_snapshot_policies", "batch_snapshot_policies_schedule",
                               "rollout_trim_cuda_cache", "rollout_paged_cache",
                               "rollout_triton_cache", "batch_snapshot_encoder",
-                              "learner_length_groups"})
+                              "learner_length_groups", "rollout_page_span",
+                              "rollout_private_graphs"})
 
 
 def parse_resume_overrides(items: list[str] | None) -> dict[str, Any]:
@@ -426,7 +434,8 @@ class HistoryTrainer:
                                 epsilon=config.rollout_epsilon,
                                 batch_snapshot_policies=self.snapshot_batching(),
                                 paged_cache=config.rollout_paged_cache,
-                                batch_snapshot_encoder=config.batch_snapshot_encoder)
+                                batch_snapshot_encoder=config.batch_snapshot_encoder,
+                                page_span=config.rollout_page_span)
 
     def snapshot_batching(self) -> bool:
         """Merged snapshot inference for this update (the schedule's block, if any)."""
@@ -523,6 +532,7 @@ class HistoryTrainer:
                           "rollout_triton_min_batch": self.collector.triton_min_batch,
                           "rollout_paged_cache": self.collector.paged_cache,
                           "batch_snapshot_encoder": self.collector.batch_snapshot_encoder,
+                          "rollout_page_span": self.collector.page_span,
                           "batch_snapshot_policies": self.config.batch_snapshot_policies,
                           "batch_snapshot_policies_schedule":
                               self.config.batch_snapshot_policies_schedule,
@@ -953,6 +963,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="with --rollout-batched-attention: one q/out projection over all "
                              "rows (FP32; reduction order differs, not bitwise)")
     parser.add_argument("--rollout-private-graphs", action="store_true")
+    parser.add_argument("--rollout-page-span", action="store_true",
+                        help="with --rollout-paged-cache: pad cache attention and decision "
+                             "memory to 64-token pages, not powers of two (FP32; not bitwise)")
     parser.add_argument("--learner-batched-attention", action="store_true",
                         help="learner: all matches of a minibatch in one padded attention "
                              "call (FP32; reduction order differs, not bitwise)")

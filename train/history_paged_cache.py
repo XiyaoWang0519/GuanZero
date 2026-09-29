@@ -22,6 +22,11 @@ this is bitwise identical (tests/test_history_paged_cache.py). The target
 backend must be checked with the same test before a GPU run relies on bitwise
 identity; otherwise the difference is reduction-order noise (acceptance tier 2).
 
+``page_span`` (opt-in) pads attention keys and the returned memory only to
+the next whole page past the longest stream instead of the next power of two.
+Position encodings are unchanged; the SDPA reduction shapes change, so this is
+acceptance tier 2 (on CPU most calls stay bitwise, single-token calls do not).
+
 The pool is shared by every policy identity of one collector: an identity's
 cache releases its pages on ``clear``/``prune``. Page 0 is never allocated and
 stays zero. The pool grows by reallocation and never shrinks; its reserved
@@ -129,11 +134,21 @@ class PagedHistoryCache(BatchedHistoryCache):
     """``BatchedHistoryCache`` over a shared ``KVPagePool`` (see the module notes)."""
 
     def __init__(self, actor: HistoryActor, pool: KVPagePool | None = None,
-                 chunk_size: int = 128) -> None:
+                 chunk_size: int = 128, *, page_span: bool = False) -> None:
         super().__init__(actor, chunk_size)
         self.pool = pool if pool is not None else KVPagePool.for_actor(actor)
         self.pool.check(actor)
-        self._selectors: tuple | None = None
+        self.page_span = page_span
+
+    def _span(self, longest: int) -> int:
+        """Attention keys and memory positions to materialize for ``longest``."""
+        if not self.page_span:
+            return bucket(longest)
+        P = self.pool.page_tokens
+        return min(bucket(longest), -(-longest // P) * P)
+
+    def _memory_size(self, longest: int) -> int:
+        return self._span(longest)
 
     # -- storage ------------------------------------------------------------
 
@@ -203,6 +218,7 @@ class PagedHistoryCache(BatchedHistoryCache):
         count_array = np.asarray(counts, np.int64)
         ends = starts + count_array
         capacity = bucket(int(ends.max()))
+        span = self._span(int(ends.max()))
         P = pool.page_tokens
         for entry, end in zip(entries, ends.tolist()):
             missing = -(-end // P) - len(entry.pages)
@@ -220,7 +236,7 @@ class PagedHistoryCache(BatchedHistoryCache):
                 tokens[i, offset:offset + count] = entry.stream.tokens[begin:end]
                 rounds[i, offset:offset + count] = entry.stream.rounds[begin:end]
                 phases[i, offset:offset + count] = entry.stream.phases[begin:end]
-        table = self._page_table(entries, capacity)
+        table = self._page_table(entries, span)
         # New positions (row b, slot t < count_b) and the pool rows they fill.
         write_batch = np.repeat(np.arange(batch, dtype=np.int64), count_array)
         write_slot = np.arange(len(write_batch), dtype=np.int64) - np.repeat(
@@ -239,6 +255,7 @@ class PagedHistoryCache(BatchedHistoryCache):
         position_table, key_positions = self._position_buffers(capacity)
         positions = start_positions[:, None] + key_positions[:width]
         state = state + position_table[positions.clamp(max=capacity - 1)]
+        key_positions = key_positions[:span]
         allowed = ((key_positions[None, None] <= positions[:, :, None])
                    & (key_positions[None, None] < end_positions[:, None, None]))
         rows = self._rows(table_d, end_positions, key_positions).view(-1)
@@ -251,8 +268,8 @@ class PagedHistoryCache(BatchedHistoryCache):
             q = qkv[:, :, 0].transpose(1, 2)
             kv = pool.kv[layer_index]
             kv[write_rows_d] = qkv[write_batch_d, write_slot_d, 1:]
-            # [batch * capacity, 2, heads, depth] -> keys/values [batch, heads, capacity, depth]
-            packed = kv[rows].view(batch, capacity, 2, heads, depth).permute(2, 0, 3, 1, 4)
+            # [batch * span, 2, heads, depth] -> keys/values [batch, heads, span, depth]
+            packed = kv[rows].view(batch, span, 2, heads, depth).permute(2, 0, 3, 1, 4)
             attended = F.scaled_dot_product_attention(q, packed[0], packed[1],
                                                       attn_mask=allowed[:, None], dropout_p=0.0)
             state = finish(layer, state, attended)
@@ -336,6 +353,7 @@ def _merged_append(cache: PagedHistoryCache, entries: list[PagedEntry], counts: 
     count_array = np.asarray(counts, np.int64)
     ends = starts + count_array
     capacity = bucket(int(ends.max()))
+    span = cache._span(int(ends.max()))
     P = pool.page_tokens
     for entry, end in zip(entries, ends.tolist()):
         missing = -(-end // P) - len(entry.pages)
@@ -354,7 +372,7 @@ def _merged_append(cache: PagedHistoryCache, entries: list[PagedEntry], counts: 
             tokens[pad[i], offset:offset + count] = entry.stream.tokens[begin:end]
             rounds[pad[i], offset:offset + count] = entry.stream.rounds[begin:end]
             phases[pad[i], offset:offset + count] = entry.stream.phases[begin:end]
-    table = cache._page_table(entries, capacity)
+    table = cache._page_table(entries, span)
     write_batch = np.repeat(np.arange(batch, dtype=np.int64), count_array)
     write_slot = np.arange(len(write_batch), dtype=np.int64) - np.repeat(
         np.cumsum(count_array) - count_array, count_array)
@@ -378,6 +396,7 @@ def _merged_append(cache: PagedHistoryCache, entries: list[PagedEntry], counts: 
     state = state + position_table[(starts_pad_d[:, None] + key_positions[:width])
                                    .clamp(max=capacity - 1)]
     positions = start_positions[:, None] + key_positions[:width]
+    key_positions = key_positions[:span]
     allowed = ((key_positions[None, None] <= positions[:, :, None])
                & (key_positions[None, None] < end_positions[:, None, None]))
     rows = cache._rows(table_d, end_positions, key_positions).view(-1)
@@ -387,7 +406,7 @@ def _merged_append(cache: PagedHistoryCache, entries: list[PagedEntry], counts: 
         kv = pool.kv[index]
         kv[write_rows_d] = qkv[write_pad_d, write_slot_d, 1:]
         q = qkv[pad_d][:, :, 0].transpose(1, 2)
-        packed = kv[rows].view(batch, capacity, 2, H, depth).permute(2, 0, 3, 1, 4)
+        packed = kv[rows].view(batch, span, 2, H, depth).permute(2, 0, 3, 1, 4)
         attended = F.scaled_dot_product_attention(q, packed[0], packed[1],
                                                   attn_mask=allowed[:, None], dropout_p=0.0)
         attended = state.new_zeros(R, width, W).index_copy_(
