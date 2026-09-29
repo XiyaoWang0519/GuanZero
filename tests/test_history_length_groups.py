@@ -24,11 +24,11 @@ def test_plan_partitions_sorted_runs(groups):
     assert len(length_groups(cited, 1, 128)) == 1
 
 
-def trainer(tmp_path, **overrides):
+def trainer(tmp_path, device="cpu", **overrides):
     config = dict(width=32, layers=2, heads=4, num_envs=6, steps_per_update=80, seed=3,
                   rollout_kv_cache=True, minibatch_matches=6, snapshot_updates=1)
     config.update(overrides)
-    t = HistoryTrainer(HistoryPPOConfig(**config), tmp_path)
+    t = HistoryTrainer(HistoryPPOConfig(**config), tmp_path, device=device)
     for _ in range(2):
         t.update()
     t.collect()
@@ -36,18 +36,21 @@ def trainer(tmp_path, **overrides):
     return t
 
 
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
 @pytest.mark.parametrize("response_mode", ["none", "auxiliary"])
 @pytest.mark.parametrize("causal_sdpa", [False, True])
 @pytest.mark.parametrize("batched", [False, True])
-def test_grouped_loss_and_gradients_match_the_padded_minibatch(tmp_path, response_mode,
+def test_grouped_loss_and_gradients_match_the_padded_minibatch(tmp_path, device, response_mode,
                                                                 causal_sdpa, batched):
-    t = trainer(tmp_path, response_mode=response_mode, causal_sdpa=causal_sdpa,
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA length-group acceptance")
+    t = trainer(tmp_path, device, response_mode=response_mode, causal_sdpa=causal_sdpa,
                 learner_batched_attention=batched)
     rows = t.buffer.samples
-    batch = t.buffer.training_batch(rows, t.store, "cpu", length_groups=3, width=32)
+    batch = t.buffer.training_batch(rows, t.store, device, length_groups=3, width=32)
     groups = batch.inputs.match_groups
     assert len(groups) > 1
-    covered = torch.cat([g.rows for g in groups]).sort().values
+    covered = torch.cat([g.rows for g in groups]).sort().values.cpu()
     assert torch.equal(covered, torch.arange(len(rows)))
     for g in groups:
         assert (batch.inputs.match_index[g.rows] == g.matches[g.local_match]).all()
