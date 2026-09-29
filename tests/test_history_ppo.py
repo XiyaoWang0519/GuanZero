@@ -230,3 +230,41 @@ def test_window_control_passthrough_keeps_ratio_parity(tmp_path):
         log_prob, _ = trainer.recompute_log_probs(rows)
     assert np.abs(log_prob.numpy() - trainer.buffer.compact()["logp"][rows]).max() < 1e-5
     assert trainer.learn()["encoder_grad_norm"] > 0
+
+
+class _FakeTrainer:
+    def __init__(self, fail=False):
+        self.fail, self.stop_requested, self.calls = fail, False, 0
+
+    def run(self):
+        self.calls += 1
+        sum(i * i for i in range(1000))
+        if self.fail:
+            raise RuntimeError("boom")
+
+
+def test_cprofile_hook_is_off_by_default_and_writes_rank_profiles(tmp_path, monkeypatch):
+    import pstats
+    monkeypatch.delenv(history_ppo.CPROFILE_ENV, raising=False)
+    trainer = _FakeTrainer()
+    history_ppo.run_profiled(trainer, 3)
+    assert trainer.calls == 1 and not any(tmp_path.iterdir())
+    monkeypatch.setenv(history_ppo.CPROFILE_ENV, str(tmp_path / "prof"))
+    history_ppo.run_profiled(trainer, 1)
+    stats = pstats.Stats(str(tmp_path / "prof" / "rank-1.prof"))
+    assert any(name == "run" for _, _, name in stats.stats)
+    # A failing run still leaves its profile, then re-raises.
+    with pytest.raises(RuntimeError, match="boom"):
+        history_ppo.run_profiled(_FakeTrainer(fail=True), 0)
+    assert (tmp_path / "prof" / "rank-0.prof").stat().st_size > 0
+
+
+def test_cprofile_hook_profiles_the_cli_trainer(tmp_path, monkeypatch):
+    import pstats
+    monkeypatch.setenv(history_ppo.CPROFILE_ENV, str(tmp_path / "prof"))
+    assert history_ppo.main(["--output", str(tmp_path / "run"), "--updates", "1",
+                             "--num-envs", "2", "--steps-per-update", "4", "--width", "16",
+                             "--layers", "1", "--heads", "2", "--snapshot-updates", "0"]) == 0
+    stats = pstats.Stats(str(tmp_path / "prof" / "rank-0.prof"))
+    ours = {name for path, _, name in stats.stats if path.endswith("history_ppo.py")}
+    assert {"run", "update", "collect", "learn", "save"} <= ours
