@@ -44,6 +44,7 @@ import torch
 
 from train.history_model import (HIDDEN_DIM, PLAY_PHASE, DecisionInputs, HistoryActor,
                                  PublicStream, StreamBatch)
+from train.history_snapshot_batch import LAYOUT_FIELDS
 from train.history_transfers import download_tensors as _download_tensors, upload_arrays
 
 LEARNER = 0     # policy identity of the collecting learner in a seat assignment
@@ -430,6 +431,11 @@ def all_learner(env_id: int, match_id: int) -> Sequence[int]:
     return (LEARNER,) * NUM_SEATS
 
 
+# CollectStats fields written only in profile mode (timings and call shapes);
+# everything else must be identical with profiling on and off.
+PROFILE_STATS = ("phase_seconds", "group_phase_seconds", "policy_call_rows")
+
+
 @dataclass
 class CollectStats:
     steps: int = 0
@@ -442,6 +448,10 @@ class CollectStats:
     prefix_sum: int = 0
     prefix_max: int = 0
     phase_seconds: dict[str, float] = field(default_factory=dict)
+    # Profile mode only: the per-call phases split by identity group ("learner",
+    # "snapshot") and a histogram {rows per policy call: calls} per group.
+    group_phase_seconds: dict[str, dict[str, float]] = field(default_factory=dict)
+    policy_call_rows: dict[str, dict[int, int]] = field(default_factory=dict)
     policy_batches: int = 0
     epsilon_picks: int = 0      # learner rows chosen by the exploration floor's uniform branch
     behaviour_entropy_sum: float = 0.0  # sum over learner rows of the entropy of pi_b
@@ -479,6 +489,15 @@ class HistoryCollector:
     ``collect`` call. Actor weights, structure and hooks must stay fixed during
     that call; normal PPO updates happen between calls. Direct ``step`` calls
     retain the full graph validation on every inference.
+    ``batch_snapshot_policies`` (opt-in) evaluates all non-learner identities'
+    play rows of a vector step in one merged actor call over stacked head
+    weights (``train.history_snapshot_batch``). Each identity's public KV cache
+    still encodes its own streams; the learner's call, rows and sampling are
+    unchanged; snapshot seats bypass private graphs. Snapshot uniforms are
+    drawn per identity in identity order after the learner, as before, so the
+    generator advances identically; snapshot log-probabilities carry FP32
+    reduction-order noise (acceptance tier 2). It may be switched between
+    ``collect`` calls.
     """
 
     def __init__(self, env: Any, actor: HistoryActor, store: MatchEventStore,
@@ -492,7 +511,8 @@ class HistoryCollector:
                  reuse_cache_lengths: bool = True, private_graphs: bool = False,
                  private_graph_budget_mb: int = 512, private_graph_policy_budget_mb: int = 128,
                  triton_cache: bool = False,
-                 triton_min_batch: int = 1) -> None:
+                 triton_min_batch: int = 1,
+                 batch_snapshot_policies: bool = False) -> None:
         self.env = env
         self.actor = actor
         self.store = store
@@ -521,6 +541,11 @@ class HistoryCollector:
         self._graph_collecting = False
         self.triton_cache = triton_cache
         self.triton_min_batch = triton_min_batch
+        self.batch_snapshot_policies = bool(batch_snapshot_policies)
+        self.snapshot_heads = None      # stacked snapshot heads, created on first merged step
+        if self.batch_snapshot_policies:
+            from train.history_snapshot_batch import validate_actor
+            validate_actor(actor)
         self.profile = profile
         self.temperature = float(temperature)
         self.epsilon = float(epsilon)
@@ -557,6 +582,8 @@ class HistoryCollector:
         for identity in list(self.decision_graphs):
             if identity not in active:
                 self.decision_graphs.pop(identity).clear()
+        if self.snapshot_heads is not None:
+            self.snapshot_heads.retain(set(active) - {LEARNER})
 
     @torch.no_grad()
     def _graph_log_probs(self, identity, actor, inputs, encoded):
@@ -582,6 +609,29 @@ class HistoryCollector:
 
     def graph_metrics(self) -> dict:
         return {str(identity): graph.metrics() for identity, graph in self.decision_graphs.items()}
+
+    def release_snapshot_graphs(self) -> int:
+        """Clear every non-learner identity's private graphs; returns how many.
+        Their pool blocks become free allocator cache (empty_cache returns them)."""
+        released = [identity for identity in self.decision_graphs if identity != LEARNER]
+        for identity in released:
+            self.decision_graphs.pop(identity).clear()
+        return len(released)
+
+    def snapshot_head_metrics(self) -> dict:
+        return self.snapshot_heads.metrics() if self.snapshot_heads is not None else {}
+
+    def _cache(self, identity: int, actor: HistoryActor):
+        from train.history_inference import BatchedHistoryCache
+        cache = self.caches.get(int(identity))
+        if cache is None or cache.actor is not actor:
+            if self.triton_cache:
+                from train.history_triton_cache import TritonHistoryCache
+                cache = TritonHistoryCache(actor, min_batch=self.triton_min_batch)
+            else:
+                cache = BatchedHistoryCache(actor)
+            self.caches[int(identity)] = cache
+        return cache
 
     def transfer_metrics(self) -> dict:
         return {str(identity): dict(cache.copy_stats) for identity, cache in self.caches.items()
@@ -612,17 +662,53 @@ class HistoryCollector:
                 del self.assignments[k]
         return seats
 
+    @torch.no_grad()
+    def _merged_snapshot_step(self, groups, actors, layout, fields, prefix, mark):
+        """Per-identity public encodes into one padded memory, then one merged
+        actor call and one Gumbel-max draw per row (uniforms per identity)."""
+        from train.history_snapshot_batch import merged_log_probs, merged_sample
+        width = self.actor.config.width
+        memory = None
+        for group, actor, (begin, end), (first, last) in zip(
+                groups, actors, layout.group_rows, layout.group_streams):
+            if self.kv_cache:
+                cache = self._cache(group.identity, actor)
+                lengths_hint = {}
+                if self.reuse_cache_lengths and group.one_decision_per_stream:
+                    host_lengths = tuple(prefix[group.rows].tolist())
+                    if host_lengths == tuple(stream.prefix for stream in group.streams):
+                        lengths_hint = dict(preuploaded_lengths=fields["prefix"][begin:end],
+                                            host_lengths=host_lengths)
+                _, encoded = cache.encode(group.keys, group.streams, **lengths_hint)
+            else:
+                encoded = actor.encode_batch(StreamBatch.from_streams(group.streams, self.device))
+            if encoded.dtype != torch.float32 or encoded.shape[0] != last - first:
+                raise ValueError("merged snapshot inference needs FP32 memory, one row per stream")
+            if memory is None:
+                memory = encoded.new_zeros(layout.streams, layout.length, width)
+            span = min(layout.length, encoded.shape[1])
+            memory[first:last, :span].copy_(encoded[:, :span])
+            del encoded
+            mark("public_cache_or_collation", "snapshot")
+        log_probs = merged_log_probs(self.snapshot_heads, layout, fields, memory)
+        choice, chosen_logp = merged_sample(log_probs, layout, fields, self.generator)
+        mark("actor_and_sampling", "snapshot")
+        return choice, chosen_logp.float()
+
     def step(self, stats: CollectStats | None = None) -> int:
         """One vector step. Returns the number of pending rows stepped."""
         stats = stats if stats is not None else CollectStats()
         stamp = time.perf_counter() if self.profile else 0.0
-        def mark(name):
+        def mark(name, group=None):
             nonlocal stamp
             if self.profile:
                 if self.device.type == "cuda":
                     torch.cuda.synchronize(self.device)
                 now = time.perf_counter()
                 stats.phase_seconds[name] = stats.phase_seconds.get(name, 0.0) + now - stamp
+                if group is not None:
+                    split = stats.group_phase_seconds.setdefault(group, {})
+                    split[name] = split.get(name, 0.0) + now - stamp
                 stamp = now
         env = self.env
         if not self.started:
@@ -666,25 +752,41 @@ class HistoryCollector:
             learner[i] = identities[i] == LEARNER
             prefix[i] = self.store.stream(env_id[i], match_id[i]).prefix
         acting = learner & (phase == PLAY_PHASE)
-        if self.kv_cache and self._assignments_changed:
+        if (self.kv_cache or self.snapshot_heads is not None) and self._assignments_changed:
             self._prune_caches()
             self._assignments_changed = False
         mark("metadata_and_assignment")
-        groups, host_fields = [], []
+        merge = self.batch_snapshot_policies
+        groups, host_fields, merged_groups = [], [], []
         for identity in np.unique(identities[phase == PLAY_PHASE]):
             rows = np.flatnonzero((identities == identity) & (phase == PLAY_PHASE))
             keys = list(zip(env_id[rows].tolist(), match_id[rows].tolist()))
             unique = list(dict.fromkeys(keys))
+            streams = [self.store.stream(*k) for k in unique]
+            group = _PolicyBatch(int(identity), rows, unique, streams,
+                                 len(keys) == len(unique), int(counts[rows].max()))
+            if merge and identity != LEARNER:
+                merged_groups.append(group)
+                continue
             index = {key: i for i, key in enumerate(unique)}
             src = ragged_index(offsets[rows], counts[rows])
             local = np.concatenate(([0], np.cumsum(counts[rows])))
-            streams = [self.store.stream(*k) for k in unique]
-            groups.append(_PolicyBatch(int(identity), rows, unique, streams,
-                                       len(keys) == len(unique), int(counts[rows].max())))
+            groups.append(group)
             host_fields.extend((
                 np.asarray([index[k] for k in keys], np.int64), prefix[rows],
                 obs[rows].astype(np.uint8), seat[rows], cand[src].astype(np.uint8),
                 local, np.repeat(np.arange(len(rows), dtype=np.int64), counts[rows])))
+        layout = merged_actors = None
+        if merged_groups:
+            from train.history_snapshot_batch import SnapshotHeads, merged_layout
+            if self.snapshot_heads is None:
+                self.snapshot_heads = SnapshotHeads()
+            merged_actors = [self.resolve_policy(g.identity) for g in merged_groups]
+            slots = [self.snapshot_heads.slot(g.identity, actor)
+                     for g, actor in zip(merged_groups, merged_actors)]
+            layout = merged_layout(merged_groups, slots, prefix, obs, seat, cand, offsets,
+                                   counts, env_id, match_id)
+            host_fields.extend(layout.arrays)
         mark("input_indexing")
         # All groups' decision inputs are known before inference. One aligned
         # upload preserves group/row order and avoids seven transfers per group.
@@ -693,19 +795,12 @@ class HistoryCollector:
         pending_downloads = []
         for group_index, group in enumerate(groups):
             identity, rows = group.identity, group.rows
+            label = "learner" if identity == LEARNER else "snapshot"
             fields = uploaded[7 * group_index:7 * (group_index + 1)]
             actor = self.actor if identity == LEARNER else self.resolve_policy(int(identity))
             encoded = None
             if self.kv_cache:
-                from train.history_inference import BatchedHistoryCache
-                cache = self.caches.get(int(identity))
-                if cache is None or cache.actor is not actor:
-                    if self.triton_cache:
-                        from train.history_triton_cache import TritonHistoryCache
-                        cache = TritonHistoryCache(actor, min_batch=self.triton_min_batch)
-                    else:
-                        cache = BatchedHistoryCache(actor)
-                    self.caches[int(identity)] = cache
+                cache = self._cache(identity, actor)
                 lengths_hint = {}
                 if self.reuse_cache_lengths and group.one_decision_per_stream:
                     # With distinct keys, insertion order makes decision rows
@@ -718,7 +813,7 @@ class HistoryCollector:
                 stream_batch, encoded = cache.encode(group.keys, group.streams, **lengths_hint)
             else:
                 stream_batch = StreamBatch.from_streams(group.streams, self.device)
-            mark("public_cache_or_collation")
+            mark("public_cache_or_collation", label)
             inputs = DecisionInputs(
                 streams=stream_batch,
                 match_index=fields[0], prefix=fields[1], obs=fields[2], seat=fields[3],
@@ -738,10 +833,27 @@ class HistoryCollector:
                 choice, chosen_logp = actor.act(inputs, self.generator, encoded=encoded,
                                                max_candidates=group.max_candidates, **inference)
                 downloads = (choice, chosen_logp.float())
-            mark("actor_and_sampling")
+            mark("actor_and_sampling", label)
             pending_downloads.append((int(identity), rows, downloads))
             self.policy_decisions[int(identity)] = self.policy_decisions.get(int(identity), 0) + len(rows)
             stats.policy_batches += 1
+            if self.profile:
+                sizes = stats.policy_call_rows.setdefault(label, {})
+                sizes[len(rows)] = sizes.get(len(rows), 0) + 1
+        if layout is not None:
+            # After the learner, as the per-identity calls were: identical
+            # generator order. One merged actor call for every snapshot row.
+            fields = dict(zip(LAYOUT_FIELDS, uploaded[7 * len(groups):]))
+            downloads = self._merged_snapshot_step(merged_groups, merged_actors, layout, fields,
+                                                   prefix, mark)
+            pending_downloads.append((-1, layout.rows, downloads))
+            for group in merged_groups:
+                self.policy_decisions[group.identity] = (self.policy_decisions.get(group.identity, 0)
+                                                         + len(group.rows))
+            stats.policy_batches += 1
+            if self.profile:
+                sizes = stats.policy_call_rows.setdefault("snapshot", {})
+                sizes[len(layout.rows)] = sizes.get(len(layout.rows), 0) + 1
         # Policies do not depend on one another's actions until env.step().
         # Preserve their sampling order, then synchronize once for the whole
         # vector step instead of stalling after each identity's inference.
@@ -788,6 +900,14 @@ class HistoryCollector:
             self.version = int(version)
         self.results.clear()
         stats = CollectStats()
+        if not self.batch_snapshot_policies:
+            self.snapshot_heads = None      # switched off: release the stacked copy
+        else:
+            if self.snapshot_heads is None:
+                from train.history_snapshot_batch import validate_actor
+                validate_actor(self.actor)
+            # Snapshot seats no longer use private graphs; free their budget.
+            self.release_snapshot_graphs()
         if not self.private_graphs:
             for _ in range(int(steps)):
                 self.step(stats)
