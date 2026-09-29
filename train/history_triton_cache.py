@@ -5,12 +5,18 @@ gathers the exact eager dense layout. No floating-point operation is introduced
 or changed. The original _append still performs every projection, attention,
 residual and normalization with its original shapes.
 
-The cache is restricted to one CUDA stream at a time. A pointer table owns strong
-Tensor references, and records that stream on their allocations before exposing
-raw addresses to Triton. PyTorch may therefore release a table after launches
-without recycling referenced allocations while those launches are pending.
-clear() releases the stream binding; callers must finish using returned outputs
-before using a different stream, as for the original cache.
+The cache is restricted to one CUDA stream at a time. One cache-wide pointer
+table has a column per registered Entry (an insertion-ordered registry with a
+free list). Registering an Entry validates its tensors once, keeps detached
+aliases of their storages and records that stream on their allocations before
+exposing raw addresses to Triton; PyTorch may therefore release a column after
+launches without recycling referenced allocations while they are pending. The
+table is uploaded again only when the registry changes: an Entry is created,
+replaced by growth or reset, pruned, or the cache is cleared. Each append then
+uploads only a ``[3, batch]`` int64 array (table column, start, count) and the
+kernel reads capacity and K/V addresses through the column. clear() releases
+the stream binding; callers must finish using returned outputs before using a
+different stream, as for the original cache.
 """
 from __future__ import annotations
 
@@ -32,17 +38,19 @@ except ImportError:  # CPU probe and original cache remain usable without Triton
 
 if triton is not None:
     @triton.jit(do_not_specialize=[
-        "BATCH", "ROW_BASE", "CAPACITY", "LAYER", "STACK_MODE", "K0", "K1", "K2", "K3",
-        "V0", "V1", "V2", "V3",
+        "BATCH", "ROW_BASE", "SLOTS", "CAPACITY", "LAYER", "STACK_MODE", "K0", "K1", "K2",
+        "K3", "V0", "V1", "V2", "V3",
     ])
     def _update_and_pack(
         NEW_K, NEW_V, PACKED_K, PACKED_V, POINTERS, RANGES,
-        BATCH, ROW_BASE, CAPACITY, LAYER, STACK_MODE,
+        BATCH, ROW_BASE, SLOTS, CAPACITY, LAYER, STACK_MODE,
         K0, K1, K2, K3, V0, V1, V2, V3,
         HEADS: tl.constexpr, DEPTH: tl.constexpr, BLOCK: tl.constexpr,
     ):
-        # NEW_*/PACKED_* start at this launch's first row; the pointer and range
-        # tables cover the whole append, so they are read at ROW_BASE + row.
+        # NEW_*/PACKED_* start at this launch's first row; the range table
+        # covers the whole append, so it is read at ROW_BASE + row. Its first
+        # row names the Entry's column in the cache-wide [1 + 2L, SLOTS]
+        # pointer table (capacity, K0, V0, K1, V1, ...).
         row = tl.program_id(1)
         table_row = ROW_BASE + row
         index = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
@@ -50,12 +58,13 @@ if triton is not None:
         head = index // (CAPACITY * DEPTH)
         position = index // DEPTH % CAPACITY
         depth = index % DEPTH
-        own_capacity = tl.load(POINTERS + table_row)
-        start = tl.load(RANGES + table_row)
-        count = tl.load(RANGES + BATCH + table_row)
+        column = tl.load(RANGES + table_row)
+        start = tl.load(RANGES + BATCH + table_row)
+        count = tl.load(RANGES + 2 * BATCH + table_row)
         end = start + count
-        entry_k = tl.load(POINTERS + (1 + 2 * LAYER) * BATCH + table_row)
-        entry_v = tl.load(POINTERS + (2 + 2 * LAYER) * BATCH + table_row)
+        own_capacity = tl.load(POINTERS + column)
+        entry_k = tl.load(POINTERS + (1 + 2 * LAYER) * SLOTS + column)
+        entry_v = tl.load(POINTERS + (2 + 2 * LAYER) * SLOTS + column)
         entry_k = entry_k.to(tl.pointer_type(tl.uint32))
         entry_v = entry_v.to(tl.pointer_type(tl.uint32))
         # Strides are element strides of potentially non-contiguous QKV views.
@@ -115,30 +124,52 @@ def _storage_bytes(tensors):
 
 @dataclass
 class _PointerTable:
-    key: tuple
-    pointers: torch.Tensor  # [1 + 2 * layers, batch]: capacity, K0, V0, ...
-    references: tuple      # Strong refs until every raw-pointer launch is queued.
-    entries: tuple
+    """One upload of the registry: column c describes ``entries[c]``."""
+    pointers: torch.Tensor  # [1 + 2 * layers, columns]: capacity, K0, V0, ...
+    references: tuple      # per column: detached K/V storage aliases (() when free)
+    entries: tuple         # per column: the registered Entry, or None when free
 
 
 @dataclass
 class _CopyContext:
     table: _PointerTable
-    ranges: torch.Tensor    # [2, batch]: start, count
+    ranges: torch.Tensor    # [3, batch]: table column, start, count
     entries: tuple
     counts: tuple
     stream: object
 
 
+def _upload(array: np.ndarray, device: torch.device) -> torch.Tensor:
+    """int64 host array to ``device``: one pinned non_blocking H2D on CUDA.
+
+    PyTorch's pinned allocator records the H2D event before recycling the
+    host slab, so the slab may be dropped right after the call."""
+    if device.type != "cuda":
+        return torch.from_numpy(np.array(array, dtype=np.int64))
+    host = torch.empty(array.shape, dtype=torch.int64, pin_memory=True)
+    host.numpy()[...] = array
+    return host.to(device, non_blocking=True)
+
+
 class TritonHistoryCache(BatchedHistoryCache):
     """Public KV cache with optional Triton copies and exact eager fallbacks.
 
-    At most one pointer table is retained. Its entries already belong to the
-    normal cache; prune()/clear() release the table so retired histories do not
-    remain resident. Dynamic start/count metadata is uploaded once per append,
-    reused across every layer, then released. Pointer/capacity metadata is only
-    uploaded when its exact ordered composition changes. Both uploads share one
-    pinned slab on a table miss; the async transfer owns an immutable host slab.
+    One cache-wide pointer table covers every registered Entry. An Entry is
+    registered (validated, aliased, given a column) the first time an append
+    uses it on the Triton path, and leaves the registry when the base cache
+    replaces it (growth, reset or reused key), prunes it, or clears. A retired
+    Entry's column is freed at once, so retired histories do not remain
+    resident. The device table is uploaded again only after such a change
+    (``table_rebuilds``, also counted as ``pointer_uploads``); otherwise it is
+    reused (``table_reuses``/``pointer_reuses``). Column, start and count are
+    uploaded once per append, reused across every layer, then released.
+
+    Per append, each Entry costs one registry lookup and a check that its
+    capacity and K/V addresses still match its column (a Tensor whose ``.data``
+    was rebound re-registers). The tensor checks (dtype, device, contiguity,
+    shape, distinct addresses, storage not shared with another registered
+    Entry) run once at registration; in-place resizing of an Entry tensor is
+    unsupported, as is ``.data`` mutation of parameters for the base cache.
     ``copy_stats`` counts every eager fallback by reason (``fallback_*`` and
     ``eager_packs``), Triton launches and chunked packs.
     """
@@ -147,9 +178,10 @@ class TritonHistoryCache(BatchedHistoryCache):
     def __init__(self, actor, chunk_size=128, *, enabled=True, min_batch=1, max_batch=None,
                  max_table_bytes=None, max_packed_bytes=None, block=256):
         # None = no limit. Batch size is unbounded: launches are chunked so every
-        # in-kernel offset stays int32, and the pointer table is one small H2D
-        # upload per composition (8 * (2L + 3) bytes per stream). Packed K/V has
-        # exactly the eager path's size, so capping it only forced eager copies.
+        # in-kernel offset stays int32; per append only 24 bytes per stream are
+        # uploaded, plus the cache-wide pointer table (8 * (2L + 1) bytes per
+        # column) after a registry change. Packed K/V has exactly the eager
+        # path's size, so capping it only forced eager copies.
         super().__init__(actor, chunk_size)
         if enabled and actor.bos.device.type == "cuda" and triton is None:
             raise RuntimeError("Triton is required when the CUDA Triton KV cache is enabled")
@@ -170,6 +202,126 @@ class TritonHistoryCache(BatchedHistoryCache):
         self._owner_stream = None
         self.copy_stats = Counter()
         self.launch_host_seconds = 0.0
+        self._reset_registry()
+
+    # -- registry: one pointer-table column per live Entry ------------------------
+
+    def _reset_registry(self):
+        self._pointer_table = None
+        self._columns = {}          # id(Entry) -> column; the registry holds the Entry
+        self._column_entries = []   # column -> Entry, or None when free
+        self._column_keys = []      # column -> (capacity, K/V data_ptrs) at registration
+        self._column_refs = []      # column -> detached storage aliases
+        self._bases = {}            # storage base address -> column (alias check)
+        self._free = []
+        self._host = np.zeros((1 + 2 * self.actor.config.layers, 0), dtype=np.int64)
+
+    @staticmethod
+    def _entry_key(entry):
+        return (entry.capacity, *(t.data_ptr() for t in entry.keys),
+                *(t.data_ptr() for t in entry.values))
+
+    def _unregister(self, column):
+        entry = self._column_entries[column]
+        del self._columns[id(entry)]
+        for tensor in self._column_refs[column]:
+            del self._bases[tensor.untyped_storage().data_ptr()]
+        self._column_entries[column] = None
+        self._column_keys[column] = None
+        self._column_refs[column] = ()
+        self._host[:, column] = 0
+        self._free.append(column)
+        self._pointer_table = None
+
+    def _register(self, entry, key, stream):
+        """Validate ``entry`` once and give it a column; False: eager fallback."""
+        device, cfg = self.actor.bos.device, self.actor.config
+        tensors = tuple(tensor for pair in zip(entry.keys, entry.values) for tensor in pair)
+        if any(tensor.dtype != torch.float32 or tensor.device != device
+               or not tensor.is_contiguous()
+               or tensor.shape != (cfg.heads, entry.capacity, cfg.width // cfg.heads)
+               for tensor in tensors) or len(set(key[1:])) != len(tensors):
+            self.copy_stats["fallback_entry_tensors"] += 1
+            return False
+        # Overlapping Entry tensors would create racing raw-pointer writes.
+        # Normal cache allocations are independent; unusual aliases use the
+        # original ordered eager copies instead.
+        bases = [tensor.untyped_storage().data_ptr() for tensor in tensors]
+        if len(set(bases)) != len(bases) or any(base in self._bases for base in bases):
+            self.copy_stats["fallback_aliased_storage"] += 1
+            return False
+        # A Tensor reference alone does not preserve its former allocation
+        # when .data is rebound. Detached aliases keep that storage alive, and
+        # recording the stream covers release after pending raw-pointer launches.
+        refs = tuple(tensor.detach() for tensor in tensors)
+        if stream is not None:
+            for tensor in refs:
+                tensor.record_stream(stream)
+        if self._free:
+            column = self._free.pop()
+        else:
+            column = len(self._column_entries)
+            self._column_entries.append(None)
+            self._column_keys.append(None)
+            self._column_refs.append(())
+            if column >= self._host.shape[1]:
+                grown = np.zeros((self._host.shape[0], max(64, 2 * self._host.shape[1])),
+                                 dtype=np.int64)
+                grown[:, :self._host.shape[1]] = self._host
+                self._host = grown
+        self._columns[id(entry)] = column
+        self._column_entries[column] = entry
+        self._column_keys[column] = key
+        self._column_refs[column] = refs
+        for base in bases:
+            self._bases[base] = column
+        self._host[0, column] = entry.capacity
+        self._host[1:, column] = [tensor.data_ptr() for tensor in tensors]
+        self._pointer_table = None
+        return True
+
+    def _table_columns(self, entries, stream):
+        """Registry columns of ``entries`` (registering new ones), or None."""
+        columns = []
+        lookup, keys = self._columns, self._column_keys
+        for entry in entries:
+            key = self._entry_key(entry)
+            column = lookup.get(id(entry))
+            if column is not None and keys[column] != key:
+                self._unregister(column)   # capacity or a K/V address changed
+                column = None
+            if column is None:
+                if not self._register(entry, key, stream):
+                    return None
+                column = lookup[id(entry)]
+            columns.append(column)
+        return columns
+
+    def _table(self, device):
+        """The uploaded registry, uploading it first if it changed."""
+        table = self._pointer_table
+        if table is None:
+            used = len(self._column_entries)
+            table = self._pointer_table = _PointerTable(
+                _upload(self._host[:, :used], device), tuple(self._column_refs),
+                tuple(self._column_entries))
+            self.copy_stats["table_rebuilds"] += 1
+            self.copy_stats["pointer_uploads"] += 1
+            self.copy_stats["metadata_h2d_bytes"] += 8 * self._host.shape[0] * used
+        else:
+            self.copy_stats["table_reuses"] += 1
+            self.copy_stats["pointer_reuses"] += 1
+        return table
+
+    def _entry(self, key, stream):
+        old = self.entries.get(key)
+        result = super()._entry(key, stream)
+        if old is not None and result is not old:
+            column = self._columns.get(id(old))
+            if column is not None:
+                self._unregister(column)
+                self.copy_stats["table_replacements"] += 1
+        return result
 
     @property
     def metadata_bytes(self):
@@ -185,17 +337,20 @@ class TritonHistoryCache(BatchedHistoryCache):
         return super().bytes + self.metadata_bytes
 
     def clear(self):
-        self._copy_context = self._pointer_table = self._owner_stream = None
+        self._copy_context = self._owner_stream = None
+        self._reset_registry()
         super().clear()
         self.copy_stats["clears"] += 1
 
     def prune(self, active):
         super().prune(active)
-        if self._pointer_table is not None:
-            live = {id(entry) for entry in self.entries.values()}
-            if any(id(entry) not in live for entry in self._pointer_table.entries):
-                self._pointer_table = None
-                self.copy_stats["table_prunes"] += 1
+        live = {id(entry) for entry in self.entries.values()}
+        retired = [column for column, entry in enumerate(self._column_entries)
+                   if entry is not None and id(entry) not in live]
+        for column in retired:
+            self._unregister(column)
+        if retired:
+            self.copy_stats["table_prunes"] += 1
 
     @torch.no_grad()
     def encode(self, keys, streams, **kwargs):
@@ -249,63 +404,20 @@ class TritonHistoryCache(BatchedHistoryCache):
         if self._owner_stream is not None and self._owner_stream != stream:
             raise RuntimeError("TritonHistoryCache must run on its owning CUDA stream")
         if not self._supported_entries(entries, counts):
-            self._pointer_table = None
             return None
         self._owner_stream = stream
-        refs = tuple(tensor for entry in entries
-                     for pair in zip(entry.keys, entry.values) for tensor in pair)
-        if any(tensor.dtype != torch.float32 or tensor.device != device
-               or not tensor.is_contiguous()
-               or tensor.shape != (cfg.heads, entry.capacity, cfg.width // cfg.heads)
-               for entry in entries for tensor in (*entry.keys, *entry.values)):
-            self._pointer_table = None
+        # Registration (validation, aliases, record_stream) happens only for
+        # Entries new to the registry; known ones are a lookup and an address check.
+        columns = self._table_columns(entries, stream)
+        if columns is None:
             return None
-        # Both view addresses and capacities are live-checked; replacement of a
-        # Tensor on an existing Entry cannot silently keep an obsolete pointer.
-        pointers = tuple(tensor.data_ptr() for tensor in refs)
-        if len(set(pointers)) != len(pointers):
-            self._pointer_table = None
-            return None
-        key = (tuple(id(entry) for entry in entries), tuple(e.capacity for e in entries),
-               tuple(id(tensor) for tensor in refs), pointers, device)
-        old = self._pointer_table
-        changed = old is None or old.key != key
-        if changed:
-            # Overlapping Entry tensors would create racing raw-pointer writes.
-            # Normal cache allocations are independent; unusual aliases use the
-            # original ordered eager copies instead.
-            bases = [tensor.untyped_storage().data_ptr() for tensor in refs]
-            if len(set(bases)) != len(bases):
-                self._pointer_table = None
-                return None
-        rows, batch = (2 * cfg.layers + 3 if changed else 2), len(entries)
-        host = torch.empty((rows, batch), dtype=torch.int64, pin_memory=True)
-        array = host.numpy()
-        array[-2] = [entry.length for entry in entries]
-        array[-1] = counts
-        if changed:
-            array[0] = [entry.capacity for entry in entries]
-            for layer in range(cfg.layers):
-                array[1 + 2 * layer] = [entry.keys[layer].data_ptr() for entry in entries]
-                array[2 + 2 * layer] = [entry.values[layer].data_ptr() for entry in entries]
-        uploaded = host.to(device, non_blocking=True)
-        # PyTorch's pinned allocator records the H2D event before recycling host.
-        # Recording Entry allocations handles their later release after rawptr
-        # launches, including prune, growth, reset, and model invalidation.
-        if changed:
-            # A Tensor reference alone does not preserve its former allocation
-            # when .data is rebound. Detached aliases keep that storage alive.
-            storage_refs = tuple(tensor.detach() for tensor in refs)
-            for tensor in storage_refs:
-                tensor.record_stream(stream)
-            old = self._pointer_table = _PointerTable(key, uploaded[:-2], storage_refs, tuple(entries))
-            self.copy_stats["pointer_uploads"] += 1
-        else:
-            self.copy_stats["pointer_reuses"] += 1
+        table = self._table(device)
+        ranges = _upload(np.array([columns, [entry.length for entry in entries], counts],
+                                  dtype=np.int64), device)
         self.copy_stats["metadata_uploads"] += 1
-        self.copy_stats["metadata_h2d_bytes"] += host.numel() * host.element_size()
-        context = _CopyContext(old, uploaded[-2:], tuple(entries), tuple(counts), stream)
-        retained = _storage_bytes([old.pointers, context.ranges])
+        self.copy_stats["metadata_h2d_bytes"] += 3 * 8 * len(entries)
+        context = _CopyContext(table, ranges, tuple(entries), tuple(counts), stream)
+        retained = _storage_bytes([table.pointers, context.ranges])
         self.copy_stats["max_metadata_bytes"] = max(self.copy_stats["max_metadata_bytes"], retained)
         return context
 
@@ -361,7 +473,8 @@ class TritonHistoryCache(BatchedHistoryCache):
                 _update_and_pack[grid](
                     new_k[base:end], new_v[base:end], packed_k[base:end], packed_v[base:end],
                     context.table.pointers, context.ranges,
-                    batch, base, capacity, layer_index, stack_mode,
+                    batch, base, context.table.pointers.shape[1], capacity, layer_index,
+                    stack_mode,
                     *new_k.stride(), *new_v.stride(),
                     HEADS=cfg.heads, DEPTH=cfg.width // cfg.heads, BLOCK=self.block,
                     num_warps=4,

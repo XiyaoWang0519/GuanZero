@@ -85,14 +85,14 @@ def test_packing_copies_arbitrary_bits_and_strides(device, capacities, starts, c
         old_table = fast._pointer_table
         old_address = entries[0].keys[0].data_ptr()
         entries[0].keys[0].data = entries[0].keys[0].data.clone()
-        assert old_table.references[0].data_ptr() == old_address
+        assert old_table.references[fast._columns[id(entries[0])]][0].data_ptr() == old_address
         assert entries[0].keys[0].data_ptr() != old_address
         actual = fast._pack_keys_values(entries, counts, 0, new_k, new_v, capacity)
         expected = eager._pack_keys_values(originals, counts, 0, new_k, new_v, capacity)
         for a, b in zip(actual, expected):
             bits(a, b)
         assert fast._pointer_table is not old_table
-        assert fast.copy_stats["pointer_uploads"] == 2
+        assert fast.copy_stats["pointer_uploads"] == fast.copy_stats["table_rebuilds"] == 2
     else:
         assert not fast.metadata_bytes and fast.copy_stats["triton_packs"] == 0
     fast.clear()
@@ -260,3 +260,213 @@ def test_explicit_cuda_backend_requires_triton(device, monkeypatch):
     else:
         assert TritonHistoryCache(actor).bytes == 0
     assert TritonHistoryCache(actor, enabled=False).bytes == 0
+
+
+# -- cache-wide pointer registry ---------------------------------------------------
+
+def entry_on(actor, capacity, length, row=0):
+    shape = (4, capacity, 8)
+    return Entry(PublicStream(row), 0, length, capacity,
+                 [actor.bos.new_zeros(shape) for _ in range(2)],
+                 [actor.bos.new_zeros(shape) for _ in range(2)],
+                 actor.bos.new_zeros(capacity, 32))
+
+
+def registry_call(cache, entries, counts=None):
+    """``_metadata`` with the eligibility gate open: registry bookkeeping and
+    metadata arrays without a kernel launch (usable on CPU)."""
+    cache._supported_entries = lambda entries, counts: True
+    try:
+        return cache._metadata(entries, list(counts or [1] * len(entries)))
+    finally:
+        del cache._supported_entries
+
+
+def assert_columns(cache, context, entries, counts=None):
+    table = context.table.pointers.cpu().numpy()
+    ranges = context.ranges.cpu().numpy()
+    columns = [cache._columns[id(entry)] for entry in entries]
+    assert ranges.shape == (3, len(entries)) and ranges.dtype == np.int64
+    assert ranges[0].tolist() == columns
+    assert ranges[1].tolist() == [entry.length for entry in entries]
+    assert ranges[2].tolist() == list(counts or [1] * len(entries))
+    assert table.shape == (5, len(cache._column_entries))
+    for entry, column in zip(entries, columns):
+        assert context.table.entries[column] is entry
+        assert table[0, column] == entry.capacity
+        for layer in range(2):
+            assert table[1 + 2 * layer, column] == entry.keys[layer].data_ptr()
+            assert table[2 + 2 * layer, column] == entry.values[layer].data_ptr()
+
+
+def test_registry_rebuilds_only_on_create_growth_prune_and_clear():
+    actor = actor_on("cpu")
+    cache = TritonHistoryCache(actor, chunk_size=8)
+    streams = [PublicStream(i) for i in range(6)]
+    keys = [(i, i) for i in range(6)]
+    for stream, count in zip(streams, [5, 9, 3, 12, 7, 2]):
+        append(stream, count)
+    cache.encode(keys, streams)                     # CPU: eager, nothing registered
+    assert not cache._columns and cache.copy_stats["table_rebuilds"] == 0
+    entries = [cache.entries[key] for key in keys]
+
+    def stats():
+        return cache.copy_stats["table_rebuilds"], cache.copy_stats["table_reuses"]
+
+    context = registry_call(cache, entries[:4], [1, 2, 3, 4])
+    assert stats() == (1, 0)
+    assert_columns(cache, context, entries[:4], [1, 2, 3, 4])
+    first = cache._pointer_table
+    # Any ordering or subset of registered entries reuses the uploaded table.
+    for subset in ([entries[2], entries[0]], [entries[3], entries[1]], entries[:4][::-1]):
+        context = registry_call(cache, subset)
+        assert_columns(cache, context, subset)
+        assert context.table is first
+    assert stats() == (1, 3)
+    assert cache.copy_stats["pointer_uploads"] == 1 and cache.copy_stats["pointer_reuses"] == 3
+    # A new entry is created: one rebuild, then reuse again.
+    context = registry_call(cache, [entries[4], entries[0]])
+    assert stats() == (2, 3) and cache._columns[id(entries[4])] == 4
+    assert_columns(cache, context, [entries[4], entries[0]])
+    registry_call(cache, [entries[0], entries[4]])
+    assert stats() == (2, 4)
+    # Growth replaces the Entry object: its column is freed at once and reused.
+    grown_column = cache._columns[id(entries[1])]
+    append(streams[1], 40)
+    cache.encode([keys[1]], [streams[1]])
+    assert cache.entries[keys[1]] is not entries[1] and cache._pointer_table is None
+    assert id(entries[1]) not in cache._columns and cache._free == [grown_column]
+    assert cache.copy_stats["table_replacements"] == 1
+    grown = cache.entries[keys[1]]
+    context = registry_call(cache, [grown, entries[0]])
+    assert stats() == (3, 4) and cache._columns[id(grown)] == grown_column
+    assert_columns(cache, context, [grown, entries[0]])
+    assert context.table.pointers[0, grown_column] == grown.capacity == 64
+    # An unchanged prefix neither replaces nor rebuilds.
+    cache.encode([keys[0]], [streams[0]])
+    registry_call(cache, [entries[0]])
+    assert stats() == (3, 5)
+    # A stream reset replaces the Entry as growth does.
+    streams[3].reset(9)
+    append(streams[3], 4)
+    cache.encode([keys[3]], [streams[3]])
+    assert id(entries[3]) not in cache._columns and cache._pointer_table is None
+    assert cache.copy_stats["table_replacements"] == 2
+    registry_call(cache, [entries[0]])
+    assert stats() == (4, 5)
+    # Prune retires the dropped entry's column; pruning nothing keeps the table.
+    cache.prune({key for key in keys if key != keys[2]})
+    assert id(entries[2]) not in cache._columns and cache._pointer_table is None
+    assert cache.copy_stats["table_prunes"] == 1
+    context = registry_call(cache, [entries[0], entries[4]])
+    assert stats() == (5, 5)
+    assert context.table.entries[2] is None and context.table.references[2] == ()
+    assert not context.table.pointers[:, 2].any()
+    cache.prune(set(keys))
+    assert cache.copy_stats["table_prunes"] == 1 and cache._pointer_table is context.table
+    registry_call(cache, [entries[4]])
+    assert stats() == (5, 6)
+    # clear() empties the registry and releases the table.
+    cache.clear()
+    assert not cache._columns and not cache._bases and cache._pointer_table is None
+    assert cache.metadata_bytes == 0 and cache.bytes == 0
+    fresh = entry_on(actor, 32, 3)
+    context = registry_call(cache, [fresh])
+    assert stats() == (6, 6) and cache._columns[id(fresh)] == 0
+    assert_columns(cache, context, [fresh])
+
+
+def test_registry_reregisters_rebound_tensor_and_keeps_old_storage():
+    actor = actor_on("cpu")
+    cache = TritonHistoryCache(actor)
+    entries = [entry_on(actor, 32, 4, 0), entry_on(actor, 64, 9, 1)]
+    registry_call(cache, entries)
+    old_table = cache._pointer_table
+    old_address = entries[1].values[1].data_ptr()
+    entries[1].values[1].data = entries[1].values[1].data.clone()
+    context = registry_call(cache, entries)
+    assert context.table is not old_table and cache.copy_stats["table_rebuilds"] == 2
+    assert_columns(cache, context, entries)
+    column = cache._columns[id(entries[1])]
+    assert old_table.references[column][3].data_ptr() == old_address
+    # A capacity change on a registered Entry is caught the same way.
+    entries[0].capacity = 16
+    assert registry_call(cache, entries) is None
+    assert cache.copy_stats["fallback_entry_tensors"] == 1 and id(entries[0]) not in cache._columns
+
+
+def test_registry_fallbacks_are_evaluated_at_registration():
+    actor = actor_on("cpu")
+    cache = TritonHistoryCache(actor)
+    good = entry_on(actor, 32, 2, 0)
+    cases = []
+    wrong_dtype = entry_on(actor, 32, 2, 1)
+    wrong_dtype.keys[1] = wrong_dtype.keys[1].double()
+    cases.append((wrong_dtype, "fallback_entry_tensors"))
+    strided = entry_on(actor, 32, 2, 2)
+    strided.values[0] = torch.zeros(4, 8, 32).transpose(1, 2)
+    cases.append((strided, "fallback_entry_tensors"))
+    wrong_shape = entry_on(actor, 32, 2, 3)
+    wrong_shape.keys[0] = torch.zeros(4, 64, 8)
+    cases.append((wrong_shape, "fallback_entry_tensors"))
+    duplicate = entry_on(actor, 32, 2, 4)
+    duplicate.values[1] = duplicate.keys[1]
+    cases.append((duplicate, "fallback_entry_tensors"))
+    shared = torch.zeros(2, 4, 32, 8)
+    inner = entry_on(actor, 32, 2, 5)
+    inner.keys[0], inner.values[0] = shared[0], shared[1]
+    cases.append((inner, "fallback_aliased_storage"))
+    registry_call(cache, [good])
+    across = entry_on(actor, 32, 2, 6)
+    across.keys[1] = good.keys[1].view(4, 32, 8)   # same storage as a registered Entry
+    cases.append((across, "fallback_aliased_storage"))
+    for bad, reason in cases:
+        before = cache.copy_stats[reason]
+        rebuilds = cache.copy_stats["table_rebuilds"]
+        assert registry_call(cache, [good, bad]) is None
+        assert cache.copy_stats[reason] == before + 1
+        assert id(bad) not in cache._columns and cache.copy_stats["table_rebuilds"] == rebuilds
+    # The registry is unchanged by the rejections; good entries keep their table.
+    context = registry_call(cache, [good])
+    assert context.table is cache._pointer_table and list(cache._columns.values()) == [0]
+    assert len(cache._bases) == 4
+    # Per-call layout checks still run first and leave the registry untouched.
+    assert cache._metadata([good], [1]) is None     # CPU: never Triton
+    assert cache.copy_stats["fallback_disabled"] == 1 and cache._pointer_table is context.table
+
+
+@pytest.mark.parametrize("forced_rows", [None, 3])
+def test_changing_subsets_reuse_registry_and_match_eager_bits(device, forced_rows):
+    """Learner-like pending subsets: a different ordered subset every call."""
+    if device != "cuda":
+        pytest.skip("Triton launches are CUDA-only")
+    actor = actor_on(device)
+    reference_actor = copy.deepcopy(actor)
+    fast = TritonHistoryCache(actor, chunk_size=16)
+    fast.max_rows_per_launch = forced_rows
+    eager = BatchedHistoryCache(reference_actor, chunk_size=16)
+    rng = np.random.default_rng(7)
+    histories = [PublicStream(i) for i in range(24)]
+    keys = [(i, i) for i in range(24)]
+    for step in range(40):
+        picked = sorted(rng.choice(24, int(rng.integers(3, 18)), replace=False).tolist(),
+                        key=lambda _: rng.random())
+        for i in picked:
+            append(histories[i], int(rng.integers(1, 6)))
+        if step % 13 == 12:
+            fast.prune({keys[i] for i in picked})
+            eager.prune({keys[i] for i in picked})
+        meta, actual = fast.encode([keys[i] for i in picked], [histories[i] for i in picked])
+        expected_meta, expected = eager.encode([keys[i] for i in picked],
+                                               [histories[i] for i in picked])
+        bits(actual, expected)
+        bits(meta.lengths, expected_meta.lengths)
+        for i in picked:
+            a, b = fast.entries[keys[i]], eager.entries[keys[i]]
+            for x, y in zip(a.keys + a.values + [a.memory], b.keys + b.values + [b.memory]):
+                bits(x, y)
+    stats = fast.copy_stats
+    assert stats["triton_packs"] > 0 and stats["eager_packs"] == 0
+    assert stats["table_reuses"] > 0 and stats["table_replacements"] > 0
+    assert stats["table_rebuilds"] + stats["table_reuses"] == stats["metadata_uploads"]
+    assert len(fast._columns) <= len(fast.entries)
