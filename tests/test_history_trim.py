@@ -23,10 +23,15 @@ TIMING_KEYS = {"collection_phase_seconds", "collection_profile_synchronized",
                "collection_group_phase_seconds", "collection_policy_call_rows",
                "decisions_per_sec", "collect_seconds", "learn_seconds",
                "learn_decisions_per_sec", "learn_exposures_per_sec",
-               "learner_collect_decisions_per_sec", "elapsed_seconds",
-               # device memory readings are allocator state, which the trim changes
-               "cuda_reserved_bytes", "cuda_peak_reserved_bytes",
-               "cuda_inactive_split_peak_bytes", "cuda_allocation_retries"} | TRIM_KEYS
+               "learner_collect_decisions_per_sec", "elapsed_seconds"}
+# Process-wide CUDA allocator telemetry: torch.cuda.memory_* count every live
+# tensor of the process (other trainers, the cuBLAS workspace, test fixtures),
+# and reserved/split/retry counters are exactly what the trim changes. None of
+# them is a training result; all zero on CPU.
+MEMORY_KEYS = {"cuda_allocated_bytes", "cuda_peak_allocated_bytes", "cuda_reserved_bytes",
+               "cuda_peak_reserved_bytes", "cuda_inactive_split_peak_bytes",
+               "cuda_allocation_retries"}
+EXCLUDED_KEYS = TIMING_KEYS | MEMORY_KEYS | TRIM_KEYS
 POINTS = {"after_collect", "after_learn"}
 
 
@@ -56,48 +61,98 @@ def base(**extra):
     return values
 
 
-def run_pair(tmp_path, device, overrides_on, overrides_off, updates=3, **extra):
-    """Resume one checkpoint twice (snapshot seats at once), trim on vs off."""
+def cpu_copy(value):
+    if isinstance(value, torch.Tensor):
+        return value.detach().to("cpu", copy=True)
+    if isinstance(value, dict):
+        return {k: cpu_copy(v) for k, v in value.items()}
+    return value
+
+
+def record(trainer, lines) -> dict:
+    """Everything the comparison needs, copied off the device, so the trainer
+    can be freed before the next one runs."""
+    return dict(lines=lines, choices=[c.copy() for c in trainer.collector.choice_log],
+                rows={k: np.array(v, copy=True) for k, v in trainer.buffer.compact().items()},
+                actor=cpu_copy(trainer.actor.state_dict()),
+                critic=cpu_copy(trainer.critic.state_dict()),
+                actor_optimizer=cpu_copy(trainer.actor_optimizer.state_dict()["state"]),
+                critic_optimizer=cpu_copy(trainer.critic_optimizer.state_dict()["state"]),
+                generator=trainer.generator.get_state().clone(),
+                progress=dict(trainer.progress))
+
+
+def memory(device) -> str:
+    if torch.device(device).type != "cuda":
+        return "cpu"
+    return (f"allocated {torch.cuda.memory_allocated() / 2**20:.1f} MiB, "
+            f"reserved {torch.cuda.memory_reserved() / 2**20:.1f} MiB")
+
+
+def run_pair(tmp_path, device, overrides_on, overrides_off, updates=3,
+             order=("on", "off"), **extra):
+    """Resume one checkpoint twice (snapshot seats at once), trim on vs off.
+    Each run is recorded to host copies and freed before the next starts."""
+    import gc
     start = HistoryTrainer(HistoryPPOConfig(**base(**extra)), tmp_path / "start", device=device)
     for _ in range(3):
         start.update()
     checkpoint = start.save()
-    trainers, lines = {}, {}
-    for name, overrides in (("on", overrides_on), ("off", overrides_off)):
+    del start
+    overrides = dict(on=overrides_on, off=overrides_off)
+    records = {}
+    for name in order:
+        gc.collect()
+        if torch.device(device).type == "cuda":
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+        print(f"\nrun {name} (order {order}): before construction {memory(device)}")
         trainer = HistoryTrainer(HistoryPPOConfig(updates=3 + updates), tmp_path / name,
                                  device=device, resume=checkpoint,
-                                 resume_overrides=parse_resume_overrides(overrides))
+                                 resume_overrides=parse_resume_overrides(overrides[name]))
         trainer.collector.choice_log = []
-        lines[name] = [trainer.update() for _ in range(updates)]
-        trainers[name] = trainer
-    return trainers, lines
+        lines = [trainer.update() for _ in range(updates)]
+        for line in lines:
+            print(f"  {name} update {line['update']}: end allocated "
+                  f"{line['cuda_allocated_bytes'] / 2**20:.1f} MiB, peak allocated "
+                  f"{line['cuda_peak_allocated_bytes'] / 2**20:.1f} MiB, end reserved "
+                  f"{line['cuda_reserved_bytes'] / 2**20:.1f} MiB")
+        records[name] = record(trainer, lines)
+        del trainer, lines
+    return records
 
 
-def assert_identical(trainers, lines):
-    for on, off in zip(lines["on"], lines["off"]):
+def assert_identical(records):
+    on_lines, off_lines = records["on"]["lines"], records["off"]["lines"]
+    assert len(on_lines) == len(off_lines) > 0
+    for on, off in zip(on_lines, off_lines):
         assert on["rollout_trim_cuda_cache"] and not off["rollout_trim_cuda_cache"]
         assert set(on["cuda_trim"]) >= POINTS and off["cuda_trim"] == {}
         assert off["cuda_trim_seconds"] == 0.0 and on["cuda_trim_seconds"] >= 0.0
-        assert ({k: v for k, v in on.items() if k not in TIMING_KEYS}
-                == {k: v for k, v in off.items() if k not in TIMING_KEYS})
-    a, b = trainers["on"], trainers["off"]
-    assert len(a.collector.choice_log) == len(b.collector.choice_log) > 0
-    for x, y in zip(a.collector.choice_log, b.collector.choice_log):
+        assert set(on) == set(off)
+        # Every other metric (losses, entropy, KL, counters, rewards, prefixes,
+        # population, cache, graph and head metrics) must be equal.
+        assert ({k: v for k, v in on.items() if k not in EXCLUDED_KEYS}
+                == {k: v for k, v in off.items() if k not in EXCLUDED_KEYS})
+    a, b = records["on"], records["off"]
+    assert len(a["choices"]) == len(b["choices"]) > 0
+    for x, y in zip(a["choices"], b["choices"]):
         assert np.array_equal(x, y)
-    rows_a, rows_b = a.buffer.compact(), b.buffer.compact()
-    assert rows_a.keys() == rows_b.keys()
-    for key in rows_a:
-        assert np.array_equal(rows_a[key], rows_b[key]), key
+    assert a["rows"].keys() == b["rows"].keys()
+    for key in a["rows"]:
+        assert np.array_equal(a["rows"][key], b["rows"][key]), key
     for model in ("actor", "critic"):
-        for p, q in zip(getattr(a, model).parameters(), getattr(b, model).parameters()):
-            assert torch.equal(p, q)
+        assert a[model].keys() == b[model].keys()
+        for name in a[model]:
+            assert torch.equal(a[model][name], b[model][name]), (model, name)
     for opt in ("actor_optimizer", "critic_optimizer"):
-        sa, sb = getattr(a, opt).state_dict()["state"], getattr(b, opt).state_dict()["state"]
-        for key in sa:
-            for name in sa[key]:
-                assert torch.equal(sa[key][name], sb[key][name])
-    assert torch.equal(a.generator.get_state(), b.generator.get_state())
-    assert a.progress == {**b.progress, "elapsed_seconds": a.progress["elapsed_seconds"]}
+        assert a[opt].keys() == b[opt].keys()
+        for key in a[opt]:
+            for name in a[opt][key]:
+                assert torch.equal(torch.as_tensor(a[opt][key][name]),
+                                   torch.as_tensor(b[opt][key][name])), (opt, key, name)
+    assert torch.equal(a["generator"], b["generator"])
+    assert a["progress"] == {**b["progress"], "elapsed_seconds": a["progress"]["elapsed_seconds"]}
 
 
 def test_default_follows_the_merged_snapshot_arm(tmp_path):
@@ -148,28 +203,34 @@ def test_resume_set_switches_and_records_the_trim(tmp_path):
 
 @pytest.mark.parametrize("merge", ["true", "false"])
 def test_trim_leaves_training_bitwise_unchanged_on_cpu(tmp_path, merge):
-    trainers, lines = run_pair(tmp_path, "cpu",
-                               [f"batch_snapshot_policies={merge}", "rollout_trim_cuda_cache=true"],
-                               [f"batch_snapshot_policies={merge}", "rollout_trim_cuda_cache=false"])
-    assert_identical(trainers, lines)
+    records = run_pair(tmp_path, "cpu",
+                       [f"batch_snapshot_policies={merge}", "rollout_trim_cuda_cache=true"],
+                       [f"batch_snapshot_policies={merge}", "rollout_trim_cuda_cache=false"])
+    assert_identical(records)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA allocator cache trim")
-def test_trim_leaves_training_bitwise_unchanged_on_cuda(tmp_path):
-    trainers, lines = run_pair(tmp_path, "cuda",
-                               ["batch_snapshot_policies=true", "rollout_trim_cuda_cache=true"],
-                               ["batch_snapshot_policies=true", "rollout_trim_cuda_cache=false"],
-                               rollout_device="cuda")
-    assert_identical(trainers, lines)
-    for line in lines["on"]:
+@pytest.mark.parametrize("order", [("on", "off"), ("off", "on")], ids=["on-first", "off-first"])
+def test_trim_leaves_training_bitwise_unchanged_on_cuda(tmp_path, order):
+    records = run_pair(tmp_path, "cuda",
+                       ["batch_snapshot_policies=true", "rollout_trim_cuda_cache=true"],
+                       ["batch_snapshot_policies=true", "rollout_trim_cuda_cache=false"],
+                       order=order, rollout_device="cuda")
+    for line in records["on"]["lines"]:
         print(f"\nupdate {line['update']} trims (MiB): " + ", ".join(
             f"{point} reserved {r['reserved_before'] / 2**20:.0f}->{r['reserved_after'] / 2**20:.0f} "
             f"allocated {r['allocated_before'] / 2**20:.0f} in {r['seconds']:.4f}s"
             for point, r in line["cuda_trim"].items()))
-        for record in line["cuda_trim"].values():
-            assert record["reserved_before"] > 0
-            assert record["reserved_after"] <= record["reserved_before"]
-            assert record["allocated_after"] == record["allocated_before"]
+    for name in ("on", "off"):
+        print(f"{name}: " + ", ".join(
+            f"u{l['update']} alloc {l['cuda_allocated_bytes']} peak {l['cuda_peak_allocated_bytes']}"
+            for l in records[name]["lines"]))
+    assert_identical(records)
+    for line in records["on"]["lines"]:
+        for record_ in line["cuda_trim"].values():
+            assert record_["reserved_before"] > 0
+            assert record_["reserved_after"] <= record_["reserved_before"]
+            assert record_["allocated_after"] == record_["allocated_before"]
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA private graphs")
