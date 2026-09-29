@@ -25,21 +25,22 @@ def opponent_response_labels(buffer, store, rows: np.ndarray) -> np.ndarray:
         if not buffer.trajectories[int(data["traj"][row])].complete:
             raise ValueError("response labels require a completed round")
         stream = store.stream(int(data["env"][row]), int(data["match"][row]))
+        tokens, rounds, phases = stream.arrays()
         prefix, seat, rnd = (int(data[k][row]) for k in ("prefix", "seat", "round"))
         if prefix >= stream.prefix:
             raise ValueError("executed action missing from public history")
-        own = stream.tokens[prefix]
+        own = tokens[prefix]
         chosen = data["cand"][int(data["cand_start"][row] + data["chosen"][row])]
-        if (stream.rounds[prefix] != rnd or stream.phases[prefix] != int(data["phase"][row])
+        if (rounds[prefix] != rnd or phases[prefix] != int(data["phase"][row])
                 or own[:4].sum() != 1 or int(own[:4].argmax()) != seat
                 or not np.array_equal(own[4:150], chosen[:146])):
             raise ValueError("stored action does not match the public event at its prefix")
         for j in range(prefix + 1, stream.prefix):
-            if stream.rounds[j] != rnd:
+            if rounds[j] != rnd:
                 break
-            if stream.phases[j] != int(data["phase"][row]):
+            if phases[j] != int(data["phase"][row]):
                 raise ValueError("exchange inside a completed Play round")
-            token = stream.tokens[j]
+            token = tokens[j]
             relative_seat = (int(token[:4].argmax()) - seat) % 4
             if relative_seat == 0:
                 break

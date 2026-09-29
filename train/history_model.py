@@ -88,22 +88,31 @@ class PublicStream:
     ``reset`` starts a new match. ``prefix`` is the number of tokens a
     decision taken now may read. Streams never store observations,
     candidates, hidden counts or the forced flag.
+
+    Events live in contiguous growable arrays, so ``arrays()`` and the
+    ``tokens``/``rounds``/``phases`` properties are O(1) read-only views of
+    the first ``prefix`` events. A view never changes: appends write past
+    every earlier view's end, growth copies into a new buffer, and ``reset``
+    starts new buffers instead of overwriting the old ones.
     """
 
-    __slots__ = ("tokens", "rounds", "phases", "match_id", "generation")
+    __slots__ = ("_tokens", "_rounds", "_phases", "_length", "match_id", "generation")
+    _INITIAL_CAPACITY = 64
 
     def __init__(self, match_id: int = -1) -> None:
-        self.tokens: list[np.ndarray] = []
-        self.rounds: list[int] = []
-        self.phases: list[int] = []
+        self._new_buffers(0)
         self.match_id = int(match_id)
         self.generation = 0
 
+    def _new_buffers(self, capacity: int) -> None:
+        self._tokens = np.zeros((capacity, TOKEN_DIM), dtype=np.uint8)
+        self._rounds = np.zeros(capacity, dtype=np.int64)
+        self._phases = np.zeros(capacity, dtype=np.int64)
+        self._length = 0
+
     def reset(self, match_id: int = -1) -> None:
         self.generation += 1
-        self.tokens.clear()
-        self.rounds.clear()
-        self.phases.clear()
+        self._new_buffers(0)
         self.match_id = int(match_id)
 
     def append(self, event: Any) -> None:
@@ -119,19 +128,46 @@ class PublicStream:
             raise ValueError("private tribute flags must not enter the public stream")
         if round_index < 0 or phase < 0:
             raise ValueError("round index and phase must not be negative")
-        self.tokens.append(token)
-        self.rounds.append(int(round_index))
-        self.phases.append(int(phase))
+        n = self._length
+        if n == len(self._rounds):
+            capacity = max(self._INITIAL_CAPACITY, 2 * n)
+            tokens, rounds, phases = self._tokens, self._rounds, self._phases
+            self._new_buffers(capacity)
+            self._tokens[:n] = tokens[:n]
+            self._rounds[:n] = rounds[:n]
+            self._phases[:n] = phases[:n]
+        self._tokens[n] = token
+        self._rounds[n] = int(round_index)
+        self._phases[n] = int(phase)
+        self._length = n + 1
+
+    @staticmethod
+    def _view(array: np.ndarray, length: int) -> np.ndarray:
+        view = array[:length]
+        view.flags.writeable = False
+        return view
+
+    @property
+    def tokens(self) -> np.ndarray:
+        """uint8 ``[prefix, TOKEN_DIM]``, read-only."""
+        return self._view(self._tokens, self._length)
+
+    @property
+    def rounds(self) -> np.ndarray:
+        """int64 ``[prefix]``, read-only."""
+        return self._view(self._rounds, self._length)
+
+    @property
+    def phases(self) -> np.ndarray:
+        """int64 ``[prefix]``, read-only."""
+        return self._view(self._phases, self._length)
 
     @property
     def prefix(self) -> int:
-        return len(self.tokens)
+        return self._length
 
     def arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        tokens = (np.stack(self.tokens) if self.tokens
-                  else np.zeros((0, TOKEN_DIM), dtype=np.uint8))
-        return (tokens, np.asarray(self.rounds, dtype=np.int64),
-                np.asarray(self.phases, dtype=np.int64))
+        return self.tokens, self.rounds, self.phases
 
 
 @dataclass
@@ -145,21 +181,22 @@ class StreamBatch:
     @staticmethod
     def from_arrays(streams: list[tuple[np.ndarray, np.ndarray, np.ndarray]], device
                     ) -> "StreamBatch":
+        from train.history_transfers import upload_arrays
         count = len(streams)
         longest = max((len(t) for t, _, _ in streams), default=0)
-        tokens = torch.zeros((count, longest, TOKEN_DIM), dtype=torch.uint8)
-        rounds = torch.zeros((count, longest), dtype=torch.long)
-        phases = torch.full((count, longest), PLAY_PHASE, dtype=torch.long)
-        lengths = torch.zeros(count, dtype=torch.long)
+        tokens = np.zeros((count, longest, TOKEN_DIM), dtype=np.uint8)
+        rounds = np.zeros((count, longest), dtype=np.int64)
+        phases = np.full((count, longest), PLAY_PHASE, dtype=np.int64)
+        lengths = np.zeros(count, dtype=np.int64)
         for b, (t, r, p) in enumerate(streams):
             n = len(t)
             lengths[b] = n
             if n:
-                tokens[b, :n] = torch.as_tensor(t)
-                rounds[b, :n] = torch.as_tensor(r)
-                phases[b, :n] = torch.as_tensor(p)
-        return StreamBatch(tokens.to(device), rounds.to(device), phases.to(device),
-                           lengths.to(device))
+                tokens[b, :n] = t
+                rounds[b, :n] = r
+                phases[b, :n] = p
+        # One packed host-to-device copy on CUDA; zero-copy views on the CPU.
+        return StreamBatch(*upload_arrays((tokens, rounds, phases, lengths), device))
 
     @staticmethod
     def from_streams(streams: list[PublicStream], device) -> "StreamBatch":

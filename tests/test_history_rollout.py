@@ -103,8 +103,8 @@ def test_store_never_reads_forced_flag():
     for key, stream in plain.streams.items():
         for other in (flipped, blind):
             assert np.array_equal(stream.arrays()[0], other.streams[key].arrays()[0])
-            assert stream.rounds == other.streams[key].rounds
-            assert stream.phases == other.streams[key].phases
+            assert np.array_equal(stream.rounds, other.streams[key].rounds)
+            assert np.array_equal(stream.phases, other.streams[key].phases)
     for stream in plain.streams.values():
         assert not np.stack(stream.tokens)[:, 4 + 146:4 + 154].any()
 

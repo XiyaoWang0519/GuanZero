@@ -194,7 +194,7 @@ class HistoryPolicy:
         """
         rounds, phases, tokens = self.stream.rounds, self.stream.phases, self.stream.tokens
         current = int(state.round_index)
-        if rounds and rounds[-1] > current:
+        if len(rounds) and rounds[-1] > current:
             raise RuntimeError(f"{self.name}: stream holds round {rounds[-1]} tokens but the "
                                f"state is in round {current}; start_match() is missing")
         seen: set[int] = set()
