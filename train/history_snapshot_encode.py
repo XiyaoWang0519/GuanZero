@@ -20,7 +20,9 @@ public tokens. It is the encoder-side twin of ``train.history_snapshot_batch``:
   and packed (zero past each entry's end) into ``[E, heads, cap, depth]``,
   then one SDPA call covers all E entries. With the Triton cache this
   write-and-pack is one ``_update_and_pack`` launch per layer across all
-  identities; otherwise it is the eager per-entry copy. The pack is split into
+  identities, through a per-step ``[1 + 2L + 2, E]`` pointer table (one column
+  per entry) and ``[3, E]`` ranges (column, start, count) in the kernel's own
+  layout; otherwise it is the eager per-entry copy. The pack is split into
   entry chunks of at most ``max_pack_bytes`` (one pack and one SDPA each), so
   the transient K/V stays near the old per-identity size. The same kernel (one
   head, depth = width, key and value pointers both naming ``Entry.memory``)
@@ -62,7 +64,7 @@ from train.logs import TOKEN_DIM
 
 # Order of the uploaded plan fields (``EncodePlan.arrays``).
 ENCODE_FIELDS = ("tokens", "rounds", "phases", "bos", "positions", "grid", "starts", "ends",
-                 "table")
+                 "pointers", "ranges")
 
 
 def encoder_parameters(actor: HistoryActor) -> tuple[Tensor, ...]:
@@ -313,7 +315,7 @@ def plan_encode(encoders: SnapshotEncoders, groups, actors, caches, length: int,
     empty = np.zeros(0, np.int64)
     if not merged:
         return EncodePlan((np.zeros((0, TOKEN_DIM), np.uint8), empty, empty, np.zeros(0, bool),
-                           empty, empty, empty, empty, empty), [], [], [], empty, fallback,
+                           empty, empty, empty, empty, empty, empty), [], [], [], empty, fallback,
                           streams, length, 0, 0, 0, 0, True, False, False, ())
     slots = [encoders.slot(group.identity, actor) for group, actor, *_ in merged]
     cfg = encoders.config
@@ -345,7 +347,7 @@ def plan_encode(encoders: SnapshotEncoders, groups, actors, caches, length: int,
             n = count - offset
             if n > 0:
                 end = begin + n
-                tokens[base + offset:base + offset + n] = np.stack(stream.tokens[begin:end])
+                tokens[base + offset:base + offset + n] = stream.tokens[begin:end]
                 rounds[base + offset:base + offset + n] += np.clip(
                     stream.rounds[begin:end], 0, rounds_n - 1)
                 phases[base + offset:base + offset + n] += np.clip(stream.phases[begin:end], 0, 3)
@@ -362,19 +364,24 @@ def plan_encode(encoders: SnapshotEncoders, groups, actors, caches, length: int,
     direct = not fallback and bool(np.array_equal(stream_rows, np.arange(streams)))
     starts = np.asarray(starts, np.int64)
     ends = np.asarray(ends, np.int64)
-    table, references = empty, ()
+    pointers, ranges, references = empty, empty, ()
     if triton:
-        table, references = _pointer_table(all_entries, starts, ends - starts, cfg)
-        triton = table.size > 0
-    arrays = (tokens, rounds, phases, bos, positions, grid, starts, ends, table)
+        pointers, references = _pointer_table(all_entries, cfg)
+        triton = pointers.size > 0
+        if triton:
+            ranges = np.stack((np.arange(len(all_entries), dtype=np.int64), starts,
+                               ends - starts))
+    arrays = (tokens, rounds, phases, bos, positions, grid, starts, ends, pointers, ranges)
     return EncodePlan(arrays, all_entries, all_counts, owners, stream_rows, fallback, streams,
                       length, S, M, w, capacity, full, direct, triton, references)
 
 
-def _pointer_table(entries: list[Entry], starts: np.ndarray, counts: np.ndarray, cfg
-                   ) -> tuple[np.ndarray, tuple]:
-    """``[1 + 2L + 2 + 2, E]`` int64: capacity, K/V per layer, memory twice, then
-    start and count. Empty when an entry does not have the cache's own layout."""
+def _pointer_table(entries: list[Entry], cfg) -> tuple[np.ndarray, tuple]:
+    """``[1 + 2L + 2, E]`` int64, column e for entry e, in the layout of
+    ``TritonHistoryCache``'s table (row 0 capacity, rows 1 + 2l / 2 + 2l the
+    layer-l K/V addresses) plus two rows naming ``Entry.memory``, read as
+    "layer L" by the memory write. Empty when an entry does not have the
+    cache's own layout."""
     from train.history_triton_cache import triton
     if triton is None:
         return np.zeros(0, np.int64), ()
@@ -390,7 +397,7 @@ def _pointer_table(entries: list[Entry], starts: np.ndarray, counts: np.ndarray,
                     or tensor.dtype != torch.float32):
                 return np.zeros(0, np.int64), ()
     layers, batch = cfg.layers, len(entries)
-    table = np.empty((1 + 2 * layers + 4, batch), np.int64)
+    table = np.empty((1 + 2 * layers + 2, batch), np.int64)
     table[0] = [entry.capacity for entry in entries]
     for layer in range(layers):
         table[1 + 2 * layer] = [entry.keys[layer].data_ptr() for entry in entries]
@@ -402,8 +409,6 @@ def _pointer_table(entries: list[Entry], starts: np.ndarray, counts: np.ndarray,
     # Raw-pointer writes need independent allocations (the cache's own invariant).
     if len({int(p) for p in table[1:1 + 2 * layers + 1].ravel()}) != (2 * layers + 1) * batch:
         return np.zeros(0, np.int64), ()
-    table[-2] = starts
-    table[-1] = counts
     return table, tuple(references)
 
 
@@ -418,12 +423,16 @@ def _norm(x: Tensor, tensors: dict[str, Tensor], name: str, slots: int, eps: flo
     return torch.addcmul(tensors[f"{name}_b"][:slots], normalized, tensors[f"{name}_w"][:slots])
 
 
-def _launch(encoders, new_k, new_v, packed_k, packed_v, table, ranges, capacity, layer,
+def _launch(encoders, new_k, new_v, packed_k, packed_v, pointers, ranges, capacity, layer,
             heads, depth, first: int = 0) -> bool:
-    """``_update_and_pack`` for entries ``first:first + len(new_k)`` of the
-    ``[rows, E]`` pointer table; False if the int32 guard refuses."""
+    """``_update_and_pack`` for entries ``first:first + len(new_k)``: ``pointers``
+    is the plan's ``[rows, E]`` table and ``ranges`` its ``[3, E]`` (column,
+    start, count). Arguments go by the kernel's parameter names, so a signature
+    change fails loudly. False if the int32 guard refuses."""
     from train import history_triton_cache as kernels
-    batch, table_batch = new_k.shape[0], table.shape[1]
+    batch, entries = new_k.shape[0], ranges.shape[1]
+    if pointers.shape[1] != entries or ranges.shape[0] != 3:
+        raise ValueError("pointer table and ranges must have one column per entry")
     rows = kernels.rows_per_launch(batch, heads * depth * capacity,
                                    (kernels._view(new_k), kernels._view(new_v)))
     if rows < 1 or min(*new_k.stride(), *new_v.stride()) < 0:
@@ -434,10 +443,14 @@ def _launch(encoders, new_k, new_v, packed_k, packed_v, table, ranges, capacity,
         for base in range(0, batch, rows):
             end = min(batch, base + rows)
             grid = (kernels.triton.cdiv(heads * depth * capacity, encoders.block), end - base)
+            (K0, K1, K2, K3), (V0, V1, V2, V3) = new_k.stride(), new_v.stride()
             kernels._update_and_pack[grid](
-                new_k[base:end], new_v[base:end], packed_k[base:end], packed_v[base:end],
-                table, ranges, table_batch, first + base, capacity, layer, 0,
-                *new_k.stride(), *new_v.stride(),
+                NEW_K=new_k[base:end], NEW_V=new_v[base:end],
+                PACKED_K=packed_k[base:end], PACKED_V=packed_v[base:end],
+                POINTERS=pointers, RANGES=ranges,
+                BATCH=entries, ROW_BASE=first + base, SLOTS=entries,
+                CAPACITY=capacity, LAYER=layer, STACK_MODE=0,
+                K0=K0, K1=K1, K2=K2, K3=K3, V0=V0, V1=V1, V2=V2, V3=V3,
                 HEADS=heads, DEPTH=depth, BLOCK=encoders.block, num_warps=4)
             encoders.triton_launches += 1
     return True
@@ -507,7 +520,8 @@ def merged_encode(encoders: SnapshotEncoders, plan: EncodePlan, fields: dict[str
 
 
 def _attend_chunk(encoders, plan: EncodePlan, layer: int, first: int, last: int, q: Tensor,
-                  new_k: Tensor, new_v: Tensor, allowed: Tensor, table: Tensor | None) -> Tensor:
+                  new_k: Tensor, new_v: Tensor, allowed: Tensor,
+                  table: tuple[Tensor, Tensor] | None) -> Tensor:
     """Write and pack entries ``first:last``' K/V, then their SDPA. The packed
     K/V are released on return, before the next chunk allocates its own."""
     cfg = encoders.config
@@ -517,8 +531,8 @@ def _attend_chunk(encoders, plan: EncodePlan, layer: int, first: int, last: int,
     if table is not None:
         packed_k = new_k.new_empty(last - first, heads, plan.capacity, depth)
         packed_v = new_v.new_empty(last - first, heads, plan.capacity, depth)
-        if _launch(encoders, new_k[first:last], new_v[first:last], packed_k, packed_v, table,
-                   table[-2:], plan.capacity, layer, heads, depth, first):
+        if _launch(encoders, new_k[first:last], new_v[first:last], packed_k, packed_v, *table,
+                   plan.capacity, layer, heads, depth, first):
             packed = packed_k, packed_v
     if packed is None:
         encoders.eager_packs += 1
@@ -551,8 +565,8 @@ def _forward(encoders: SnapshotEncoders, plan: EncodePlan, fields: dict[str, Ten
                & (key_positions[None, None] < fields["ends"][:, None, None]))[:, None]
     triton = plan.triton
     if triton:
-        pointer_table = fields["table"]
-        ranges = pointer_table[-2:]
+        pointer_table = fields["pointers"]
+        ranges = fields["ranges"]
     per_entry = 2 * heads * plan.capacity * depth * state.element_size()
     chunk = (E if encoders.max_pack_bytes is None
              else max(1, min(E, encoders.max_pack_bytes // per_entry)))
@@ -563,7 +577,8 @@ def _forward(encoders: SnapshotEncoders, plan: EncodePlan, fields: dict[str, Ten
             qkv = qkv.index_select(0, grid)
         q, new_k, new_v = (qkv[:, :, i].transpose(1, 2) for i in range(3))
         parts = [_attend_chunk(encoders, plan, layer, first, min(E, first + chunk), q,
-                               new_k, new_v, allowed, pointer_table if triton else None)
+                               new_k, new_v, allowed,
+                               (pointer_table, ranges) if triton else None)
                  for first in range(0, E, chunk)]
         attended = parts[0] if len(parts) == 1 else torch.cat(parts)
         del parts

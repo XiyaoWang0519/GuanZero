@@ -8,6 +8,7 @@ with the flag on or off the learner rows and sampler state are bitwise equal
 on these seeds (no snapshot choice flips).
 """
 from dataclasses import asdict
+import inspect
 from types import SimpleNamespace
 
 import numpy as np
@@ -220,63 +221,89 @@ def test_merged_encode_matches_per_identity_caches(device, stream_norm, max_pack
     assert metrics["pack_chunks"] >= one_chunk
 
 
-class EmulatedUpdateAndPack:
-    """``_update_and_pack`` in PyTorch on CPU, following the kernel's raw-pointer
-    arithmetic: table rows, element strides, ROW_BASE, own-capacity offsets and
-    load-before-store. Entry tensors are found by address in ``registry()``."""
+def emulated_update_and_pack(
+    NEW_K, NEW_V, PACKED_K, PACKED_V, POINTERS, RANGES,
+    BATCH, ROW_BASE, SLOTS, CAPACITY, LAYER, STACK_MODE,
+    K0, K1, K2, K3, V0, V1, V2, V3,
+    HEADS, DEPTH, BLOCK, *, grid, by_address,
+):
+    """``train.history_triton_cache._update_and_pack`` in PyTorch on CPU, with
+    the kernel's parameter list and raw-pointer arithmetic: RANGES is
+    ``[3, BATCH]`` (table column, start, count) read at ``ROW_BASE + row``;
+    POINTERS is ``[1 + 2L(+extra), SLOTS]`` read at ``row * SLOTS + column``
+    (capacity, then K/V of ``LAYER``); element strides K0..V3; own-capacity
+    offsets; every load before any store. ``grid`` and ``by_address`` (Entry
+    tensors by data pointer) stand in for the launch grid and raw memory."""
+    assert grid[0] == -(-HEADS * CAPACITY * DEPTH // BLOCK)
+    assert POINTERS.is_contiguous() and RANGES.is_contiguous()
+    pointers, ranges = POINTERS.reshape(-1), RANGES.reshape(-1)
+    new_k = torch.as_strided(NEW_K, (grid[1], HEADS, NEW_K.shape[2], DEPTH), (K0, K1, K2, K3),
+                             NEW_K.storage_offset())
+    new_v = torch.as_strided(NEW_V, (grid[1], HEADS, NEW_V.shape[2], DEPTH), (V0, V1, V2, V3),
+                             NEW_V.storage_offset())
+    index = torch.arange(HEADS * CAPACITY * DEPTH)
+    head, position, depth = index // (CAPACITY * DEPTH), index // DEPTH % CAPACITY, index % DEPTH
+    loaded = []
+    for row in range(grid[1]):
+        table_row = ROW_BASE + row
+        column = int(ranges[table_row])
+        start = int(ranges[BATCH + table_row])
+        count = int(ranges[2 * BATCH + table_row])
+        own_capacity = int(pointers[column])
+        entry_k = by_address[int(pointers[(1 + 2 * LAYER) * SLOTS + column])].view(-1)
+        entry_v = by_address[int(pointers[(2 + 2 * LAYER) * SLOTS + column])].view(-1)
+        fresh = (position >= start) & (position < start + count)
+        limit = own_capacity if STACK_MODE else start + count
+        old = (position < limit) & ~fresh
+        own = (head * own_capacity + position) * DEPTH + depth
+        source = (head, (position - start).clamp(0, new_k.shape[2] - 1), depth)  # masked
+        k_new = torch.where(fresh, new_k[row][source], 0.0)
+        v_new = torch.where(fresh, new_v[row][source], 0.0)
+        k_old = torch.where(old, entry_k[own.clamp(max=entry_k.numel() - 1)], 0.0)
+        v_old = torch.where(old, entry_v[own.clamp(max=entry_v.numel() - 1)], 0.0)
+        loaded.append((entry_k, entry_v, own[fresh], k_new[fresh], v_new[fresh],
+                       torch.where(fresh, k_new, k_old), torch.where(fresh, v_new, v_old)))
+    # Fresh and old positions are disjoint, so loading everything first
+    # matches the kernel's order across programs.
+    for row, (entry_k, entry_v, own, k_new, v_new, k_bits, v_bits) in enumerate(loaded):
+        entry_k[own] = k_new
+        entry_v[own] = v_new
+        PACKED_K[row].view(-1)[:] = k_bits
+        PACKED_V[row].view(-1)[:] = v_bits
+
+
+KERNEL_PARAMETERS = list(inspect.signature(emulated_update_and_pack).parameters)[:-2]
+
+
+class EmulatedLaunch:
+    """``_update_and_pack[grid](**arguments)`` on CPU. Arguments must name
+    exactly the kernel's parameters (plus ``num_warps``)."""
 
     def __init__(self, registry):
         self.registry = registry
         self.launches = []
 
     def __getitem__(self, grid):
-        return lambda *args, **kwargs: self.run(grid, *args, **kwargs)
+        def launch(*args, num_warps, **kwargs):
+            assert not args, "the merged encode passes kernel arguments by name"
+            assert list(kwargs) == KERNEL_PARAMETERS
+            self.launches.append(dict(kwargs, grid=grid))
+            emulated_update_and_pack(**kwargs, grid=grid, by_address=self.registry())
+        return launch
 
-    def run(self, grid, NEW_K, NEW_V, PACKED_K, PACKED_V, POINTERS, RANGES, BATCH, ROW_BASE,
-            CAPACITY, LAYER, STACK_MODE, K0, K1, K2, K3, V0, V1, V2, V3, *, HEADS, DEPTH,
-            BLOCK, num_warps):
-        self.launches.append((grid, BATCH, ROW_BASE, CAPACITY, LAYER, HEADS, DEPTH))
-        assert grid[0] == -(-HEADS * CAPACITY * DEPTH // BLOCK)
-        pointers, ranges = POINTERS.reshape(-1), RANGES.reshape(-1)
-        assert POINTERS.is_contiguous() and RANGES.is_contiguous()
-        by_address = self.registry()
-        new_k = torch.as_strided(NEW_K, (grid[1], HEADS, NEW_K.shape[2], DEPTH), (K0, K1, K2, K3),
-                                 NEW_K.storage_offset())
-        new_v = torch.as_strided(NEW_V, (grid[1], HEADS, NEW_V.shape[2], DEPTH), (V0, V1, V2, V3),
-                                 NEW_V.storage_offset())
-        index = torch.arange(HEADS * CAPACITY * DEPTH)
-        head, position, depth = index // (CAPACITY * DEPTH), index // DEPTH % CAPACITY, index % DEPTH
-        loaded = []
-        for row in range(grid[1]):
-            table_row = ROW_BASE + row
-            own_capacity = int(pointers[table_row])
-            start, count = int(ranges[table_row]), int(ranges[BATCH + table_row])
-            entry_k = by_address[int(pointers[(1 + 2 * LAYER) * BATCH + table_row])].view(-1)
-            entry_v = by_address[int(pointers[(2 + 2 * LAYER) * BATCH + table_row])].view(-1)
-            fresh = (position >= start) & (position < start + count)
-            limit = own_capacity if STACK_MODE else start + count
-            old = (position < limit) & ~fresh
-            own = (head * own_capacity + position) * DEPTH + depth
-            source = (head, (position - start).clamp(0, new_k.shape[2] - 1), depth)  # masked
-            k_new = torch.where(fresh, new_k[row][source], 0.0)
-            v_new = torch.where(fresh, new_v[row][source], 0.0)
-            k_old = torch.where(old, entry_k[own.clamp(max=entry_k.numel() - 1)], 0.0)
-            v_old = torch.where(old, entry_v[own.clamp(max=entry_v.numel() - 1)], 0.0)
-            loaded.append((entry_k, entry_v, own[fresh], k_new[fresh], v_new[fresh],
-                           torch.where(fresh, k_new, k_old), torch.where(fresh, v_new, v_old)))
-        # Every program loads before any program stores: fresh and old
-        # positions are disjoint, so this matches the kernel's order.
-        for row, (entry_k, entry_v, own, k_new, v_new, k_bits, v_bits) in enumerate(loaded):
-            entry_k[own] = k_new
-            entry_v[own] = v_new
-            PACKED_K[row].view(-1)[:] = k_bits
-            PACKED_V[row].view(-1)[:] = v_bits
+
+def test_emulation_mirrors_the_triton_kernel_signature():
+    pytest.importorskip("triton")
+    from train.history_triton_cache import _update_and_pack
+    kernel = getattr(_update_and_pack, "fn", _update_and_pack)
+    assert list(inspect.signature(kernel).parameters) == KERNEL_PARAMETERS
 
 
 def test_triton_arguments_with_an_emulated_kernel(monkeypatch):
     # CPU check of what the Triton path hands the kernel: the pointer table
-    # (capacity, K/V per layer, memory as layer L), ranges, strides and
-    # chunked launches (ROW_BASE), against the per-identity eager caches.
+    # (capacity, K/V per layer, memory as layer L), the [3, E] ranges
+    # (column, start, count), SLOTS/BATCH, strides and chunked launches
+    # (ROW_BASE), against the per-identity eager caches.
     from train import history_triton_cache as kernels
     holder = {}
 
@@ -284,7 +311,7 @@ def test_triton_arguments_with_an_emulated_kernel(monkeypatch):
         return {t.data_ptr(): t for cache in holder["pair"].fast.values()
                 for entry in cache.entries.values()
                 for t in (*entry.keys, *entry.values, entry.memory)}
-    kernel = EmulatedUpdateAndPack(registry)
+    kernel = EmulatedLaunch(registry)
     monkeypatch.setattr(kernels, "triton", SimpleNamespace(cdiv=lambda a, b: -(-a // b)))
     monkeypatch.setattr(kernels, "_update_and_pack", kernel, raising=False)
     rows_per_launch = kernels.rows_per_launch
@@ -297,13 +324,20 @@ def test_triton_arguments_with_an_emulated_kernel(monkeypatch):
     monkeypatch.setattr(Pair, "__init__", init)
     pair, worst = unit_scenario("cpu", triton=True, max_pack_bytes=100_000)
     metrics = pair.encoders.metrics()
-    assert metrics["triton_launches"] == len(kernel.launches) > 0
+    launches = kernel.launches
+    assert metrics["triton_launches"] == len(launches) > 0
     assert metrics["eager_packs"] == 0
     layers = next(iter(pair.policies.values())).config.layers
-    assert {launch[4] for launch in kernel.launches} == set(range(layers + 1))
-    assert any(launch[2] > 0 for launch in kernel.launches)       # chunked launches
-    assert metrics["pack_chunks"] > metrics["merged_calls"] * layers   # chunked attention
-    assert all(launch[5:] == (1, 32) for launch in kernel.launches if launch[4] == layers)
+    assert {launch["LAYER"] for launch in launches} == set(range(layers + 1))
+    assert any(launch["ROW_BASE"] > 0 for launch in launches)          # chunked launches
+    assert metrics["pack_chunks"] > metrics["merged_calls"] * layers    # chunked attention
+    for launch in launches:
+        assert launch["SLOTS"] == launch["BATCH"] == launch["RANGES"].shape[1]
+        assert launch["POINTERS"].shape == (1 + 2 * layers + 2, launch["SLOTS"])
+        assert launch["RANGES"].shape[0] == 3 and launch["STACK_MODE"] == 0
+        assert torch.equal(launch["RANGES"][0], torch.arange(launch["BATCH"]))
+        if launch["LAYER"] == layers:
+            assert (launch["HEADS"], launch["DEPTH"]) == (1, 32)
 
 
 def test_encoder_slots_refresh_and_refuse(device):
