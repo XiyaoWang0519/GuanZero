@@ -438,6 +438,13 @@ class SequenceRolloutBuffer:
                  for name in fields}
         named.update(extra or {})
         match_index = np.asarray([index[key] for key in keys], np.int64)
+        # Batched match attention's layout, planned here instead of on the
+        # device: each row's rank among its match's rows, in row order.
+        order = np.argsort(match_index, kind="stable")
+        per_match = np.bincount(match_index, minlength=len(unique))
+        starts = np.cumsum(per_match) - per_match
+        match_rank = np.empty_like(match_index)
+        match_rank[order] = np.arange(len(rows)) - starts[match_index[order]]
         arrays = [stream.arrays() for stream in picked]
         plan = []
         if length_groups > 0 and len(rows):
@@ -450,22 +457,29 @@ class SequenceRolloutBuffer:
             for matches in plan_groups(cited, length_groups, width):
                 local[matches] = np.arange(len(matches))
                 members = np.flatnonzero(np.isin(match_index, matches))
-                plan.append((int(cited[matches].max()),
-                             (matches.astype(np.int64), members, local[match_index[members]])))
+                plan.append(((int(cited[matches].max()), int(per_match[matches].max())),
+                             (matches.astype(np.int64), members, local[match_index[members]],
+                              match_rank[members])))
         host = (*StreamBatch.host_arrays(arrays), match_index, prefix,
                 data["obs"][rows], data["seat"][rows], data["cand"][src], offsets,
-                offsets[:-1] + data["chosen"][rows], *named.values(),
+                offsets[:-1] + data["chosen"][rows], *named.values(), match_rank,
                 *(array for _, group in plan for array in group))
         uploaded = upload_arrays(host, device)
+        # Keep the existing floating-point fields at their original packed
+        # offsets. Moving them by an odd number of int64 ranks changes their
+        # CUDA vector alignment and can change reduction bits (e.g. advantages).
+        fields_end = 11 + len(named)
         inputs = DecisionInputs(streams=StreamBatch(*uploaded[:4]), match_index=uploaded[4],
                                 prefix=uploaded[5], obs=uploaded[6], seat=uploaded[7],
-                                cand=uploaded[8], offsets=uploaded[9])
-        base = 11 + len(named)
+                                cand=uploaded[8], offsets=uploaded[9], match_rank=uploaded[fields_end],
+                                match_slots=int(per_match.max(initial=0)))
+        base = fields_end + 1
         if plan:
             from train.history_model import MatchGroup
-            inputs.match_groups = [MatchGroup(*uploaded[base + 3 * g:base + 3 * g + 3], tokens)
-                                   for g, (tokens, _) in enumerate(plan)]
-        return TrainingBatch(inputs, uploaded[10], dict(zip(named, uploaded[11:base])))
+            inputs.match_groups = [MatchGroup(*uploaded[base + 4 * g:base + 4 * g + 3], tokens,
+                                              uploaded[base + 4 * g + 3], slots)
+                                   for g, ((tokens, slots), _) in enumerate(plan)]
+        return TrainingBatch(inputs, uploaded[10], dict(zip(named, uploaded[11:fields_end])))
 
 
 # ---- collector -------------------------------------------------------------------

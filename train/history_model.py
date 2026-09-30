@@ -216,6 +216,8 @@ class MatchGroup:
     rows: Tensor          # int64 [r], decision indices whose match is in this group
     local_match: Tensor   # int64 [r], each decision's position in ``matches``
     tokens: int           # public tokens to encode: the longest cited prefix
+    match_rank: Tensor | None = None  # int64 [r], host-planned (see DecisionInputs)
+    match_slots: int = 0
 
 
 def length_groups(cited: np.ndarray, groups: int, width: int) -> list[np.ndarray]:
@@ -278,6 +280,11 @@ class DecisionInputs:
     candidate_rows: Tensor | None = None  # optional precomputed ragged integer index
     one_decision_per_stream: bool = False  # rows match stream order; collector only
     match_groups: list[MatchGroup] | None = None
+    # Optional host-planned layout of batched match attention: each decision's
+    # rank among its match's decisions (in row order) and the largest per-match
+    # count. The same integers the device would compute, without its sync.
+    match_rank: Tensor | None = None
+    match_slots: int = 0
 
     @property
     def decisions(self) -> int:
@@ -495,21 +502,25 @@ class HistoryActor(nn.Module):
         return project(self.out_proj, out)
 
     def _attend_by_match(self, query: Tensor, keys: Tensor, values: Tensor,
-                         match_index: Tensor, prefix: Tensor) -> Tensor:
+                         match_index: Tensor, prefix: Tensor,
+                         rank: Tensor | None = None, slots: int = 0) -> Tensor:
         """All matches' decisions in one padded SDPA call, [n, w].
 
         Decisions are placed at (match, rank within match); padding slots see
         position 0 only, so no row is fully masked, and are never read back.
+        ``rank``/``slots`` may come planned from the host (``training_batch``);
+        otherwise they are derived here at the cost of one host synchronization.
         """
         count, matches = len(query), keys.shape[0]
         width, heads = self.config.width, self.config.heads
         depth = width // heads
-        per_match = torch.bincount(match_index, minlength=matches)
-        slots = int(per_match.max())            # the only host synchronization
-        order = torch.argsort(match_index, stable=True)
-        starts = torch.cumsum(per_match, 0) - per_match
-        rank = torch.empty_like(match_index)
-        rank[order] = torch.arange(count, device=query.device) - starts[match_index[order]]
+        if rank is None:
+            per_match = torch.bincount(match_index, minlength=matches)
+            slots = int(per_match.max())        # the only host synchronization
+            order = torch.argsort(match_index, stable=True)
+            starts = torch.cumsum(per_match, 0) - per_match
+            rank = torch.empty_like(match_index)
+            rank[order] = torch.arange(count, device=query.device) - starts[match_index[order]]
         q = self.q_proj(query).view(count, heads, depth)
         padded = q.new_zeros(matches, slots, heads, depth).index_put((match_index, rank), q)
         visible = prefix.new_zeros(matches, slots).index_put((match_index, rank), prefix)
@@ -540,12 +551,14 @@ class HistoryActor(nn.Module):
             if encoded is None:
                 encoded = self.encode_batch(inputs.streams)
             attended = self._attend_encoded(query, encoded, inputs.match_index, inputs.prefix,
-                                            inputs.one_decision_per_stream)
+                                            inputs.one_decision_per_stream,
+                                            inputs.match_rank, inputs.match_slots)
         state = self.attention_norm(query + attended)
         return self.output_norm(state + self.feed_forward(state))
 
     def _attend_encoded(self, query: Tensor, encoded: Tensor, match_index: Tensor,
-                        prefix: Tensor, one_decision_per_stream: bool) -> Tensor:
+                        prefix: Tensor, one_decision_per_stream: bool,
+                        rank: Tensor | None = None, slots: int = 0) -> Tensor:
         """Each decision's attention over its encoded stream, positions ``<= prefix``."""
         keys, values = self.kv_proj(encoded).chunk(2, dim=-1)
         positions = torch.arange(encoded.shape[1], device=encoded.device)
@@ -553,7 +566,7 @@ class HistoryActor(nn.Module):
             allowed = positions[None] <= prefix[:, None]
             return self._attend_independent(query, keys, values, allowed)
         if self.batched_match_attention and not one_decision_per_stream and len(query) > 1:
-            return self._attend_by_match(query, keys, values, match_index, prefix)
+            return self._attend_by_match(query, keys, values, match_index, prefix, rank, slots)
         attended = torch.empty_like(query)
         for b in range(encoded.shape[0]):
             if one_decision_per_stream:
@@ -582,19 +595,23 @@ class HistoryActor(nn.Module):
                                          s.phases[group.matches, :n],
                                          s.lengths[group.matches].clamp(max=n))
             parts.append(self._attend_encoded(query[group.rows], encoded, group.local_match,
-                                              inputs.prefix[group.rows], False))
+                                              inputs.prefix[group.rows], False,
+                                              group.match_rank, group.match_slots))
             rows.append(group.rows)
         return torch.zeros_like(query).index_copy(0, torch.cat(rows), torch.cat(parts))
 
     def candidate_outputs(self, state: Tensor, cand: Tensor, offsets: Tensor,
-                          *, predict: bool = False,
-                          rows: Tensor | None = None) -> tuple[Tensor, Tensor | None]:
+                          *, predict: bool = False, rows: Tensor | None = None,
+                          response_rows: Tensor | None = None
+                          ) -> tuple[Tensor, Tensor | None]:
         """Policy logits and optional response logits for every legal candidate.
 
         Prediction uses the observer state plus that candidate, without a
         future event or a target-seat label. The explicit bridge reads detached
         probabilities: PPO learns to use predictions, while the response head
         itself is supervised by actual public outcomes in both B and C.
+        ``response_rows`` (auxiliary only) predicts just those candidates: the
+        head is row-wise, so this is the same values as indexing afterwards.
         """
         if rows is None:
             counts = offsets[1:] - offsets[:-1]
@@ -603,13 +620,17 @@ class HistoryActor(nn.Module):
         fused = torch.cat((state[rows], self.action_tower(cand.float())), dim=-1)
         response = None
         mode = self.config.response_mode
+        if response_rows is not None and mode != "auxiliary":
+            raise ValueError("response_rows needs the auxiliary response mode")
         if mode != "none" and (predict or mode == "explicit"):
-            response = self.response_head(fused)
+            response = self.response_head(fused if response_rows is None else fused[response_rows])
         if mode == "explicit":
             feature = response.softmax(-1).detach() - 1.0 / RESPONSE_CLASSES
             fused = fused + self.response_bridge(feature)
-        elif mode == "auxiliary":
+        elif mode == "auxiliary" and torch.is_grad_enabled():
             # Matched bridge shape/parameter count without response information.
+            # Its output is exactly zero, so inference skips it; training keeps
+            # it so the bridge weight still receives its (zero) gradient.
             fused = fused + self.response_bridge(fused.new_zeros(len(cand), RESPONSE_CLASSES))
         return self.fusion(fused).squeeze(-1), response
 

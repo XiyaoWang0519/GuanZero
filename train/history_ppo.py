@@ -95,6 +95,9 @@ class HistoryPPOConfig:
     # Learner encode in up to N length groups, each stream only as far as its rows
     # read (history_model.length_groups): same loss, far less padding; FP32, not bitwise.
     learner_length_groups: int = 0
+    # Auxiliary response head on the executed candidates only (the only rows its
+    # loss reads); the policy still scores every candidate. FP32, not bitwise.
+    learner_chosen_response: bool = False
     rollout_graph_budget_mb: int = 512
     rollout_graph_policy_budget_mb: int = 128  # per-policy cap inside the total budget
     rollout_triton_cache: bool = False  # lossless KV update/packing; requires Triton
@@ -213,6 +216,8 @@ class HistoryPPOConfig:
             raise ValueError("response_coef must be finite and nonnegative")
         if self.response_mode != "none" and self.response_coef == 0:
             raise ValueError("prediction arms require a positive response_coef")
+        if self.learner_chosen_response and self.response_mode != "auxiliary":
+            raise ValueError("learner_chosen_response needs the auxiliary response mode")
 
     def policy_config(self) -> HistoryPolicyConfig:
         return HistoryPolicyConfig(width=self.width, layers=self.layers, heads=self.heads,
@@ -247,7 +252,8 @@ def parse_arm_schedule(schedule: str) -> list[tuple[int, bool]]:
 # strided K/V views, so tier 2 on CUDA for learner seats too until the CUDA gate says
 # otherwise; private graphs replay the same kernels; page-padded spans are tier 2),
 # the learner's length-grouped
-# encode (tier 2: same loss, learner float-order noise), plus snapshot_updates,
+# encode and chosen-only auxiliary response head (tier 2: same loss, learner
+# float-order noise), plus snapshot_updates,
 # which changes dynamics.
 RESUME_OVERRIDES = frozenset({"num_envs", "num_threads", "minibatch_matches", "torch_threads",
                               "checkpoint_updates", "ddp_global_minibatch",
@@ -257,7 +263,8 @@ RESUME_OVERRIDES = frozenset({"num_envs", "num_threads", "minibatch_matches", "t
                               "batch_snapshot_policies", "batch_snapshot_policies_schedule",
                               "rollout_trim_cuda_cache", "rollout_paged_cache",
                               "rollout_triton_cache", "batch_snapshot_encoder",
-                              "learner_length_groups", "rollout_page_span",
+                              "learner_length_groups", "learner_chosen_response",
+                              "rollout_page_span",
                               "rollout_private_graphs"})
 
 
@@ -529,6 +536,7 @@ class HistoryTrainer:
                           "rollout_private_graphs": self.collector.private_graphs,
                           "learner_batched_attention": self.actor.batched_match_attention,
                           "learner_length_groups": self.config.learner_length_groups,
+                          "learner_chosen_response": self.config.learner_chosen_response,
                           "rollout_graph_budget_mb": self.config.rollout_graph_budget_mb,
                           "rollout_graph_policy_budget_mb": self.config.rollout_graph_policy_budget_mb,
                           "rollout_triton_cache": self.collector.triton_cache,
@@ -623,11 +631,14 @@ class HistoryTrainer:
         else:
             from train.history_model import segment_log_softmax
             state = self.actor.decision_states(None, inputs)
-            logits, response = self.actor.candidate_outputs(state, inputs.cand, inputs.offsets,
-                                                            predict=True)
+            chosen_only = cfg.learner_chosen_response
+            logits, response = self.actor.candidate_outputs(
+                state, inputs.cand, inputs.offsets, predict=True,
+                response_rows=chosen if chosen_only else None)
             all_log_probs = segment_log_softmax(logits, inputs.rows, inputs.decisions)
             targets = row["response_target"]
-            prediction = response[chosen]   # outcomes exist ONLY for executed actions
+            # Outcomes exist ONLY for executed actions.
+            prediction = response if chosen_only else response[chosen]
             response_stats = {"response_loss": F.cross_entropy(prediction, targets),
                               "response_accuracy": (prediction.argmax(-1) == targets).float().mean(),
                               "response_event_fraction": (targets != 0).float().mean()}
@@ -1016,6 +1027,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--learner-length-groups", type=int, default=0,
                         help="learner: encode each minibatch in up to N length groups, each "
                              "stream only as far as its rows read (FP32; not bitwise)")
+    parser.add_argument("--learner-chosen-response", action="store_true",
+                        help="learner, auxiliary response mode: run the response head on "
+                             "executed candidates only, the rows its loss reads (FP32; not bitwise)")
     parser.add_argument("--rollout-graph-budget-mb", type=int, default=512)
     parser.add_argument("--rollout-graph-policy-budget-mb", type=int, default=128,
                         help="per-policy private-graph cap within the total budget")

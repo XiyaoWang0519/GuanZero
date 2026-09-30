@@ -8,6 +8,17 @@ from train.history_model import length_groups
 from train.history_ppo import HistoryPPOConfig, HistoryTrainer
 
 
+@pytest.fixture
+def deterministic_gradients():
+    previous = torch.are_deterministic_algorithms_enabled()
+    previous_warn_only = torch.is_deterministic_algorithms_warn_only_enabled()
+    torch.use_deterministic_algorithms(True)
+    try:
+        yield
+    finally:
+        torch.use_deterministic_algorithms(previous, warn_only=previous_warn_only)
+
+
 @pytest.mark.parametrize("groups", [1, 2, 3, 8])
 def test_plan_partitions_sorted_runs(groups):
     rng = np.random.default_rng(groups)
@@ -41,7 +52,8 @@ def trainer(tmp_path, device="cpu", **overrides):
 @pytest.mark.parametrize("causal_sdpa", [False, True])
 @pytest.mark.parametrize("batched", [False, True])
 def test_grouped_loss_and_gradients_match_the_padded_minibatch(tmp_path, device, response_mode,
-                                                                causal_sdpa, batched):
+                                                                causal_sdpa, batched,
+                                                                deterministic_gradients):
     if device == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA length-group acceptance")
     t = trainer(tmp_path, device, response_mode=response_mode, causal_sdpa=causal_sdpa,

@@ -44,7 +44,8 @@ SWITCHABLE = frozenset({"rollout_paged_cache", "rollout_page_span", "rollout_tri
                         "rollout_triton_min_batch", "rollout_private_graphs",
                         "rollout_graph_budget_mb", "rollout_graph_policy_budget_mb",
                         "batch_snapshot_encoder", "batch_snapshot_policies",
-                        "learner_length_groups", "rollout_trim_cuda_cache"})
+                        "learner_length_groups", "learner_chosen_response",
+                        "rollout_trim_cuda_cache"})
 
 
 def check_arms(arms: dict[str, dict]) -> None:

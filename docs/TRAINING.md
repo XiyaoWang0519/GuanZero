@@ -122,6 +122,25 @@ four together took 87 s per 10 production-architecture updates against
 options in-run from a checkpoint without touching the lineage; the report
 lists the GPU gate and A/B commands.
 
+Two learner-side changes followed (September 29). Always on, tier 1: the
+batched match attention's layout (each row's rank within its match and the
+slot count) is planned on the host in `training_batch` and uploaded with the
+batch, removing a device bincount/argsort and one host sync per attention
+call (per length group); the auxiliary mode's zero response bridge is skipped
+under `no_grad`/inference, adding the same exact zero as before. Opt-in, tier
+2, resume-overridable: `--learner-chosen-response` (auxiliary mode only) runs
+the response head on executed candidates only, the rows its loss reads; the
+policy still scores every legal candidate. `tests/test_history_learner_layout.py`
+checks the layout bitwise under strict deterministic algorithms and the chosen-only
+loss/gradients to FP32 tolerance. The [September 30 RTX 4090 comparison](reports/history-learner-cuda-2026-09-30.md)
+passed all eight new CUDA cases and matched default losses/actor gradients bitwise
+against origin/main on a frozen 2,047-row batch. Chosen-only improved the grouped
+learner probe about 10%, but complete PPO updates improved only 1.5%, within
+process variation; ungrouped updates showed no gain. This does not establish a
+reliable whole-update speedup or playing-strength improvement. Existing packed
+float-field offsets are preserved because odd-row alignment changes reduction
+bits. The chosen-only flag remains opt-in.
+
 ## Local development checks
 
 The [history-stack follow-up](reports/history-stack-2026-09-26.md) adds optional
