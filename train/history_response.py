@@ -17,14 +17,22 @@ RESPONSE_CLASSES = 1 + 2 * PLAY_ACTION_TYPES
 RESPONSE_SCHEMA = "first_opponent_before_observer_or_round_end_v1"
 
 
-def opponent_response_labels(buffer, store, rows: np.ndarray) -> np.ndarray:
-    """One target for each row's executed action; never label unchosen actions."""
+def opponent_response_labels(buffer, store, rows: np.ndarray,
+                             round_streams: bool = False) -> np.ndarray:
+    """One target for each row's executed action; never label unchosen actions.
+
+    ``round_streams``: rows of the planted-habit ROUND view cite their round's
+    own stream (``RoundEventStore.round_stream``); the labels are the same
+    events, since a response never crosses the round boundary.
+    """
     data = buffer.compact()
     labels = np.zeros(len(rows), np.int64)
     for index, row in enumerate(np.asarray(rows, np.int64).tolist()):
         if not buffer.trajectories[int(data["traj"][row])].complete:
             raise ValueError("response labels require a completed round")
-        stream = store.stream(int(data["env"][row]), int(data["match"][row]))
+        stream = (store.round_stream(int(data["env"][row]), int(data["match"][row]),
+                                     int(data["round"][row])) if round_streams else
+                  store.stream(int(data["env"][row]), int(data["match"][row])))
         tokens, rounds, phases = stream.arrays()
         prefix, seat, rnd = (int(data[k][row]) for k in ("prefix", "seat", "round"))
         if prefix >= stream.prefix:

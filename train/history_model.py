@@ -65,6 +65,10 @@ class HistoryPolicyConfig:
     obs_dim: int = int(gd.OBS_DIM)
     act_dim: int = int(gd.ACT_DIM)
     response_mode: str = "none"  # none | auxiliary | explicit
+    # Planted-habit ORACLE arm only (train/history_habit.py): the opponents'
+    # true style z enters the private query through a zero-initialised
+    # embedding. Recorded in checkpoints only when on (``config_record``).
+    style_input: bool = False
 
     def __post_init__(self) -> None:
         if min(self.width, self.layers, self.heads, self.max_rounds, self.action_width,
@@ -76,6 +80,15 @@ class HistoryPolicyConfig:
             raise ValueError("observation and action widths must match the engine")
         if self.response_mode not in ("none", "auxiliary", "explicit"):
             raise ValueError("response_mode must be none, auxiliary or explicit")
+
+
+def config_record(config: HistoryPolicyConfig) -> dict[str, Any]:
+    """``asdict(config)`` without ``style_input`` when it is off, so every
+    other checkpoint keeps its exact architecture record."""
+    record = asdict(config)
+    if not record["style_input"]:
+        del record["style_input"]
+    return record
 
 
 # ---- public stream ----------------------------------------------------------
@@ -285,6 +298,9 @@ class DecisionInputs:
     # count. The same integers the device would compute, without its sync.
     match_rank: Tensor | None = None
     match_slots: int = 0
+    # int64 [n], the opponents' style z in {-1, +1}; read only by an actor
+    # with ``config.style_input`` (planted-habit ORACLE arm).
+    style: Tensor | None = None
 
     @property
     def decisions(self) -> int:
@@ -393,6 +409,10 @@ class HistoryActor(nn.Module):
                 self.response_bridge = nn.Linear(RESPONSE_CLASSES,
                                                   width + config.action_width, bias=False)
                 nn.init.zeros_(self.response_bridge.weight)
+        if config.style_input:
+            # Last, so every other parameter keeps its initialisation and order.
+            self.style_embedding = nn.Embedding(3, width)
+            nn.init.zeros_(self.style_embedding.weight)
 
     # -- public side ----------------------------------------------------------
 
@@ -540,6 +560,10 @@ class HistoryActor(nn.Module):
         per-decision windows. A decision attends to positions ``<= prefix``.
         """
         query = self.private(inputs.obs.float()) + self.seat(inputs.seat)
+        if self.config.style_input:
+            if inputs.style is None:
+                raise ValueError("a style-input actor needs the opponents' style per decision")
+            query = query + self.style_embedding(inputs.style + 1)
         if self.config.window:
             stream, lengths = self._windowed(inputs)
             keys, values = self.kv_proj(stream).chunk(2, dim=-1)
@@ -787,7 +811,7 @@ def checkpoint_payload(actor: HistoryActor, critic: HistoryCritic, *, lineage: s
     return {
         "stage": STAGE, "lineage": str(lineage), "init": "random", "teacher": None,
         "token_schema": TOKEN_SCHEMA_VERSION, "seed": int(seed),
-        "model_config": asdict(actor.config), "model": actor.state_dict(),
+        "model_config": config_record(actor.config), "model": actor.state_dict(),
         "critic": critic.state_dict(), "optimizer": optimizer or {},
         "config": dict(config or {}, stage=STAGE, init="random", teacher=None),
         "progress": dict(progress or {}), "rng": dict(rng or {}),

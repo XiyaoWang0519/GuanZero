@@ -141,6 +141,27 @@ reliable whole-update speedup or playing-strength improvement. Existing packed
 float-field offsets are preserved because odd-row alignment changes reduction
 bits. The chosen-only flag remains opt-in.
 
+## Planted-habit diagnostic (September 30)
+
+Diagnostic only, with the three exceptions approved on September 30 (fixed
+styled opponent pack, continuation from a trained checkpoint, ORACLE reads the
+true style); see the [plan](reports/history-habit-diagnostic-plan-2026-09-29.md)
+and [phase 0](reports/history-habit-phase0-2026-09-30.md). `--habit-pack CKPT`
+replaces the snapshot population with a frozen copy of CKPT whose logits get
+`z * habit_strength * f(a)` on the `--habit-axis` feature, z = ±1 fixed per
+match; the learner is one team (two seats) per match. `--habit-init CKPT`
+continues from CKPT's weights and Adam moments at the configured learning rate
+(lineage `habit-<view>-...`, `habit_init` recorded). `--habit-view full|round|oracle`:
+ROUND reads a per-round stream from position 0 (`RoundEventStore`), ORACLE adds
+a zero-initialised style embedding to the private query
+(`HistoryPolicyConfig.style_input`, recorded in checkpoints only when on).
+Requires `snapshot_updates 0`, no merged snapshot inference, no private graphs
+for ORACLE. `eval/history_habit_eval.py` plays a checkpoint against the pack
+through the same collector. `tests/test_history_habit.py` checks, per view and
+with the production CPU flags, that collected and recomputed log-probabilities
+agree and that the first PPO minibatch starts at ratio 1. Not yet run on CUDA;
+no training has been run.
+
 ## Local development checks
 
 The [history-stack follow-up](reports/history-stack-2026-09-26.md) adds optional

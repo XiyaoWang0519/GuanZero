@@ -413,7 +413,8 @@ class SequenceRolloutBuffer:
                        streams: dict[tuple[int, int], PublicStream] | None = None, *,
                        fields: Sequence[str] = TRAINING_FIELDS,
                        extra: dict[str, np.ndarray] | None = None,
-                       length_groups: int = 0, width: int = 0) -> "TrainingBatch":
+                       length_groups: int = 0, width: int = 0,
+                       round_streams: bool = False) -> "TrainingBatch":
         """``decision_inputs`` plus the rows' ``fields`` (stored row data, or
         ``advantage``/``returns`` from ``finalize``) and ``extra`` host arrays,
         all uploaded with one packed copy. ``length_groups > 0`` plans the
@@ -423,10 +424,17 @@ class SequenceRolloutBuffer:
             raise ValueError("length groups need the actor width for their cost model")
         data = self.compact()
         rows = np.asarray(rows, np.int64)
-        keys = list(zip(data["env"][rows].tolist(), data["match"][rows].tolist()))
-        unique = list(dict.fromkeys(keys))
+        if round_streams:
+            # Planted-habit ROUND view: each row read its round's own stream.
+            keys = list(zip(data["env"][rows].tolist(), data["match"][rows].tolist(),
+                            data["round"][rows].tolist()))
+            unique = list(dict.fromkeys(keys))
+            picked = [store.round_stream(*key) for key in unique]
+        else:
+            keys = list(zip(data["env"][rows].tolist(), data["match"][rows].tolist()))
+            unique = list(dict.fromkeys(keys))
+            picked = [(streams or {}).get(key) or store.stream(*key) for key in unique]
         index = {key: i for i, key in enumerate(unique)}
-        picked = [(streams or {}).get(key) or store.stream(*key) for key in unique]
         prefix = data["prefix"][rows]
         for key, p in zip(keys, prefix.tolist()):
             if p > picked[index[key]].prefix:
@@ -633,7 +641,9 @@ class HistoryCollector:
                  batch_snapshot_policies: bool = False,
                  paged_cache: bool = False,
                  batch_snapshot_encoder: bool = False,
-                 page_span: bool = False) -> None:
+                 page_span: bool = False,
+                 round_streams: bool = False,
+                 row_style: Callable[[int, int], int] | None = None) -> None:
         self.env = env
         self.actor = actor
         self.store = store
@@ -659,6 +669,17 @@ class HistoryCollector:
             raise ValueError("Triton minimum batch must be positive")
         if private_graph_budget_mb < 1 or private_graph_policy_budget_mb < 1:
             raise ValueError("private graph memory budget must be positive")
+        # Planted-habit views of the learner (train/history_habit.py): ``round_streams``
+        # reads a RoundEventStore's current-round stream; ``row_style`` gives the
+        # opponents' z of a match for a style-input actor. Snapshot seats unchanged.
+        if round_streams and not hasattr(store, "round_stream"):
+            raise ValueError("round streams need a RoundEventStore")
+        if actor.config.style_input and row_style is None:
+            raise ValueError("a style-input learner needs the opponents' style per match")
+        if actor.config.style_input and private_graphs:
+            raise ValueError("private graphs do not capture the style input")
+        self.round_streams = bool(round_streams)
+        self.row_style = row_style
         self.kv_cache = kv_cache
         self.reuse_cache_lengths = reuse_cache_lengths
         self.private_graphs = private_graphs
@@ -711,6 +732,8 @@ class HistoryCollector:
             for identity in set(seats.tolist()):
                 active.setdefault(identity, set()).add(key)
         for identity in list(self.caches):
+            if identity == LEARNER and self.round_streams:
+                continue    # round keys; cleared before every learn anyway
             if identity not in active:
                 self.caches.pop(identity).clear()   # paged caches return their pages
             else:
@@ -893,7 +916,11 @@ class HistoryCollector:
         for i in range(n):
             seats = self.assignment(rows.env_id[i], rows.match_id[i])
             rows.identities[i] = seats[rows.seat[i]]
-            rows.prefix[i] = self.store.stream(rows.env_id[i], rows.match_id[i]).prefix
+            if self.round_streams and rows.identities[i] == LEARNER:
+                rows.prefix[i] = self.store.round_stream(
+                    rows.env_id[i], rows.match_id[i], rows.round_index[i]).prefix
+            else:
+                rows.prefix[i] = self.store.stream(rows.env_id[i], rows.match_id[i]).prefix
         rows.acting = (rows.identities == LEARNER) & (rows.phase == PLAY_PHASE)
         if (self.kv_cache or self.snapshot_heads is not None) and self._assignments_changed:
             self._prune_caches()
@@ -907,9 +934,18 @@ class HistoryCollector:
         play = r.phase == PLAY_PHASE
         for identity in np.unique(r.identities[play]):
             rows = np.flatnonzero((r.identities == identity) & play)
-            keys = list(zip(r.env_id[rows].tolist(), r.match_id[rows].tolist()))
-            unique = list(dict.fromkeys(keys))
-            streams = [self.store.stream(*k) for k in unique]
+            if self.round_streams and identity == LEARNER:
+                from train.history_habit import ROUND_KEY_STRIDE
+                triples = list(zip(r.env_id[rows].tolist(), r.match_id[rows].tolist(),
+                                   r.round_index[rows].tolist()))
+                keys = [(e, m * ROUND_KEY_STRIDE + k) for e, m, k in triples]
+                unique = list(dict.fromkeys(keys))
+                first = dict(zip(keys, triples))
+                streams = [self.store.round_stream(*first[k]) for k in unique]
+            else:
+                keys = list(zip(r.env_id[rows].tolist(), r.match_id[rows].tolist()))
+                unique = list(dict.fromkeys(keys))
+                streams = [self.store.stream(*k) for k in unique]
             group = _PolicyBatch(int(identity), rows, unique, streams,
                                  len(keys) == len(unique), int(r.counts[rows].max()))
             if self.batch_snapshot_policies and identity != LEARNER:
@@ -948,6 +984,11 @@ class HistoryCollector:
             match_index=fields[0], prefix=fields[1], obs=fields[2], seat=fields[3],
             cand=fields[4], offsets=fields[5], candidate_rows=fields[6],
             one_decision_per_stream=group.one_decision_per_stream)
+        if actor.config.style_input:
+            inputs.style = torch.as_tensor(
+                np.asarray([self.row_style(e, m) for e, m in
+                            zip(r.env_id[group.rows].tolist(), r.match_id[group.rows].tolist())],
+                           np.int64), device=self.device)
         inference = {}
         if self.private_graphs:
             inference["inference_log_probs"] = self._graph_log_probs(identity, actor, inputs, encoded)

@@ -50,7 +50,8 @@ from infra.history_artifacts import engine_digest, source_identity, sha256
 
 from train.ckpt import restore_rng, rng_state
 from train.history_model import (STAGE, TOKEN_SCHEMA_VERSION,
-                                 HistoryPolicyConfig, checkpoint_payload, count_parameters,
+                                 HistoryActor, HistoryCritic, HistoryPolicyConfig,
+                                 checkpoint_payload, config_record, count_parameters,
                                  fresh_player, load_history_checkpoint, save_history_checkpoint)
 from train.history_rollout import (HistoryCollector, MatchEventStore, SequenceRolloutBuffer)
 from train.history_population import HistoryPopulation
@@ -159,6 +160,14 @@ class HistoryPPOConfig:
     # data parallel (train/history_ddp.py): normalize advantages and weight the
     # loss over the union of the ranks' minibatches, as one minibatch would be
     ddp_global_minibatch: bool = False
+    # Planted-habit diagnostic (train/history_habit.py; approved exceptions, never
+    # the main lineage). habit_pack: frozen base checkpoint of the styled opponent
+    # pack (empty: off). habit_init: checkpoint the learner continues from.
+    habit_pack: str = ""
+    habit_axis: str = "lead_single"
+    habit_strength: float = 1.0
+    habit_view: str = "full"            # full | round | oracle
+    habit_init: str = ""
 
     def __post_init__(self) -> None:
         if self.rollout_graph_budget_mb < 1 or self.rollout_graph_policy_budget_mb < 1:
@@ -218,11 +227,31 @@ class HistoryPPOConfig:
             raise ValueError("prediction arms require a positive response_coef")
         if self.learner_chosen_response and self.response_mode != "auxiliary":
             raise ValueError("learner_chosen_response needs the auxiliary response mode")
+        from train.history_habit import HABIT_VIEWS, STYLE_AXES
+        if self.habit_pack:
+            if self.habit_axis not in STYLE_AXES or self.habit_view not in HABIT_VIEWS:
+                raise ValueError("unknown habit axis or view")
+            if not (math.isfinite(self.habit_strength) and self.habit_strength >= 0):
+                raise ValueError("habit_strength must be finite and nonnegative")
+            if (self.snapshot_updates or self.batch_snapshot_policies
+                    or self.batch_snapshot_policies_schedule or self.window):
+                raise ValueError("the habit pack replaces snapshots: snapshot_updates 0, no "
+                                 "merged snapshot inference, full history")
+            if self.habit_view == "oracle" and self.rollout_private_graphs:
+                raise ValueError("private graphs do not capture the oracle style input")
+        elif self.habit_init or self.habit_view != "full":
+            raise ValueError("habit_init and habit_view need habit_pack")
 
     def policy_config(self) -> HistoryPolicyConfig:
         return HistoryPolicyConfig(width=self.width, layers=self.layers, heads=self.heads,
                                    window=self.window, max_rounds=self.max_rounds,
-                                   response_mode=self.response_mode)
+                                   response_mode=self.response_mode,
+                                   style_input=bool(self.habit_pack)
+                                   and self.habit_view == "oracle")
+
+    @property
+    def habit_round(self) -> bool:
+        return bool(self.habit_pack) and self.habit_view == "round"
 
     @classmethod
     def from_payload(cls, config: dict[str, Any], **overrides: Any) -> "HistoryPPOConfig":
@@ -230,6 +259,48 @@ class HistoryPPOConfig:
         values = {k: v for k, v in config.items() if k in names}
         values.update(overrides)
         return cls(**values)
+
+
+def habit_init_player(config: HistoryPPOConfig
+                      ) -> tuple[HistoryActor, HistoryCritic, dict[str, Any]]:
+    """Planted-habit exception: continue from a trained history checkpoint.
+
+    Same architecture required; a style-input (ORACLE) actor adds only its
+    zero-initialised style embedding, so its initial policy equals the source.
+    """
+    base_actor, base_critic, payload = load_history_checkpoint(config.habit_init, "cpu")
+    policy = config.policy_config()
+    if config_record(base_actor.config) != config_record(
+            HistoryPolicyConfig(**{**asdict(policy), "style_input": False})):
+        raise ValueError("habit_init architecture differs from the configured one")
+    actor, critic = HistoryActor(policy), HistoryCritic(policy)
+    missing, unexpected = actor.load_state_dict(base_actor.state_dict(), strict=False)
+    if unexpected or set(missing) != ({"style_embedding.weight"} if policy.style_input else set()):
+        raise ValueError(f"habit_init weights do not fit: missing {missing}, extra {unexpected}")
+    critic.load_state_dict(base_critic.state_dict())
+    return actor, critic, payload
+
+
+def load_habit_optimizers(trainer: "HistoryTrainer", payload: dict[str, Any]) -> dict[str, Any]:
+    """Adam moments of the source checkpoint (new style embedding starts fresh);
+    learning rates stay the configured ones. Returns the init record."""
+    for name, optimizer in (("actor", trainer.actor_optimizer),
+                            ("critic", trainer.critic_optimizer)):
+        saved = copy.deepcopy(payload["optimizer"][name])
+        count = len(list(optimizer.param_groups[0]["params"]))
+        known = saved["param_groups"][0]["params"]
+        if len(saved["param_groups"]) != 1 or len(known) > count or (
+                name == "critic" and len(known) != count):
+            raise ValueError("habit_init optimizer state does not fit")
+        # Extra parameters (the style embedding) are registered last.
+        saved["param_groups"][0]["params"] = list(range(count))
+        lr = optimizer.param_groups[0]["lr"]
+        optimizer.load_state_dict(saved)
+        optimizer.param_groups[0]["lr"] = lr
+    return dict(path=str(trainer.config.habit_init),
+                sha256=sha256(Path(trainer.config.habit_init)),
+                lineage=payload.get("lineage"), update=payload["progress"]["updates"],
+                decisions=payload["progress"]["decisions"])
 
 
 def parse_arm_schedule(schedule: str) -> list[tuple[int, bool]]:
@@ -329,6 +400,9 @@ class HistoryTrainer:
             config = HistoryPPOConfig.from_payload(payload["config"], updates=config.updates,
                                                    **overrides)
             self.lineage = str(payload["lineage"])
+        elif config.habit_init:
+            actor, critic, init_payload = habit_init_player(config)
+            self.lineage = f"habit-{config.habit_view}-{config.seed}-{uuid.uuid4().hex[:8]}"
         else:
             actor, critic = fresh_player(config.policy_config(), config.seed)
             self.lineage = f"{STAGE}-{config.seed}-{uuid.uuid4().hex[:8]}"
@@ -381,12 +455,23 @@ class HistoryTrainer:
         self.progress: dict[str, Any] = {"updates": 0, "decisions": 0, "rounds": 0,
                                          "matches": 0, "samples": 0, "learner_rows": 0,
                                          "elapsed_seconds": 0.0}
-        self.population = HistoryPopulation(self.actor, self.lineage, config.seed + 17,
-                                            config.population_recent,
-                                            config.snapshot_probability,
-                                            config.population_archive_every,
-                                            config.population_archive_size,
-                                            config.population_archive_share)
+        if config.habit_pack:
+            from train.history_habit import HabitPack
+            self.population = HabitPack(self.actor, self.lineage, config.seed + 17,
+                                        config.habit_pack, config.habit_axis,
+                                        config.habit_strength, self.rollout_device)
+        else:
+            self.population = HistoryPopulation(self.actor, self.lineage, config.seed + 17,
+                                                config.population_recent,
+                                                config.snapshot_probability,
+                                                config.population_archive_every,
+                                                config.population_archive_size,
+                                                config.population_archive_share)
+        self.habit_init = None
+        if payload is None and config.habit_init:
+            self.habit_init = load_habit_optimizers(self, init_payload)
+        elif payload is not None:
+            self.habit_init = payload.get("habit_init")
         if payload is not None:
             self.actor_optimizer.load_state_dict(payload["optimizer"]["actor"])
             self.critic_optimizer.load_state_dict(payload["optimizer"]["critic"])
@@ -405,7 +490,11 @@ class HistoryTrainer:
         self.env = gd.VecEnv(num_envs=config.num_envs, num_threads=config.num_threads,
                              seed=config.seed + 1000 * self.progress["updates"],
                              log_public_actions=True, log_env_limit=config.num_envs)
-        self.store = MatchEventStore()
+        if config.habit_round:
+            from train.history_habit import RoundEventStore
+            self.store = RoundEventStore()
+        else:
+            self.store = MatchEventStore()
         self.buffer = SequenceRolloutBuffer()
         self.rollout_actor = (self.actor if self.rollout_device == self.device else
                               copy.deepcopy(self.actor).to(self.rollout_device).requires_grad_(False))
@@ -445,7 +534,10 @@ class HistoryTrainer:
                                 batch_snapshot_policies=self.snapshot_batching(),
                                 paged_cache=config.rollout_paged_cache,
                                 batch_snapshot_encoder=config.batch_snapshot_encoder,
-                                page_span=config.rollout_page_span)
+                                page_span=config.rollout_page_span,
+                                round_streams=config.habit_round,
+                                row_style=(self.population.style
+                                           if self.actor.config.style_input else None))
 
     def snapshot_batching(self) -> bool:
         """Merged snapshot inference for this update (the schedule's block, if any)."""
@@ -503,7 +595,8 @@ class HistoryTrainer:
     def write_manifest(self) -> None:
         manifest = {
             "stage": STAGE, "lineage": self.lineage, "init": "random", "teacher": None,
-            "config": asdict(self.config), "model_config": asdict(self.actor.config),
+            "config": asdict(self.config), "model_config": config_record(self.actor.config),
+            "habit": self.habit_record(),
             "engine_digest": self.run_identity["engine_digest"],
             "source": self.run_identity["source"],
             "source_changes": self.source_changes,
@@ -608,9 +701,25 @@ class HistoryTrainer:
                             ) -> tuple[torch.Tensor, torch.Tensor]:
         """Current-actor log-probability of each stored row's chosen candidate
         and the entropy over its full candidate set, from raw tokens."""
-        inputs, chosen = self.buffer.decision_inputs(rows, self.store, self.device, streams)
+        if self.config.habit_pack:
+            batch = self.buffer.training_batch(rows, self.store, self.device, streams, fields=(),
+                                               extra=self.habit_extra(rows),
+                                               round_streams=self.config.habit_round)
+            inputs, chosen = batch.inputs, batch.chosen
+            inputs.style = batch.fields.get("style")
+        else:
+            inputs, chosen = self.buffer.decision_inputs(rows, self.store, self.device, streams)
         log_probs = self.actor.candidate_log_probs(inputs)
         return log_probs[chosen], segment_entropy(log_probs, inputs.rows, inputs.decisions)
+
+    def habit_extra(self, rows: np.ndarray) -> dict[str, np.ndarray]:
+        """Per-row opponents' style for a style-input (ORACLE) learner."""
+        if not self.actor.config.style_input:
+            return {}
+        data = self.buffer.compact()
+        return {"style": np.asarray([self.population.style(e, m) for e, m in
+                                     zip(data["env"][rows].tolist(), data["match"][rows].tolist())],
+                                    np.int64)}
 
     def minibatches(self) -> Iterator[np.ndarray]:
         return self.buffer.minibatches(self.config.minibatch_matches, self.rng)
@@ -618,13 +727,15 @@ class HistoryTrainer:
     def minibatch_loss(self, rows: np.ndarray) -> dict[str, torch.Tensor]:
         cfg = self.config
         predict = cfg.response_mode != "none"
-        extra = ({"response_target": opponent_response_labels(self.buffer, self.store, rows)}
-                 if predict else None)
+        extra = ({"response_target": opponent_response_labels(
+            self.buffer, self.store, rows, round_streams=cfg.habit_round)} if predict else {})
+        extra.update(self.habit_extra(rows))
         # Actor inputs, stored row data and response targets: one packed upload.
-        batch = self.buffer.training_batch(rows, self.store, self.device, extra=extra,
+        batch = self.buffer.training_batch(rows, self.store, self.device, extra=extra or None,
                                            length_groups=cfg.learner_length_groups,
-                                           width=cfg.width)
+                                           width=cfg.width, round_streams=cfg.habit_round)
         inputs, chosen, row = batch.inputs, batch.chosen, batch.fields
+        inputs.style = row.get("style")
         response_stats = {}
         if not predict:
             all_log_probs = self.actor.candidate_log_probs(inputs)
@@ -896,6 +1007,16 @@ class HistoryTrainer:
             stream.write(json.dumps(line) + "\n")
         return line
 
+    def habit_record(self) -> dict[str, Any] | None:
+        """Planted-habit diagnostic identity: pack, view and initial checkpoint."""
+        if not self.config.habit_pack:
+            return None
+        return dict(diagnostic="planted-habit; never the main lineage",
+                    view=self.config.habit_view, pack=self.population.pack,
+                    init=self.habit_init,
+                    learner_seats="one team (two seats) per match; both other seats the pack",
+                    style_input=self.actor.config.style_input)
+
     def extend_metrics(self, line: dict[str, Any]) -> None:
         """Hook for subclasses to add fields to the metrics line before it is written."""
 
@@ -912,6 +1033,8 @@ class HistoryTrainer:
             optimizer={"actor": self.actor_optimizer.state_dict(),
                        "critic": self.critic_optimizer.state_dict()},
             config=asdict(self.config), progress=dict(self.progress), rng=rng)
+        if self.config.habit_pack:
+            payload.update(habit=self.habit_record(), habit_init=self.habit_init)
         payload.update(population=self.population.state_dict(), run_identity=self.run_identity,
                        resume_count=self.resume_count, source_changes=self.source_changes,
                        config_changes=self.config_changes)
@@ -1011,6 +1134,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--population-archive-every", type=int, default=0)
     parser.add_argument("--population-archive-size", type=int, default=16)
     parser.add_argument("--population-archive-share", type=float, default=0.5)
+    parser.add_argument("--habit-pack", default="",
+                        help="planted-habit diagnostic: frozen base checkpoint of the styled "
+                             "opponent pack (replaces snapshots; never the main lineage)")
+    parser.add_argument("--habit-axis", default="lead_single",
+                        choices=["pass", "bomb", "lead_single"])
+    parser.add_argument("--habit-strength", type=float, default=1.0)
+    parser.add_argument("--habit-view", default="full", choices=["full", "round", "oracle"])
+    parser.add_argument("--habit-init", default="",
+                        help="planted-habit diagnostic: checkpoint the learner continues from")
     parser.add_argument("--causal-sdpa", action="store_true")
     parser.add_argument("--rollout-kv-cache", action="store_true")
     parser.add_argument("--rollout-batched-attention", action="store_true")
