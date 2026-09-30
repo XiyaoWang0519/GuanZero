@@ -224,3 +224,30 @@ def test_pack_evaluation_runs_each_view(base_checkpoint, tmp_path, view):
     if view != "oracle":
         with pytest.raises(ValueError):
             evaluate(path, base_checkpoint, "oracle", "lead_single", 1.0, 1, 2, 4)
+
+
+CUDA_FLAGS = dict(PRODUCTION, rollout_wide_projection=True, rollout_triton_cache=True,
+                  rollout_triton_min_batch=4, rollout_device="cuda")
+
+
+@pytest.mark.parametrize("view", ["full", "round", "oracle"])
+def test_cuda_habit_views_start_on_policy(base_checkpoint, tmp_path, view):
+    """CUDA gate for the phase-1 runs: the run's rollout flags (Triton KV cache,
+    batched attention, length groups; no private graphs) keep collection and
+    the learner's recompute in agreement for every view, and an update runs."""
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA habit gate")
+    trainer = HistoryTrainer(habit_config(base_checkpoint, view, **CUDA_FLAGS), tmp_path,
+                             device="cuda")
+    trainer.collect()
+    rows = np.arange(len(trainer.buffer))
+    log_prob, _ = trainer.recompute_log_probs(rows)
+    np.testing.assert_allclose(log_prob.detach().cpu().numpy(),
+                               trainer.buffer.compact()["logp"][rows], atol=1e-4)
+    trainer.buffer.finalize(trainer.refresh_values())
+    stats = trainer.minibatch_loss(next(iter(trainer.minibatches())))
+    assert float(stats["ratio_deviation"]) < 1e-3
+    trainer.buffer.next_iteration()
+    line = trainer.update()
+    assert line["update_samples"] > 0 and np.isfinite(line["policy_loss"])
+    assert set(trainer.population.models) == {1, 2}
