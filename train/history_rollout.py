@@ -43,7 +43,8 @@ import numpy as np
 import torch
 
 from train.history_model import (HIDDEN_DIM, PLAY_PHASE, DecisionInputs, HistoryActor,
-                                 PublicStream, StreamBatch)
+                                 StreamBatch)
+from train.public_history import PublicStream
 from train.history_snapshot_batch import LAYOUT_FIELDS
 from train.history_transfers import download_tensors as _download_tensors, upload_arrays
 

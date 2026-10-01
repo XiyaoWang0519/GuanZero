@@ -39,7 +39,7 @@ from eval.danlm.bridge import (BIG_JOKER, NormalizedPlay, PlayIndex, card_ours_t
                                card_theirs_to_ours, decode_play, hand_ours_to_theirs,
                                level_ours_to_theirs, normalize_action)
 from eval.duplicate import bootstrap_interval
-from eval.history_policy import apply_and_observe, needs_history
+from eval.history_events import apply_and_observe, needs_history
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DANLM_ROOT = ROOT / ".work/external/DanLM"

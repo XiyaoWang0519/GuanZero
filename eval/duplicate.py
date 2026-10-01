@@ -8,7 +8,7 @@ from typing import Iterable, Sequence
 import gd
 import numpy as np
 
-from .history_policy import (apply_and_observe, explicit_passes, history_listeners,
+from .history_events import (apply_and_observe, explicit_passes, history_listeners,
                              resolve_forced_passes)
 from .policies import Policy, choose_action
 

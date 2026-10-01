@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from train.belief_memory import attach_memory, memory_collate  # noqa: E402
-from train.logs import TOKEN_DIM  # noqa: E402
+from train.public_history import TOKEN_DIM  # noqa: E402
 
 
 def tensor_bytes(value) -> int:

@@ -51,7 +51,7 @@ from torch.nn import functional as F
 
 from train.belief_model import matched_models
 from train.belief_probe import FlatBelief, collate, count_parameters, examples
-from train.logs import TOKEN_DIM
+from train.public_history import TOKEN_DIM
 from train.tribute_data import engine_source_digest
 
 

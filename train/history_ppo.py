@@ -58,7 +58,7 @@ from train.history_rollout import (HistoryCollector, MatchEventStore, SequenceRo
 from train.history_population import HistoryPopulation
 from train.history_response import RESPONSE_SCHEMA, opponent_response_labels
 from train.history_transfers import runtime_settings
-from train.logs import TOKEN_DIM
+from train.public_history import TOKEN_DIM
 
 def segment_entropy(log_probs: torch.Tensor, rows: torch.Tensor, count: int) -> torch.Tensor:
     """Entropy of each decision's full candidate distribution, ``[count]``."""
