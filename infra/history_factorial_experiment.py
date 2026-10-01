@@ -55,7 +55,7 @@ def lifecycle(kind: str) -> dict:
 
 
 def prepare(root: Path) -> dict:
-    from train.history_ppo import HistoryPPOConfig
+    from train.history_config import HistoryPPOConfig
 
     if root.exists():
         raise ValueError("refusing to overwrite an existing experiment")

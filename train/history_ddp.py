@@ -45,7 +45,9 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 
 from train import history_ppo
-from train.history_ppo import HistoryPPOConfig, HistoryTrainer, config_from_args
+from train.history_config import (HistoryPPOConfig, build_parser as base_parser,
+                                  config_from_args, parse_resume_overrides)
+from train.history_ppo import HistoryTrainer
 
 RANK_SEED_STRIDE = 7919
 RANK_ENV_STRIDE = 10_000_000
@@ -267,7 +269,7 @@ def _rank_main(rank: int, world: int, port: int, argv: list[str]) -> None:
                                     device=args.device, rank=rank, world_size=world,
                                     resume=args.resume,
                                     allow_source_change=args.allow_source_change,
-                                    resume_overrides=history_ppo.parse_resume_overrides(
+                                    resume_overrides=parse_resume_overrides(
                                         args.resume_set))
 
         def stop(signum, frame):
@@ -280,7 +282,7 @@ def _rank_main(rank: int, world: int, port: int, argv: list[str]) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = history_ppo.build_parser()
+    parser = base_parser()
     parser.description = ("History PPO over --world-size local ranks. --num-envs, "
                           "--num-threads and --minibatch-matches are per rank.")
     parser.add_argument("--world-size", type=int, default=1)

@@ -32,7 +32,7 @@ TESTS = [f'tests/test_history_{name}.py' for name in
 def prepare(root: Path, learner_device: str = 'cuda', rollout_device: str | None = None) -> dict:
     """Freeze three independent, bounded run kits; approval remains pending."""
     from eval.duplicate import generate_deals
-    from train.history_ppo import HistoryPPOConfig
+    from train.history_config import HistoryPPOConfig
     from train.history_response import RESPONSE_SCHEMA
 
     if learner_device not in ('cpu', 'cuda') or rollout_device not in (None, 'cpu', 'cuda'):
@@ -127,7 +127,8 @@ def training_device(manifest: dict) -> str:
 def arm(manifest: dict, name: str, output: Path) -> None:
     import torch
     from train.history_model import save_history_checkpoint
-    from train.history_ppo import HistoryPPOConfig, HistoryTrainer
+    from train.history_config import HistoryPPOConfig
+    from train.history_ppo import HistoryTrainer
     from infra.history_pilot import health
 
     torch.backends.cuda.matmul.allow_tf32 = False

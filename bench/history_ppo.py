@@ -16,7 +16,8 @@ import time
 
 import torch
 
-from train.history_ppo import HistoryPPOConfig, HistoryTrainer
+from train.history_config import HistoryPPOConfig
+from train.history_ppo import HistoryTrainer
 
 
 def assess(lines: list[dict], gpu_bytes: int) -> dict:
