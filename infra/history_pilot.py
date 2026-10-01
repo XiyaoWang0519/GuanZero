@@ -33,7 +33,7 @@ def write_json(path: Path, value) -> None:
 def prepare(kit: Path) -> None:
     import torch
     from eval.duplicate import generate_deals
-    from train.history_ppo import HistoryPPOConfig, REWARD_SEMANTICS
+    from train.history_config import HistoryPPOConfig, REWARD_SEMANTICS
 
     kit.mkdir(parents=True, exist_ok=True)
     payload, evaluation = kit / "payload", kit / "evaluation"
@@ -162,7 +162,8 @@ def health(lines: list[dict]) -> dict:
 def remote(manifest_path: Path, output: Path, deadline_epoch: float) -> None:
     import torch
     from infra.cpu_budget import host_facts
-    from train.history_ppo import HistoryPPOConfig, HistoryTrainer
+    from train.history_config import HistoryPPOConfig
+    from train.history_ppo import HistoryTrainer
 
     manifest = json.loads(manifest_path.read_text())
     if source_identity()["source_sha256"] != manifest["source"]["source_sha256"]:

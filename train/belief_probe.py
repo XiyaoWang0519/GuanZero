@@ -14,7 +14,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from train.logs import TOKEN_DIM
+from train.public_history import TOKEN_DIM
 from train.model import mlp
 
 

@@ -5,7 +5,7 @@ lineage's own directory; nothing is saved), then alternates blocks of updates
 between named arms INSIDE the running processes, so every arm sees the same
 host, histories and snapshot population. A resume restarts environments;
 switching arms in place does not. Arms are ``--resume-set`` style overrides
-(``train.history_ppo.RESUME_OVERRIDES``); on a switch every public KV cache,
+(``train.history_config.RESUME_OVERRIDES``); on a switch every public KV cache,
 private graph and stacked snapshot copy is dropped and rebuilt, and the first
 update of each block is excluded from the timings.
 
@@ -35,7 +35,7 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
-from train.history_ppo import RESUME_OVERRIDES, parse_resume_overrides
+from train.history_config import RESUME_OVERRIDES, parse_resume_overrides
 
 
 # Options ``switch`` applies to a live trainer. Other resume overrides (batch
@@ -171,7 +171,7 @@ def _rank(rank: int, world: int, port: int, args) -> None:
         arms = dict(parse_arm(text) for text in args.arm)
         # Build with the settings every arm shares; switch() applies the rest.
         fixed = {k: v for k, v in next(iter(arms.values())).items() if k not in SWITCHABLE}
-        from train.history_ppo import HistoryPPOConfig
+        from train.history_config import HistoryPPOConfig
         output = rank_output(args.output, rank)
         trainer = HistoryDDPTrainer(HistoryPPOConfig(updates=10**9), output, device=args.device,
                                     rank=rank, world_size=world, resume=args.resume,

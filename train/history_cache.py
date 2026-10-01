@@ -15,7 +15,7 @@ import torch
 from torch.nn import functional as F
 
 from train.belief_model import HistoryBelief
-from train.logs import TOKEN_DIM
+from train.public_history import TOKEN_DIM
 
 
 class PublicHistoryCache:

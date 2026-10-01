@@ -44,7 +44,7 @@ from torch import nn
 
 from train.belief_model import HistoryBelief
 from train.belief_probe import collate, count_parameters
-from train.logs import TOKEN_DIM
+from train.public_history import TOKEN_DIM
 
 
 class MemoryBelief(HistoryBelief):

@@ -1,136 +1,27 @@
-"""History-aware evaluation policy and the public event plumbing of the evaluators.
+"""History-aware evaluation policy over the full public match prefix.
 
-T3 of ``docs/STAGE_C_TODO.md``: every evaluator must deliver every public
-action, in order, to a history policy and reset its stream at the right
-boundary (DESIGN.md 7.3, 9.2). This module holds
-
-* ``HistoryPolicy``: a ``history_ppo`` checkpoint (``train.history_model``)
-  behind the scalar ``Policy`` protocol of ``eval.policies``. It keeps one
-  ``PublicStream`` per match it is playing; the round loops call
-  ``start_match()`` at a match boundary and ``observe()`` after every applied
-  action of every seat. ``select()`` refuses to act without an open match.
-* the scalar event source: ``apply_and_observe`` mirrors what ``VecEnv``
-  records in ``cpp/src/env.cpp`` (seat, phase and round index before the
-  action, the actor's public card count after it) from ``Engine.apply``, and
-  ``resolve_forced_passes`` replays the engine's auto-pass rule explicitly so
-  that engine-resolved passes reach the stream too. With these the stream
-  built by a scalar loop equals, token for token, the stream a
-  ``VecEnv(log_public_actions=True)`` produces (``tests/test_history_eval.py``).
-* ``HistoryStreamStore``: per-slot streams for ``eval.batched`` fed from
-  ``VecEnv.drain_public_actions()``, reset whenever a slot's ``match_id``
-  changes.
-
-Nothing here reads hidden hands, other seats' legal lists or the engine's
-private ``forced`` flag into a token: ``PublicStream`` only takes the public
-fields, and voluntary and forced passes get identical tokens.
+Evaluators deliver events and maintain match boundaries through
+``eval.history_events``. Its public names remain re-exported here for callers
+using the original evaluator interface. The policy reads only public events
+plus the acting seat's private observation and legal candidates.
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
-from dataclasses import dataclass
 from pathlib import Path
 import random
-from typing import Any, Iterable, Sequence
+from typing import Any, Sequence
 
 import gd
 import numpy as np
 
+from train.public_history import PublicStream
+from .history_events import (HistoryStreamStore, PublicEvent, apply_and_observe,
+                             explicit_passes, history_listeners, needs_history,
+                             resolve_forced_passes)
+
 PLAY = int(gd.Phase.Play)
-CARDS_LEFT_OFFSET = 4 + int(gd.ACT_DIM)   # token layout of train.logs.public_token
+CARDS_LEFT_OFFSET = 4 + int(gd.ACT_DIM)   # train.public_history.public_token layout
 
-
-# ---- events from Engine.apply -------------------------------------------------
-
-@dataclass(frozen=True)
-class PublicEvent:
-    """One public action as ``PublicStream.append`` accepts it.
-
-    The fields mirror ``gd.PublicActionEvent``: ``seat``, ``phase`` and
-    ``round_index`` describe the state before the action, ``cards_left`` is
-    the actor's public count after it. ``forced`` is diagnostic only; the
-    stream never stores it.
-    """
-    seat: int
-    phase: int
-    round_index: int
-    encoded_action: np.ndarray
-    cards_left: int
-    forced: bool = False
-    action: Any = None
-
-
-def needs_history(policy: object) -> bool:
-    return bool(getattr(policy, "needs_history", False))
-
-
-def history_listeners(policies: Iterable[object]) -> list:
-    """The distinct history policies of a lineup, in seat order."""
-    listeners: list = []
-    for policy in policies:
-        if needs_history(policy) and not any(policy is seen for seen in listeners):
-            listeners.append(policy)
-    return listeners
-
-
-def apply_and_observe(engine: gd.Engine, state: gd.MatchState, action: gd.Action,
-                      listeners: Sequence[Any] = (), forced: bool = False) -> PublicEvent:
-    """``engine.apply`` plus the public event VecEnv would log for it.
-
-    Seat, phase, round index and the encoded action are taken before the
-    action, the actor's remaining count after it, exactly like
-    ``VecEnv::Impl::apply``. Private tribute flags are zeroed. Every listener
-    gets the same event object.
-    """
-    seat = int(state.to_move)
-    phase = int(state.phase)
-    round_index = int(state.round_index)
-    encoded = np.array(engine.encode_action(action, state, seat), dtype=np.float32)
-    encoded[int(gd.ACT_TRIBUTE_FLAGS):] = 0.0
-    engine.apply(state, action)
-    event = PublicEvent(seat, phase, round_index, encoded, len(state.hand(seat)), forced, action)
-    for listener in listeners:
-        listener.observe(event)
-    return event
-
-
-def resolve_forced_passes(engine: gd.Engine, state: gd.MatchState,
-                          listeners: Sequence[Any] = ()) -> int:
-    """Apply the lone-pass replies the engine would auto-pass; returns their count.
-
-    This is ``Engine::skip_forced`` (``cpp/src/state.cpp``) done in Python so
-    the passes become events. The engine must have ``auto_pass`` off while a
-    history round runs (see ``explicit_passes``); with it on, ``apply`` would
-    already have skipped them and nothing is left to resolve.
-    """
-    count = 0
-    while int(state.phase) == PLAY:
-        actions = engine.legal_actions(state)
-        if len(actions) != 1 or not actions[0].is_pass:
-            break
-        apply_and_observe(engine, state, actions[0], listeners, forced=True)
-        count += 1
-    return count
-
-
-@contextmanager
-def explicit_passes(engine: gd.Engine, listeners: Sequence[Any]):
-    """Turn the engine's auto-pass off for a history round; restore afterwards.
-
-    Without listeners the engine is untouched, so the old scalar loops run
-    exactly as before.
-    """
-    if not listeners:
-        yield
-        return
-    saved = engine.auto_pass
-    engine.auto_pass = False
-    try:
-        yield
-    finally:
-        engine.auto_pass = saved
-
-
-# ---- the policy ---------------------------------------------------------------
 
 class HistoryPolicy:
     """A ``history_ppo`` actor behind the scalar ``Policy`` protocol.
@@ -150,7 +41,6 @@ class HistoryPolicy:
     def __init__(self, actor: Any, name: str = "history", device: str = "cpu",
                  sample: bool = False, heuristic_tribute: bool = True) -> None:
         import torch
-        from train.history_model import PublicStream
 
         self.actor = actor.to(device).eval()
         self.name = name
@@ -313,51 +203,3 @@ def load_history_policy(path: str | Path, device: str = "cpu", margin: float = 0
     policy.collection_seed = None
     policy.window = int(actor.config.window)
     return policy
-
-
-# ---- batched streams ----------------------------------------------------------
-
-class HistoryStreamStore:
-    """One ``PublicStream`` per VecEnv slot, fed from ``drain_public_actions()``.
-
-    A slot restarts a new match inside ``pending()`` with a new ``match_id``;
-    the store resets that slot's stream on the first event of the new match
-    and, because the first decision of a match precedes its first event,
-    also when ``sync`` sees a newer ``match_id`` on a pending row.
-    """
-
-    def __init__(self, num_envs: int) -> None:
-        from train.history_model import PublicStream
-
-        if num_envs < 1:
-            raise ValueError("a stream store needs at least one slot")
-        self.streams = [PublicStream() for _ in range(num_envs)]
-        self.ingested = 0
-
-    def __len__(self) -> int:
-        return len(self.streams)
-
-    def ingest(self, events: Iterable[Any]) -> int:
-        count = 0
-        for event in events:
-            stream = self.streams[int(event.env_id)]
-            if stream.match_id != int(event.match_id):
-                stream.reset(int(event.match_id))
-            stream.append(event)
-            count += 1
-        self.ingested += count
-        return count
-
-    def sync(self, env_ids: np.ndarray, match_ids: np.ndarray) -> None:
-        for env_id, match_id in zip(env_ids, match_ids):
-            stream = self.streams[int(env_id)]
-            if stream.match_id != int(match_id):
-                stream.reset(int(match_id))
-
-    def select_streams(self, env_ids: np.ndarray) -> tuple[list, np.ndarray]:
-        """The distinct streams of ``env_ids`` and each row's index into them."""
-        unique, match_index = np.unique(np.asarray(env_ids, dtype=np.int64), return_inverse=True)
-        return [self.streams[int(e)] for e in unique], match_index.reshape(-1)
-
-    def prefix(self, env_id: int) -> int:
-        return self.streams[int(env_id)].prefix
