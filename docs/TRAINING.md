@@ -79,6 +79,12 @@ cache. Evaluation reads only the frozen development deals through
 `python -m eval.history_frozen --freeze FILE --candidate FILE --output FILE`.
 It writes duplicate raw legs and same-seed full-match seat-swap pairs, with
 whole-pair bootstrap intervals. There is no final-test switch.
+`--backend batched --device mps` (or `cuda`) plays all deals and match slots in
+VecEnv waves with the collector's KV cache. On October 1 2026 it reproduced the
+scalar CPU reports of u2623, u3534, u4309 and u4650 exactly (1,024 deals, 256
+match pairs) in 2-3 minutes per checkpoint on the Mac's MPS, against 30-55 minutes
+scalar. Agreement within measurement error, not bit identity, is the acceptance
+bar for other devices; do not mix tables from different evaluators without it.
 
 The completed run selected eight environments: collection retained 67.2% of
 its speed as mean prefix grew from 166 to 754 tokens. It completed 200 updates
