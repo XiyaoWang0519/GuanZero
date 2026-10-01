@@ -307,8 +307,7 @@ def merged_encode(parts: list[tuple[PagedHistoryCache, list[tuple[int, int]], li
             raise ValueError("merged encoding needs one page pool and one prefill chunk")
         if not keys or len(keys) != len(streams) or len(set(keys)) != len(keys):
             raise ValueError("one distinct match key per public stream required")
-        if cache._signature() != cache.signature:
-            cache.clear()
+        cache.refresh_weights()
         for key, stream in zip(keys, streams):
             entries.append(cache._entry(key, stream))
             targets.append(stream.prefix + 1)

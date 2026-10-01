@@ -682,8 +682,9 @@ class HistoryTrainer:
                 if identity not in self.population.models:
                     del self.rollout_snapshots[identity]
         self.collector.policy_decisions.clear()
-        return self.collector.collect(self.config.steps_per_update,
-                                      version=self.progress["updates"])
+        with self.collector.frozen_weights():
+            return self.collector.collect(self.config.steps_per_update,
+                                          version=self.progress["updates"])
 
     @torch.no_grad()
     def refresh_values(self, chunk: int = 4096) -> np.ndarray:

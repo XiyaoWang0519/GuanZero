@@ -5,6 +5,7 @@ histories remain authoritative. Ordinary optimizer/load_state_dict changes
 invalidate the whole policy cache and the next query rebuilds from raw events.
 Private observations never enter the cache. PPO recomputation never uses it.
 """
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 import numpy as np
@@ -42,6 +43,7 @@ class BatchedHistoryCache:
         self.chunk_size = chunk_size
         self.entries: dict[tuple[int, int], Entry] = {}
         self.signature = self._signature()
+        self._frozen_signature: tuple | None = None
         self.encoded_tokens = 0
         self.rebuilds = 0
         # Keep only the last exact shape. Rebuilding after a bucket change avoids
@@ -70,6 +72,32 @@ class BatchedHistoryCache:
         self.entries.clear()
         self._position_cache = None
         self.signature = self._signature()
+
+    def refresh_weights(self) -> None:
+        """Check live parameters unless the caller owns a frozen interval."""
+        if self._frozen_signature is None and self._signature() != self.signature:
+            self.clear()
+
+    @contextmanager
+    def frozen_weights(self):
+        """Validate at both ends of an explicitly frozen collection interval.
+
+        The trainer owns its actor weights while collecting. Standalone encode
+        calls keep their per-call mutation checks. A mutation inside this scope
+        rejects the collected data and clears stale cache state on exit.
+        """
+        if self._frozen_signature is not None:
+            raise RuntimeError("nested frozen-weight intervals are unsupported")
+        self.refresh_weights()
+        self._frozen_signature = self.signature
+        try:
+            yield self
+        finally:
+            expected = self._frozen_signature
+            self._frozen_signature = None
+            if self._signature() != expected:
+                self.clear()
+                raise RuntimeError("actor weights changed during frozen collection")
 
     def prune(self, active: set[tuple[int, int]]) -> None:
         for key in list(self.entries):
@@ -142,8 +170,7 @@ class BatchedHistoryCache:
                 raise ValueError("uploaded lengths must be int64 [streams] on the actor device")
         elif host_lengths is not None:
             raise ValueError("host lengths require an uploaded lengths tensor")
-        if self._signature() != self.signature:
-            self.clear()
+        self.refresh_weights()
         entries = [self._entry(key, stream) for key, stream in zip(keys, streams)]
         while any(e.length < n for e, n in zip(entries, targets)):
             indices = [i for i, (e, n) in enumerate(zip(entries, targets)) if e.length < n]

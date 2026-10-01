@@ -34,6 +34,7 @@ consumes only seat, encoded action, cards left, round index and phase.
 """
 from __future__ import annotations
 
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Sequence
 import time
@@ -192,6 +193,7 @@ class SequenceRolloutBuffer:
         self.trajectories: list[Trajectory] = []
         self.open: dict[tuple[int, int], int] = {}
         self.data: dict[str, np.ndarray] | None = None
+        self._match_layout: dict[bool, tuple[list[tuple[int, ...]], np.ndarray]] = {}
         self.samples = np.zeros(0, np.int64)
         self.value = np.zeros(0, np.float32)
         self.reward = np.zeros(0, np.float32)
@@ -278,6 +280,7 @@ class SequenceRolloutBuffer:
     def compact(self) -> dict[str, np.ndarray]:
         """All rows as contiguous arrays (cached until the next append)."""
         if self.data is None:
+            self._match_layout.clear()
             if self.chunks:
                 data = {name: np.concatenate([c[name] for c in self.chunks])
                         for name in (*ROW_FIELDS, "obs", "hidden", "cand")}
@@ -348,11 +351,38 @@ class SequenceRolloutBuffer:
 
     def match_groups(self) -> dict[tuple[int, int], np.ndarray]:
         """Completed sample rows grouped by ``(env, match)``."""
+        keys, index = self._group_rows(self.samples)
+        order = np.argsort(index, kind="stable")
+        ends = np.cumsum(np.bincount(index, minlength=len(keys)))
+        return {key: self.samples[order[start:end]]
+                for key, start, end in zip(keys, np.r_[0, ends[:-1]], ends)}
+
+    def _group_rows(self, rows: np.ndarray, round_streams: bool = False
+                    ) -> tuple[list[tuple[int, ...]], np.ndarray]:
+        """Match keys in first-row order, and each row's index into those keys.
+
+        A trajectory belongs to one match and round. Factor those few keys
+        once per compact buffer, then gather integer IDs for later minibatches
+        instead of rebuilding Python tuples for every decision and epoch.
+        """
         data = self.compact()
-        groups: dict[tuple[int, int], list[int]] = {}
-        for row in self.samples.tolist():
-            groups.setdefault((int(data["env"][row]), int(data["match"][row])), []).append(row)
-        return {key: np.asarray(rows, np.int64) for key, rows in groups.items()}
+        layout = self._match_layout.get(round_streams)
+        if layout is None:
+            lookup: dict[tuple[int, ...], int] = {}
+            trajectory_ids = np.empty(len(self.trajectories), np.int64)
+            for i, trajectory in enumerate(self.trajectories):
+                key = (trajectory.env, trajectory.match)
+                if round_streams:
+                    key += (trajectory.round,)
+                trajectory_ids[i] = lookup.setdefault(key, len(lookup))
+            layout = (list(lookup), trajectory_ids[data["traj"]])
+            self._match_layout[round_streams] = layout
+        keys, row_ids = layout
+        ids, first, inverse = np.unique(row_ids[rows], return_index=True, return_inverse=True)
+        order = np.argsort(first)
+        remap = np.empty_like(order)
+        remap[order] = np.arange(len(order))
+        return [keys[i] for i in ids[order]], remap[inverse]
 
     def minibatches(self, matches_per_batch: int, rng: np.random.Generator
                     ) -> Iterator[np.ndarray]:
@@ -424,28 +454,22 @@ class SequenceRolloutBuffer:
             raise ValueError("length groups need the actor width for their cost model")
         data = self.compact()
         rows = np.asarray(rows, np.int64)
+        unique, match_index = self._group_rows(rows, round_streams)
         if round_streams:
             # Planted-habit ROUND view: each row read its round's own stream.
-            keys = list(zip(data["env"][rows].tolist(), data["match"][rows].tolist(),
-                            data["round"][rows].tolist()))
-            unique = list(dict.fromkeys(keys))
             picked = [store.round_stream(*key) for key in unique]
         else:
-            keys = list(zip(data["env"][rows].tolist(), data["match"][rows].tolist()))
-            unique = list(dict.fromkeys(keys))
             picked = [(streams or {}).get(key) or store.stream(*key) for key in unique]
-        index = {key: i for i, key in enumerate(unique)}
         prefix = data["prefix"][rows]
-        for key, p in zip(keys, prefix.tolist()):
-            if p > picked[index[key]].prefix:
-                raise ValueError("a stored row cites more history than its match has")
+        lengths = np.asarray([stream.prefix for stream in picked], np.int64)
+        if np.any(prefix > lengths[match_index]):
+            raise ValueError("a stored row cites more history than its match has")
         counts = data["cand_count"][rows]
         src = ragged_index(data["cand_start"][rows], counts)
         offsets = np.concatenate(([0], np.cumsum(counts))).astype(np.int64)
         named = {name: (getattr(self, name) if name in ("advantage", "returns") else data[name])[rows]
                  for name in fields}
         named.update(extra or {})
-        match_index = np.asarray([index[key] for key in keys], np.int64)
         # Batched match attention's layout, planned here instead of on the
         # device: each row's rank among its match's rows, in row order.
         order = np.argsort(match_index, kind="stable")
@@ -702,6 +726,8 @@ class HistoryCollector:
         self.temperature = float(temperature)
         self.epsilon = float(epsilon)
         self.caches = {}
+        self._frozen_stack: ExitStack | None = None
+        self._frozen_caches: set = set()
         self.policy_decisions: dict[int, int] = {}
         self.assignments: dict[tuple[int, int], np.ndarray] = {}
         self._assignments_changed = False
@@ -797,7 +823,29 @@ class HistoryCollector:
             else:
                 cache = BatchedHistoryCache(actor)
             self.caches[int(identity)] = cache
+        if self._frozen_stack is not None and cache not in self._frozen_caches:
+            self._frozen_stack.enter_context(cache.frozen_weights())
+            self._frozen_caches.add(cache)
         return cache
+
+    @contextmanager
+    def frozen_weights(self):
+        """Trainer-owned scope: weights stay fixed until collection finishes.
+
+        Register caches lazily, including newly encountered snapshot identities.
+        Retain exit checks for caches pruned or replaced during collection.
+        Custom collectors need not enter this scope: their policy callbacks may
+        still mutate weights between steps, with ordinary per-encode checks.
+        """
+        if self._frozen_stack is not None:
+            raise RuntimeError("nested frozen-weight collection is unsupported")
+        try:
+            with ExitStack() as stack:
+                self._frozen_stack = stack
+                yield self
+        finally:
+            self._frozen_stack = None
+            self._frozen_caches.clear()
 
     def transfer_metrics(self) -> dict:
         return {str(identity): dict(cache.copy_stats) for identity, cache in self.caches.items()

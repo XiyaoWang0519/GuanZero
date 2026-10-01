@@ -29,6 +29,9 @@ class EvalConfig:
     backend: str = "batched"
     batch_size: int = 256  # deals (two slots each), or full matches
     engine_threads: int = 1
+    # Full-history actors encode public streams incrementally (the collector's
+    # KV cache) instead of recomputing every prefix: equal up to floating point.
+    kv_cache: bool = False
 
     def __post_init__(self):
         if self.backend not in ("batched", "scalar"):
@@ -38,7 +41,7 @@ class EvalConfig:
 
     def metadata(self) -> dict:
         return {"backend": self.backend, "batch_size": self.batch_size,
-                "engine_threads": self.engine_threads,
+                "engine_threads": self.engine_threads, "kv_cache": self.kv_cache,
                 "sampling_note": "batched random draws differ from scalar; compare distributions"}
 
 
@@ -63,7 +66,8 @@ def gather(obs, cand, offsets, index):
 
 
 class BatchActor:
-    def __init__(self, policy: Policy, seed: int, streams: HistoryStreamStore | None = None):
+    def __init__(self, policy: Policy, seed: int, streams: HistoryStreamStore | None = None,
+                 kv_cache: bool = False):
         # Exact types avoid silently ignoring a custom subclass's select().
         if type(policy) not in (GreedyPolicy, RandomPolicy, StyledPolicy, ModelPolicy, PrunedPolicy,
                                 HistoryPolicy):
@@ -73,6 +77,10 @@ class BatchActor:
         self.policy = policy
         self.streams = streams
         self.rng = np.random.default_rng(seed % (1 << 64))
+        self.cache = None
+        if kv_cache and isinstance(policy, HistoryPolicy) and not policy.actor.config.window:
+            from train.history_inference import BatchedHistoryCache
+            self.cache = BatchedHistoryCache(policy.actor)
         self.generator = None
         if isinstance(policy, (ModelPolicy, HistoryPolicy)):
             self.generator = torch.Generator(device=policy.device).manual_seed(seed % (1 << 63))
@@ -102,9 +110,16 @@ class BatchActor:
             env_ids = np.asarray(batch.env_id)[rows]
             self.streams.sync(env_ids, np.asarray(batch.match_id)[rows])
             streams, match_index = self.streams.select_streams(env_ids)
+            encoded = stream_batch = None
+            if self.cache is not None:
+                keys = [(int(e), s.match_id) for e, s in zip(np.unique(env_ids), streams)]
+                # Entries of finished matches go; slots not deciding now keep theirs.
+                self.cache.prune({(e, s.match_id) for e, s in enumerate(self.streams.streams)})
+                stream_batch, encoded = self.cache.encode(keys, streams)
             inputs = policy.batch_inputs(streams, match_index, np.asarray(batch.seat)[rows],
-                                         obs, cand, off)
-            out[positions] = policy.act(inputs, self.generator if policy.sample else None)
+                                         obs, cand, off, stream_batch=stream_batch)
+            out[positions] = policy.act(inputs, self.generator if policy.sample else None,
+                                        encoded=encoded)
             return out
         device = policy.device
         o = torch.from_numpy(obs).to(device)
@@ -161,7 +176,7 @@ def _waves(items: Iterable, size: int):
         yield wave
 
 
-def _play(env, seats, seed, *, matches=False, max_rounds=1000, max_decisions=2000):
+def _play(env, seats, seed, *, matches=False, max_rounds=1000, max_decisions=2000, kv_cache=False):
     """Yield (slot, RoundScore, match_winner); ignore restarted/completed slots."""
     policies = []
     assignment = np.empty((len(seats), 4), np.int32)
@@ -173,7 +188,7 @@ def _play(env, seats, seed, *, matches=False, max_rounds=1000, max_decisions=200
     # One public stream per slot, shared by every history policy in the wave
     # (the events are public; each policy still encodes them with its own weights).
     streams = HistoryStreamStore(env.num_envs) if any(needs_history(p) for p in policies) else None
-    actors = [BatchActor(p, seed + i, streams) for i, p in enumerate(policies)]
+    actors = [BatchActor(p, seed + i, streams, kv_cache) for i, p in enumerate(policies)]
     if any(isinstance(p, StyledPolicy) for p in policies):
         styles = np.tile(np.asarray(gd.StyleParams.neutral().to_array(), np.float32), (len(seats), 4, 1))
         for e, lineup in enumerate(seats):
@@ -234,7 +249,8 @@ def play_duplicate_batch(deals: Iterable[gd.DealSpec], team: tuple[Policy, Polic
         seats = [(team[0], opponents[0], team[1], opponents[1]),
                  (opponents[0], team[0], opponents[1], team[1])] * len(wave)
         results = [None] * len(seats)
-        for e, score, _ in _play(env, seats, seed + len(scores), max_decisions=max_decisions):
+        for e, score, _ in _play(env, seats, seed + len(scores), max_decisions=max_decisions,
+                                 kv_cache=config.kv_cache):
             results[e] = score
         scores.extend(DuplicateScore(results[i], results[i + 1]) for i in range(0, len(results), 2))
     return scores
@@ -258,7 +274,8 @@ def play_matches_batch(agent: Policy, opponent: Policy, indices: Iterable[int], 
                  (opponent, agent, opponent, agent) for m in wave]
         rounds = [0] * len(wave)
         records = [None] * len(wave)
-        for e, score, winner in _play(env, seats, seed + wave[0], matches=True, max_rounds=max_rounds):
+        for e, score, winner in _play(env, seats, seed + wave[0], matches=True, max_rounds=max_rounds,
+                                      kv_cache=config.kv_cache):
             team = wave[e] % 2
             rounds[e] += 1
             totals["rounds"] += 1
@@ -275,3 +292,44 @@ def play_matches_batch(agent: Policy, opponent: Policy, indices: Iterable[int], 
                               "agent_won": won, "rounds": rounds[e]}
         totals["records"].extend(records)
     return totals
+
+
+def play_match_slots_batch(agent: Policy, opponent: Policy, slots: Iterable[tuple[int, int]],
+                           max_rounds: int = 1000, config: EvalConfig = EvalConfig()) -> list[dict]:
+    """One full match per ``(engine_seed, agent_team)`` slot, batched across slots.
+
+    Each returned dict equals ``play_matches(agent, opponent, [team], seed=engine_seed - team)``
+    for a deterministic pair of policies: the same engine seed and team, so pairs that
+    replay one seed with swapped teams batch into a single wave.
+    """
+    from .arena import MATCH_COUNTERS
+    if max_rounds < 1:
+        raise ValueError("match round bound must be positive")
+    history = needs_history(agent) or needs_history(opponent)
+    encode = isinstance(agent, ModelPolicy) or isinstance(opponent, ModelPolicy) or history
+    out = []
+    for wave in _waves(slots, config.batch_size):
+        env = gd.VecEnv(len(wave), config.engine_threads, wave[0][0] % (1 << 64), encode=encode,
+                        log_public_actions=history)
+        env.reset(match_seeds=[engine_seed for engine_seed, _ in wave])
+        seats = [(agent, opponent, agent, opponent) if team == 0 else
+                 (opponent, agent, opponent, agent) for _, team in wave]
+        totals = [dict(dict.fromkeys(MATCH_COUNTERS, 0), records=[]) for _ in wave]
+        for e, score, winner in _play(env, seats, wave[0][0], matches=True, max_rounds=max_rounds,
+                                      kv_cache=config.kv_cache):
+            engine_seed, team = wave[e]
+            t = totals[e]
+            t["rounds"] += 1
+            t["bankers"] += score.winning_team == team
+            t["double_wins"] += score.double_win(team)
+            t["opponent_doubles"] += score.double_win(1 - team)
+            t["awarded"] += score.gain if score.winning_team == team else 0
+            t["net"] += score.net_gain(team)
+            if winner >= 0:
+                won = winner == team
+                t["matches"] = 1
+                t["wins"] = int(won)
+                t["records"] = [{"seed": engine_seed, "agent_team": team, "winner": winner,
+                                 "agent_won": won, "rounds": t["rounds"]}]
+        out.extend(totals)
+    return out

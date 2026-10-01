@@ -14,7 +14,8 @@ import pytest
 import torch
 
 from eval.arena import play_matches
-from eval.batched import BatchActor, EvalConfig, play_duplicate_batch, play_matches_batch
+from eval.batched import (BatchActor, EvalConfig, play_duplicate_batch, play_match_slots_batch,
+                          play_matches_batch)
 from eval.duplicate import generate_deals, play_duplicate, play_duplicate_teams, play_round_seats
 from eval.history_policy import (HistoryPolicy, HistoryStreamStore, apply_and_observe,
                                  history_listeners, resolve_forced_passes)
@@ -281,6 +282,33 @@ def test_batched_history_play_equals_scalar_history_play(checkpoint):
     expected = [play_duplicate_teams(d, team, opponents, 101 + i) for i, d in enumerate(deals)]
     config = EvalConfig(batch_size=4, engine_threads=2)
     assert play_duplicate_batch(deals, team, opponents, 101, config) == expected
+
+
+def test_batched_match_slots_equal_scalar_seed_pairs(checkpoint):
+    policy = history_policy(checkpoint)
+    opponent = load_policy("styled:low-lead")
+    slots = [(seed, team) for seed in (11, 12) for team in (0, 1)]
+    expected = [play_matches(policy, opponent, [team], seed=seed - team, max_rounds=200)
+                for seed, team in slots]
+    got = play_match_slots_batch(policy, opponent, slots, max_rounds=200,
+                                 config=EvalConfig(batch_size=3))
+    assert got == expected
+
+
+def test_batched_kv_cache_plays_like_full_prefix(checkpoint):
+    # The KV cache equals full-prefix recomputation up to floating point; on
+    # this small actor the greedy choices, hence every result, coincide.
+    policy = history_policy(checkpoint)
+    opponent = load_policy("styled:low-lead")
+    deals = generate_deals(4, 21)
+    slots = [(seed, team) for seed in (31, 32) for team in (0, 1)]
+    for cached in (False, True):
+        config = EvalConfig(batch_size=3, kv_cache=cached)
+        result = (play_duplicate_batch(deals, (policy, policy), (opponent, opponent), 7, config),
+                  play_match_slots_batch(policy, opponent, slots, max_rounds=200, config=config))
+        if cached:
+            assert result == reference
+        reference = result
 
 
 def test_batched_slots_track_drained_events_and_restart_fresh(checkpoint, monkeypatch):
