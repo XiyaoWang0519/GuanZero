@@ -42,6 +42,15 @@ The old `infra/run_train.sh`/bootstrap path was built around MLP configs and
 preflight. Verify its actual module, config and lifecycle behavior before
 reusing it for the new trainer. No proposed config field is an implemented CLI.
 
+Run configuration and CLI parsing live in `train.history_config`, which uses
+only the standard library; `train.history_ppo` owns the training lifecycle.
+`train.public_history` owns the NumPy public token schema and raw match streams,
+shared by training, caches, evaluators and historical log writers.
+`eval.history_events` captures engine actions and manages evaluator streams;
+`eval.history_policy` runs the actor. `train.advantages` supplies the shared GAE
+calculation; history rollout keeps its round-terminal, zero-bootstrap interface.
+The original module imports remain available as compatibility exports.
+
 ## Verified bounded T4 workload
 
 The [T4 run contract](reports/history-t4-readiness-2026-09-26.md) records the
