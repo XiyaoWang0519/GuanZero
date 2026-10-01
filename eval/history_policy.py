@@ -236,15 +236,21 @@ class HistoryPolicy:
             offsets=torch.tensor([0, len(actions)], dtype=torch.long, device=self.device))
 
     def batch_inputs(self, streams: Sequence[Any], match_index: np.ndarray, seat: np.ndarray,
-                     obs: np.ndarray, cand: np.ndarray, offsets: np.ndarray):
-        """``DecisionInputs`` for several decisions over the given per-slot streams."""
+                     obs: np.ndarray, cand: np.ndarray, offsets: np.ndarray,
+                     stream_batch: Any = None):
+        """``DecisionInputs`` for several decisions over the given per-slot streams.
+
+        ``stream_batch`` replaces the uploaded streams when a KV cache already
+        encoded them (its metadata carries the lengths only).
+        """
         import torch
         from train.history_model import DecisionInputs, StreamBatch
 
         device = self.device
         prefix = np.asarray([streams[i].prefix for i in match_index], dtype=np.int64)
         return DecisionInputs(
-            streams=StreamBatch.from_streams(list(streams), device),
+            streams=(stream_batch if stream_batch is not None
+                     else StreamBatch.from_streams(list(streams), device)),
             match_index=torch.as_tensor(np.asarray(match_index, dtype=np.int64), device=device),
             prefix=torch.as_tensor(prefix, device=device),
             obs=torch.as_tensor(np.ascontiguousarray(obs), device=device),
@@ -252,12 +258,13 @@ class HistoryPolicy:
             cand=torch.as_tensor(np.ascontiguousarray(cand), device=device),
             offsets=torch.as_tensor(np.asarray(offsets, dtype=np.int64), device=device))
 
-    def act(self, inputs: Any, generator: Any = None) -> np.ndarray:
+    def act(self, inputs: Any, generator: Any = None, encoded: Any = None) -> np.ndarray:
         """Choice per decision (local candidate index), greedy or sampled."""
         import torch
 
         with torch.inference_mode():
-            choice, log_prob = self.actor.act(inputs, generator, greedy=not self.sample)
+            choice, log_prob = self.actor.act(inputs, generator, greedy=not self.sample,
+                                              encoded=encoded)
         if not torch.isfinite(log_prob).all():
             raise ValueError(f"{self.name}: policy must produce finite log-probabilities")
         return choice.cpu().numpy()
