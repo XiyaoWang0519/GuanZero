@@ -46,6 +46,7 @@ class BatchedHistoryCache:
         self._frozen_signature: tuple | None = None
         self.encoded_tokens = 0
         self.rebuilds = 0
+        self.appends = 0               # append passes (one batched encoder pass each)
         # Keep only the last exact shape. Rebuilding after a bucket change avoids
         # assuming that differently sized sin/cos kernels are bitwise identical.
         self._position_cache: tuple[tuple, Tensor, Tensor] | None = None
@@ -171,12 +172,7 @@ class BatchedHistoryCache:
                 raise ValueError("uploaded lengths must be int64 [streams] on the actor device")
         elif host_lengths is not None:
             raise ValueError("host lengths require an uploaded lengths tensor")
-        self.refresh_weights()
-        entries = [self._entry(key, stream) for key, stream in zip(keys, streams)]
-        while any(e.length < n for e, n in zip(entries, targets)):
-            indices = [i for i, (e, n) in enumerate(zip(entries, targets)) if e.length < n]
-            self._append([entries[i] for i in indices],
-                         [min(self.chunk_size, targets[i] - entries[i].length) for i in indices])
+        entries = self._extend(keys, streams, targets)
         # Power-of-two shapes reduce allocator churn without truncating history.
         memory = self._gather_memory(entries, self._memory_size(max(targets)))
         device = memory.device
@@ -186,6 +182,37 @@ class BatchedHistoryCache:
                                preuploaded_lengths if preuploaded_lengths is not None else
                                torch.tensor([n - 1 for n in targets], device=device))
         return metadata, memory
+
+    def _extend(self, keys: list[tuple[int, int]], streams: list[PublicStream],
+                targets: list[int]) -> list[Entry]:
+        """The streams' entries, encoded up to ``targets`` positions (BOS included)."""
+        self.refresh_weights()
+        entries = [self._entry(key, stream) for key, stream in zip(keys, streams)]
+        while any(e.length < n for e, n in zip(entries, targets)):
+            indices = [i for i, (e, n) in enumerate(zip(entries, targets)) if e.length < n]
+            self._append([entries[i] for i in indices],
+                         [min(self.chunk_size, targets[i] - entries[i].length) for i in indices])
+            self.appends += 1
+        return entries
+
+    @torch.no_grad()
+    def prefill(self, keys: list[tuple[int, int]], streams: list[PublicStream]) -> int:
+        """Bring the streams' entries up to date without building the padded
+        memory ``encode`` returns. Returns the number of append passes.
+
+        After a weight change every entry is rebuilt from BOS. Doing that for
+        all streams here takes one pass per prefill chunk; left to ``encode``,
+        each later call would run its own chunk passes for the streams it is
+        the first to touch. The entries hold the same function of the same
+        tokens either way; only the batch each token is encoded in differs.
+        """
+        if len(keys) != len(streams) or len(set(keys)) != len(keys):
+            raise ValueError("one distinct match key per public stream required")
+        if not keys:
+            return 0
+        before = self.appends
+        self._extend(keys, streams, [s.prefix + 1 for s in streams])
+        return self.appends - before
 
     def _memory_size(self, longest: int) -> int:
         """Padded length of the memory ``encode`` returns for ``longest`` positions."""

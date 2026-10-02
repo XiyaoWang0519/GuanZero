@@ -30,6 +30,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import copy
 from dataclasses import asdict, dataclass, fields
 import json
@@ -53,7 +54,8 @@ from train.history_model import (STAGE, TOKEN_SCHEMA_VERSION,
                                  HistoryActor, HistoryCritic, HistoryPolicyConfig,
                                  checkpoint_payload, config_record, count_parameters,
                                  fresh_player, load_history_checkpoint, save_history_checkpoint)
-from train.history_rollout import (HistoryCollector, MatchEventStore, SequenceRolloutBuffer)
+from train.history_rollout import (CollectStats, HistoryCollector, MatchEventStore,
+                                   SequenceRolloutBuffer, _PhaseTimer)
 from train.history_population import HistoryPopulation
 from train.history_response import RESPONSE_SCHEMA, opponent_response_labels
 from train.history_transfers import runtime_settings
@@ -110,7 +112,13 @@ class HistoryPPOConfig:
     # Paged cache: pad attention keys and the decision memory to the next 64-token
     # page instead of the next power of two. Tier 2 (FP32 reduction shapes change).
     rollout_page_span: bool = False
+    # Rebuild the learner's public KV cache for every current match at the start
+    # of each collection, all streams in one pass per prefill chunk, instead of
+    # stream by stream as learner rows first read them. Tier 2 (learner seats'
+    # FP32 reduction order: the same tokens are encoded in different batches).
+    rollout_prefill_learner_cache: bool = False
     profile_collection: bool = False   # synchronized phase timings; diagnostic only
+    profile_learn: bool = False        # the same for the PPO update's phases
     profile_collection_warmup: int = 0  # unprofiled updates of this process before profiling
     # All snapshot identities' play rows of a vector step in one merged actor call
     # (train/history_snapshot_batch.py): same distribution, FP32 reduction-order
@@ -189,6 +197,10 @@ class HistoryPPOConfig:
         if self.rollout_page_span and (not self.rollout_paged_cache
                                        or self.rollout_private_graphs):
             raise ValueError('rollout_page_span requires rollout_paged_cache and no private graphs')
+        if self.rollout_prefill_learner_cache and (not self.rollout_kv_cache
+                                                   or self.habit_view == "round"):
+            raise ValueError('rollout_prefill_learner_cache requires the match-keyed '
+                             'rollout_kv_cache')
         if self.batch_snapshot_encoder and not (
                 self.rollout_paged_cache
                 and (self.batch_snapshot_policies or self.batch_snapshot_policies_schedule)):
@@ -321,7 +333,8 @@ def parse_arm_schedule(schedule: str) -> list[tuple[int, bool]]:
 # the allocator cache trim (allocator timing only), the public KV cache storage
 # (Triton copies: same attention inputs; paged pool: bitwise on CPU, but SDPA reads
 # strided K/V views, so tier 2 on CUDA for learner seats too until the CUDA gate says
-# otherwise; private graphs replay the same kernels; page-padded spans are tier 2),
+# otherwise; private graphs replay the same kernels; page-padded spans and the
+# batched learner cache prefill are tier 2), the learn-phase profile (timing only),
 # the learner's length-grouped
 # encode and chosen-only auxiliary response head (tier 2: same loss, learner
 # float-order noise), plus snapshot_updates,
@@ -335,7 +348,8 @@ RESUME_OVERRIDES = frozenset({"num_envs", "num_threads", "minibatch_matches", "t
                               "rollout_trim_cuda_cache", "rollout_paged_cache",
                               "rollout_triton_cache", "batch_snapshot_encoder",
                               "learner_length_groups", "learner_chosen_response",
-                              "rollout_page_span",
+                              "rollout_page_span", "rollout_prefill_learner_cache",
+                              "profile_learn",
                               "rollout_private_graphs"})
 
 
@@ -378,6 +392,8 @@ class HistoryTrainer:
                  "behaviour_weight_mean", "behaviour_weight_cap_fraction")
     # (mean, std) of the whole data-parallel minibatch's advantages, else None
     advantage_moments: tuple[float, float] | None = None
+    # Profile mode (``profile_learn``): synchronized wall time per learn phase.
+    learn_mark = staticmethod(lambda name: None)
 
     def __init__(self, config: HistoryPPOConfig, output: str | Path, device: str = "cpu",
                  resume: str | Path | None = None, allow_source_change: bool = False,
@@ -537,7 +553,8 @@ class HistoryTrainer:
                                 page_span=config.rollout_page_span,
                                 round_streams=config.habit_round,
                                 row_style=(self.population.style
-                                           if self.actor.config.style_input else None))
+                                           if self.actor.config.style_input else None),
+                                prefill_learner_cache=config.rollout_prefill_learner_cache)
 
     def snapshot_batching(self) -> bool:
         """Merged snapshot inference for this update (the schedule's block, if any)."""
@@ -578,6 +595,51 @@ class HistoryTrainer:
                           allocated_after=torch.cuda.memory_allocated(device))
         record["seconds"] = time.perf_counter() - begin
         trims[point] = record
+
+    @contextmanager
+    def torch_profile(self, phase: str):
+        """Diagnostic, off by default: with ``GUANZERO_TORCH_PROFILE_DIR`` set, the
+        updates of this process listed in ``GUANZERO_TORCH_PROFILE_UPDATES`` (comma
+        separated, 0 = the first update after start or resume) run ``phase`` under
+        ``torch.profiler`` and write per-operator and per-kernel totals to
+        ``<dir>/rank-<r>-update-<n>-<phase>.json``. Nothing trained or sampled
+        changes; that update's timings include the profiler's overhead."""
+        directory = os.environ.get(TORCH_PROFILE_ENV)
+        index = int(self.progress["updates"]) - self.session_first_update
+        wanted = {int(item) for item in
+                  os.environ.get(TORCH_PROFILE_UPDATES_ENV, "").split(",") if item.strip()}
+        if not directory or index not in wanted:
+            yield
+            return
+        from torch.profiler import ProfilerActivity, profile
+        cuda = "cuda" in (self.device.type, self.rollout_device.type)
+        activities = [ProfilerActivity.CPU] + ([ProfilerActivity.CUDA] if cuda else [])
+        if cuda:
+            torch.cuda.synchronize()
+        begin = time.perf_counter()
+        with profile(activities=activities) as profiler:
+            yield
+            if cuda:
+                torch.cuda.synchronize()
+        seconds = time.perf_counter() - begin
+        pick = lambda event, *names: next((getattr(event, name) for name in names
+                                           if hasattr(event, name)), 0)
+        events = [dict(name=event.key, count=event.count,
+                       device=str(getattr(event, "device_type", "")).rsplit(".", 1)[-1],
+                       self_cpu_us=event.self_cpu_time_total, cpu_us=event.cpu_time_total,
+                       self_device_us=pick(event, "self_device_time_total",
+                                           "self_cuda_time_total"),
+                       device_us=pick(event, "device_time_total", "cuda_time_total"))
+                  for event in profiler.key_averages()]
+        events.sort(key=lambda row: -(row["self_device_us"] or row["self_cpu_us"]))
+        path = Path(directory) / (f"rank-{getattr(self, 'rank', 0)}-update-{index}-{phase}.json")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(dict(
+            phase=phase, update=int(self.progress["updates"]), process_update=index,
+            wall_seconds=seconds, cuda=cuda, torch=torch.__version__,
+            self_device_seconds=sum(row["self_device_us"] for row in events) / 1e6,
+            self_cpu_seconds=sum(row["self_cpu_us"] for row in events) / 1e6,
+            events=events), indent=1) + "\n")
 
     def collection_profiled(self) -> bool:
         """Profile this update's collection: on, after this process's warmup updates."""
@@ -637,6 +699,8 @@ class HistoryTrainer:
                           "rollout_paged_cache": self.collector.paged_cache,
                           "batch_snapshot_encoder": self.collector.batch_snapshot_encoder,
                           "rollout_page_span": self.collector.page_span,
+                          "rollout_prefill_learner_cache":
+                              self.collector.prefill_learner_cache,
                           "batch_snapshot_policies": self.config.batch_snapshot_policies,
                           "batch_snapshot_policies_schedule":
                               self.config.batch_snapshot_policies_schedule,
@@ -735,6 +799,7 @@ class HistoryTrainer:
         batch = self.buffer.training_batch(rows, self.store, self.device, extra=extra or None,
                                            length_groups=cfg.learner_length_groups,
                                            width=cfg.width, round_streams=cfg.habit_round)
+        self.learn_mark("batch_and_upload")
         inputs, chosen, row = batch.inputs, batch.chosen, batch.fields
         inputs.style = row.get("style")
         response_stats = {}
@@ -785,6 +850,7 @@ class HistoryTrainer:
             clip_fraction = ((ratio - 1).abs() > cfg.clip).float().mean()
             ratio_deviation = (ratio - 1).abs().max()
             weight_capped = (raw_weight > cfg.behaviour_weight_cap).float().mean()
+        self.learn_mark("forward")
         return {"policy_total": policy_total, "value_total": cfg.value_coef * value_loss,
                 "policy_loss": surrogate, "value_loss": value_loss, "entropy": entropy.mean(),
                 "approx_kl": approx_kl, "clip_fraction": clip_fraction,
@@ -834,6 +900,7 @@ class HistoryTrainer:
         terms = self.minibatch_loss(rows)
         terms["policy_total"].backward()
         terms["value_total"].backward()
+        self.learn_mark("backward")
         return terms
 
     def reduce_gradients(self, real: bool) -> int:
@@ -846,7 +913,11 @@ class HistoryTrainer:
 
     def learn(self) -> dict[str, Any]:
         cfg = self.config
+        phases = CollectStats()
+        mark = self.learn_mark = _PhaseTimer(phases, self.device, cfg.profile_learn)
         stats, samples = self.learn_summary()
+        stats["learn_phase_seconds"] = phases.phase_seconds
+        mark("values_and_gae")
         if samples == 0 and not self.collective():
             return stats
         # Loss terms and gradient norms stay on the device until one transfer per
@@ -862,8 +933,11 @@ class HistoryTrainer:
             for rows in self.epoch_batches(samples):
                 self.actor_optimizer.zero_grad(set_to_none=True)
                 self.critic_optimizer.zero_grad(set_to_none=True)
+                mark("minibatch_setup")
                 terms = self.backward_minibatch(rows)
-                if self.reduce_gradients(terms is not None) == 0:
+                reduced = self.reduce_gradients(terms is not None)
+                mark("gradient_reduce")
+                if reduced == 0:
                     continue
                 # Per-tensor encoder norms in one foreach call rather than a few
                 # kernels per tensor; squared and summed as before.
@@ -880,8 +954,10 @@ class HistoryTrainer:
                 actor, critic = host[0], host[1]
                 if not (math.isfinite(actor) and math.isfinite(critic)):
                     raise FloatingPointError("non-finite gradient; stopping before the step")
+                mark("norms_clip_and_stats")
                 self.actor_optimizer.step()
                 self.critic_optimizer.step()
+                mark("optimizer")
                 steps += 1
                 if terms is None:
                     continue
@@ -927,7 +1003,8 @@ class HistoryTrainer:
             if self.collector.release_snapshot_graphs():
                 self.trim_cuda_cache("graphs_released", trims)
         t0 = time.perf_counter()
-        collected = self.collect()
+        with self.torch_profile("collect"):
+            collected = self.collect()
         if self.device.type == "cuda":
             torch.cuda.synchronize(self.device)
         t1 = time.perf_counter()
@@ -935,7 +1012,8 @@ class HistoryTrainer:
         if trim:
             self.trim_cuda_cache("after_collect", trims)
         t1_learn = time.perf_counter()
-        stats = self.learn()
+        with self.torch_profile("learn"):
+            stats = self.learn()
         if self.device.type == "cuda":
             torch.cuda.synchronize(self.device)
         t2 = time.perf_counter()
@@ -1063,6 +1141,8 @@ class HistoryTrainer:
 # ---- diagnostics ----------------------------------------------------------------
 
 CPROFILE_ENV = "GUANZERO_CPROFILE_DIR"
+TORCH_PROFILE_ENV = "GUANZERO_TORCH_PROFILE_DIR"
+TORCH_PROFILE_UPDATES_ENV = "GUANZERO_TORCH_PROFILE_UPDATES"
 CPROFILE_BUILTINS_ENV = "GUANZERO_CPROFILE_BUILTINS"
 
 
@@ -1184,7 +1264,13 @@ def build_parser() -> argparse.ArgumentParser:
                         metavar="auto|true|false",
                         help="torch.cuda.empty_cache() after collect and after learn "
                              "(allocator timing only); auto follows the merged-snapshot arm")
+    parser.add_argument("--rollout-prefill-learner-cache", action="store_true",
+                        help="rebuild the learner's public KV cache for all current matches "
+                             "at the start of each collection (FP32; learner seats' "
+                             "reduction order differs)")
     parser.add_argument("--profile-collection", action="store_true")
+    parser.add_argument("--profile-learn", action="store_true",
+                        help="synchronized wall time per learn phase (learn_phase_seconds)")
     parser.add_argument("--profile-collection-warmup", type=int, default=0,
                         help="with --profile-collection: unprofiled updates of this process "
                              "before profiling starts (resident snapshots and histories "

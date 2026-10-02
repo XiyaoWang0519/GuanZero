@@ -46,3 +46,32 @@ def test_rejects_duplicate_arm_names(tmp_path):
     with pytest.raises(SystemExit):
         history_arms.main(["--resume", str(tmp_path / "x.pt"), "--output", str(tmp_path / "o"),
                            "--arm", "a=", "--arm", "a=learner_length_groups=2"])
+
+
+def test_profile_arms_report_phases_and_profiled_updates_are_excluded(tmp_path, monkeypatch):
+    from train.history_ppo import TORCH_PROFILE_ENV, TORCH_PROFILE_UPDATES_ENV
+    source = tmp_path / "source"
+    config = HistoryPPOConfig(width=32, layers=2, heads=4, num_envs=4, steps_per_update=24,
+                              snapshot_updates=1, rollout_kv_cache=True, causal_sdpa=True,
+                              batch_snapshot_policies=True, updates=3)
+    HistoryTrainer(config, source).run()
+    monkeypatch.setenv(TORCH_PROFILE_ENV, str(tmp_path / "kernels"))
+    monkeypatch.setenv(TORCH_PROFILE_UPDATES_ENV, "3")
+    output = tmp_path / "arms"
+    assert history_arms.main(["--resume", str(source / "latest.pt"), "--output", str(output),
+                              "--device", "cpu", "--warmup", "1", "--blocks", "1",
+                              "--block-updates", "4", "--arm", "base=",
+                              "--arm", "prof=profile_collection=true,profile_learn=true,"
+                                       "rollout_prefill_learner_cache=true"]) == 0
+    rows = [json.loads(line) for line in (output / "arms.jsonl").open()]
+    assert [r["profiled"] for r in rows] == [False, False, False, True] + [False] * 5
+    assert all(r["encode_passes"] > 0 for r in rows)
+    assert (tmp_path / "kernels" / "rank-0-update-3-learn.json").exists()
+    results = json.loads((output / "summary.json").read_text())["results"]
+    # base continues the warmup, so its block has no excluded first update: 4
+    # updates minus the profiled one. prof: 4 minus the first after the switch.
+    assert results["base"]["settled_updates"] == 3 and results["prof"]["settled_updates"] == 3
+    assert not results["base"]["learn_phase_seconds"]
+    assert "learner_prefill" in results["prof"]["collect_phase_seconds"]
+    assert {"forward", "backward"} <= set(results["prof"]["learn_phase_seconds"])
+    assert len(results["prof"]["wall_seconds"]) == 3

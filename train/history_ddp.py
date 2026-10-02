@@ -173,6 +173,7 @@ class HistoryDDPTrainer(HistoryTrainer):
         if self.world_size == 1:
             return super().backward_minibatch(rows)
         scale = self.global_minibatch(rows)
+        self.learn_mark("advantage_reduce")
         if rows is None:
             return None
         try:
@@ -181,6 +182,7 @@ class HistoryDDPTrainer(HistoryTrainer):
             self.advantage_moments = None
         (scale * terms["policy_total"]).backward()
         (scale * terms["value_total"]).backward()
+        self.learn_mark("backward")
         return terms
 
     def update(self) -> dict[str, Any]:

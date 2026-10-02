@@ -7,7 +7,10 @@ host, histories and snapshot population. A resume restarts environments;
 switching arms in place does not. Arms are ``--resume-set`` style overrides
 (``train.history_ppo.RESUME_OVERRIDES``); on a switch every public KV cache,
 private graph and stacked snapshot copy is dropped and rebuilt, and the first
-update of each block is excluded from the timings.
+update of each block is excluded from the timings, and so is an update that
+ran under the kernel profiler (``GUANZERO_TORCH_PROFILE_UPDATES``). Arms that
+switch ``profile_collection`` / ``profile_learn`` on report their synchronized
+phase times; those arms are for the breakdown, not for the speed ratio.
 
 Only speed is measured. Tier 2 options change float order, so the arms'
 trajectories diverge; no strength claim follows from this tool.
@@ -35,7 +38,8 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
-from train.history_ppo import RESUME_OVERRIDES, parse_resume_overrides
+from train.history_ppo import (RESUME_OVERRIDES, TORCH_PROFILE_ENV, TORCH_PROFILE_UPDATES_ENV,
+                               parse_resume_overrides)
 
 
 # Options ``switch`` applies to a live trainer. Other resume overrides (batch
@@ -45,7 +49,8 @@ SWITCHABLE = frozenset({"rollout_paged_cache", "rollout_page_span", "rollout_tri
                         "rollout_graph_budget_mb", "rollout_graph_policy_budget_mb",
                         "batch_snapshot_encoder", "batch_snapshot_policies",
                         "learner_length_groups", "learner_chosen_response",
-                        "rollout_trim_cuda_cache"})
+                        "rollout_trim_cuda_cache", "rollout_prefill_learner_cache",
+                        "profile_collection", "profile_learn"})
 
 
 def check_arms(arms: dict[str, dict]) -> None:
@@ -75,7 +80,7 @@ def switch(trainer, origin, settings: dict) -> None:
     for cache in collector.caches.values():
         cache.clear()
     collector.caches.clear()
-    collector.kv_pool = None
+    collector.kv_pool = collector.learner_pool = None
     for graph in collector.decision_graphs.values():
         graph.clear()
     collector.decision_graphs.clear()
@@ -88,6 +93,7 @@ def switch(trainer, origin, settings: dict) -> None:
     collector.private_graph_budget_bytes = config.rollout_graph_budget_mb << 20
     collector.private_graph_policy_budget_bytes = config.rollout_graph_policy_budget_mb << 20
     collector.batch_snapshot_encoder = config.batch_snapshot_encoder
+    collector.prefill_learner_cache = config.rollout_prefill_learner_cache
     if trainer.device.type == "cuda":
         torch.cuda.synchronize(trainer.device)
         torch.cuda.empty_cache()
@@ -108,15 +114,29 @@ def measure(trainer, plan: list[str], arms: dict[str, dict], rank: int, log: Pat
     rows, current, origin = [], None, trainer.config
     for settings in arms.values():
         replace(origin, **settings)    # every arm is valid on this lineage before warmup
+    profiled = ({int(item) for item in os.environ.get(TORCH_PROFILE_UPDATES_ENV, "").split(",")
+                 if item.strip()} if os.environ.get(TORCH_PROFILE_ENV) else set())
+    appends = 0
     for index, name in enumerate(plan):
         first = name != current
         if first:
             switch(trainer, origin, arms[name])
             current = name
+            appends = 0                 # the caches and their counters are new
         started = time.perf_counter()
         line = trainer.update()
         wall = time.perf_counter() - started
+        passes = line["collection_cache"].get("appends", 0)
         row = dict(update=index, arm=name, first_of_block=first, wall_seconds=wall,
+                   profiled=index in profiled,
+                   # Encode passes of this update. Caches of identities pruned during
+                   # the update take their counts with them, so this is a lower bound.
+                   encode_passes=passes - appends,
+                   resident_snapshots=line["population"].get("resident_snapshots"),
+                   collect_phase_seconds=line["collection_phase_seconds"],
+                   collect_group_phase_seconds=line["collection_group_phase_seconds"],
+                   learn_phase_seconds=line.get("learn_phase_seconds", {}),
+                   trim_seconds=line["cuda_trim_seconds"],
                    collect_seconds=line.get("global_collect_seconds", line["collect_seconds"]),
                    learn_seconds=line.get("global_learn_seconds", line["learn_seconds"]),
                    decisions=line.get("global_step_decisions", line["step_decisions"]),
@@ -125,6 +145,7 @@ def measure(trainer, plan: list[str], arms: dict[str, dict], rank: int, log: Pat
                    peak_reserved_bytes=line["cuda_peak_reserved_bytes"],
                    peak_allocated_bytes=line["cuda_peak_allocated_bytes"],
                    cache=line["collection_cache"])
+        appends = passes
         rows.append(row)
         if log is not None:
             with log.open("a") as stream:
@@ -138,12 +159,19 @@ def measure(trainer, plan: list[str], arms: dict[str, dict], rank: int, log: Pat
 def summarize(rows: list[dict], warmup: int) -> dict:
     result = {}
     for name in dict.fromkeys(r["arm"] for r in rows[warmup:]):
-        settled = [r for r in rows[warmup:] if r["arm"] == name and not r["first_of_block"]]
+        settled = [r for r in rows[warmup:] if r["arm"] == name and not r["first_of_block"]
+                   and not r.get("profiled")]
         if not settled:
             continue
         pick = lambda key: [r[key] for r in settled]
+        phases = lambda key: {phase: statistics.mean(r[key].get(phase, 0.0) for r in settled)
+                              for phase in dict.fromkeys(p for r in settled for p in r[key])}
         result[name] = dict(
             settled_updates=len(settled),
+            wall_seconds=pick("wall_seconds"),
+            encode_passes_median=statistics.median(pick("encode_passes")),
+            collect_phase_seconds=phases("collect_phase_seconds"),
+            learn_phase_seconds=phases("learn_phase_seconds"),
             wall_median=statistics.median(pick("wall_seconds")), wall_min=min(pick("wall_seconds")),
             collect_median=statistics.median(pick("collect_seconds")),
             learn_median=statistics.median(pick("learn_seconds")),
@@ -229,9 +257,20 @@ def main(argv: list[str] | None = None) -> int:
              for r in range(args.world_size)]
     for process in ranks:
         process.start()
-    for process in ranks:
-        process.join()
-    return 0 if all(p.exitcode == 0 for p in ranks) else 1
+    # If any rank fails (an out-of-memory arm, say), the others would block in a
+    # collective: stop them all. arms.jsonl keeps the updates measured so far.
+    failed = False
+    while any(p.is_alive() for p in ranks):
+        for process in ranks:
+            process.join(timeout=1.0)
+            if process.exitcode not in (None, 0) and not failed:
+                failed = True
+                print(f"rank process exited with {process.exitcode}; terminating all ranks",
+                      file=sys.stderr, flush=True)
+                for other in ranks:
+                    if other.is_alive():
+                        other.kill()
+    return 0 if not failed and all(p.exitcode == 0 for p in ranks) else 1
 
 
 if __name__ == "__main__":

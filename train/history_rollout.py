@@ -647,7 +647,12 @@ class HistoryCollector:
     call and ``paged_cache``) also encodes those identities' public streams in
     one pass per step over stacked encoder weights
     (``train.history_paged_cache.merged_encode``), again tier 2 on snapshot
-    seats only.
+    seats only. ``prefill_learner_cache`` (opt-in, with the KV cache) rebuilds
+    the learner's public cache for every current match at the start of
+    ``collect`` in one batched pass per prefill chunk; without it each stream
+    is rebuilt by the first step whose learner row reads it, in passes of its
+    own. Same function of the same tokens in different batches: FP32
+    reduction-order noise on learner seats (tier 2).
     """
 
     def __init__(self, env: Any, actor: HistoryActor, store: MatchEventStore,
@@ -667,7 +672,8 @@ class HistoryCollector:
                  batch_snapshot_encoder: bool = False,
                  page_span: bool = False,
                  round_streams: bool = False,
-                 row_style: Callable[[int, int], int] | None = None) -> None:
+                 row_style: Callable[[int, int], int] | None = None,
+                 prefill_learner_cache: bool = False) -> None:
         self.env = env
         self.actor = actor
         self.store = store
@@ -702,6 +708,9 @@ class HistoryCollector:
             raise ValueError("a style-input learner needs the opponents' style per match")
         if actor.config.style_input and private_graphs:
             raise ValueError("private graphs do not capture the style input")
+        if prefill_learner_cache and (not kv_cache or round_streams):
+            raise ValueError("learner cache prefill requires the match-keyed KV cache")
+        self.prefill_learner_cache = bool(prefill_learner_cache)
         self.round_streams = bool(round_streams)
         self.row_style = row_style
         self.kv_cache = kv_cache
@@ -714,7 +723,8 @@ class HistoryCollector:
         self.triton_cache = triton_cache
         self.triton_min_batch = triton_min_batch
         self.paged_cache = paged_cache
-        self.kv_pool = None             # shared by every identity's paged cache
+        self.kv_pool = None             # shared by the snapshot identities' paged caches
+        self.learner_pool = None        # the learner's own pages, returned before each learn
         self.batch_snapshot_encoder = bool(batch_snapshot_encoder)
         self.page_span = bool(page_span)
         self.batch_snapshot_policies = bool(batch_snapshot_policies)
@@ -740,17 +750,22 @@ class HistoryCollector:
         metrics = dict(bytes=sum(c.bytes for c in self.caches.values()),
                        entries=sum(len(c.entries) for c in self.caches.values()),
                        encoded_tokens=sum(c.encoded_tokens for c in self.caches.values()),
-                       rebuilds=sum(c.rebuilds for c in self.caches.values()))
-        if self.kv_pool is not None:
-            metrics.update(pool_reserved_bytes=self.kv_pool.reserved_bytes,
-                           pool_used_pages=self.kv_pool.used_pages,
-                           pool_pages=self.kv_pool.pages, pool_grows=self.kv_pool.grows)
+                       rebuilds=sum(c.rebuilds for c in self.caches.values()),
+                       appends=sum(c.appends for c in self.caches.values()))
+        pools = [pool for pool in (self.kv_pool, self.learner_pool) if pool is not None]
+        if pools:
+            metrics.update(pool_reserved_bytes=sum(pool.reserved_bytes for pool in pools),
+                           pool_used_pages=sum(pool.used_pages for pool in pools),
+                           pool_pages=sum(pool.pages for pool in pools),
+                           pool_grows=sum(pool.grows for pool in pools))
         return metrics
 
     def invalidate_learner_cache(self) -> None:
         # Release before PPO allocates activations; rebuild with updated weights.
         if LEARNER in self.caches:
             self.caches[LEARNER].clear()
+        if self.learner_pool is not None:
+            self.learner_pool.reset()
 
     def _prune_caches(self) -> None:
         active = {}
@@ -814,9 +829,10 @@ class HistoryCollector:
                 cache.clear()
             if self.paged_cache:
                 from train.history_paged_cache import KVPagePool, PagedHistoryCache
-                if self.kv_pool is None:
-                    self.kv_pool = KVPagePool.for_actor(actor)
-                cache = PagedHistoryCache(actor, self.kv_pool, page_span=self.page_span)
+                name = "learner_pool" if int(identity) == LEARNER else "kv_pool"
+                if getattr(self, name) is None:
+                    setattr(self, name, KVPagePool.for_actor(actor))
+                cache = PagedHistoryCache(actor, getattr(self, name), page_span=self.page_span)
             elif self.triton_cache:
                 from train.history_triton_cache import TritonHistoryCache
                 cache = TritonHistoryCache(actor, min_batch=self.triton_min_batch)
@@ -846,6 +862,19 @@ class HistoryCollector:
         finally:
             self._frozen_stack = None
             self._frozen_caches.clear()
+
+    @torch.no_grad()
+    def _prefill_learner(self, stats: CollectStats) -> None:
+        """Encode every current match with a learner seat up to its drained
+        events, all streams together. Events still pending in the engine are
+        appended by the steps, as always."""
+        mark = _PhaseTimer(stats, self.device, self.profile)
+        keys = [key for key, seats in self.assignments.items()
+                if (seats == LEARNER).any() and key in self.store.streams]
+        if keys:
+            self._cache(LEARNER, self.actor).prefill(keys, [self.store.streams[key]
+                                                             for key in keys])
+        mark("learner_prefill", "learner")
 
     def transfer_metrics(self) -> dict:
         return {str(identity): dict(cache.copy_stats) for identity, cache in self.caches.items()
@@ -1158,6 +1187,10 @@ class HistoryCollector:
                     validate_encoder(self.actor)
             # Snapshot seats no longer use private graphs; free their budget.
             self.release_snapshot_graphs()
+        if self.prefill_learner_cache:
+            if not self.kv_cache or self.round_streams:
+                raise ValueError("learner cache prefill requires the match-keyed KV cache")
+            self._prefill_learner(stats)
         if not self.private_graphs:
             for _ in range(int(steps)):
                 self.step(stats)

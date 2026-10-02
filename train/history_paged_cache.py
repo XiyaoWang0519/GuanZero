@@ -27,10 +27,14 @@ the next whole page past the longest stream instead of the next power of two.
 Position encodings are unchanged; the SDPA reduction shapes change, so this is
 acceptance tier 2 (on CPU most calls stay bitwise, single-token calls do not).
 
-The pool is shared by every policy identity of one collector: an identity's
-cache releases its pages on ``clear``/``prune``. Page 0 is never allocated and
-stays zero. The pool grows by reallocation and never shrinks; its reserved
-size is the high-water mark of live pages.
+A pool is shared by the caches built on it: a cache releases its pages on
+``clear``/``prune``. Page 0 is never allocated and stays zero. A pool grows by
+reallocation and does not shrink on its own; its reserved size is the
+high-water mark of live pages. The collector keeps the frozen snapshot
+identities on one pool and the learner on its own: the learner's cache is
+discarded before every PPO update, and ``KVPagePool.reset`` then returns that
+pool's storage instead of holding it through learning. The next allocation
+restores the size the pool had, in one step and without a copy.
 """
 from __future__ import annotations
 
@@ -68,6 +72,8 @@ class KVPagePool:
         self.pages = 0
         self.free: list[int] = []
         self.grows = 0
+        self._restore = 0               # pages to restore after a reset
+        self._peak_used = 0             # most pages in use since the last reset
         self._grow(pages)
 
     @classmethod
@@ -92,7 +98,7 @@ class KVPagePool:
 
     @property
     def used_pages(self) -> int:
-        return self.pages - 1 - len(self.free)
+        return max(self.pages - 1, 0) - len(self.free)
 
     def _grow(self, pages: int) -> None:
         rows, old_rows = pages * self.page_tokens, self.pages * self.page_tokens
@@ -109,14 +115,37 @@ class KVPagePool:
         self.pages = pages
         self.grows += 1
 
+    def reserve(self, count: int) -> None:
+        """Make at least ``count`` pages free, growing once if they are not."""
+        missing = count - len(self.free)
+        if missing > 0:
+            # Page 0 is not allocatable, so an empty pool needs one page more.
+            pages = max(self.pages, 1) + max(missing, self.pages // 4)
+            self._grow(max(pages, self._restore))
+            self._restore = 0
+
     def allocate(self, count: int) -> list[int]:
         if count <= 0:
             return []
-        if len(self.free) < count:
-            self._grow(max(self.pages + self.pages // 4, self.pages + count - len(self.free)))
+        self.reserve(count)
         pages = self.free[-count:]
         del self.free[-count:]
+        self._peak_used = max(self._peak_used, self.used_pages)
         return pages
+
+    def reset(self) -> None:
+        """Drop the storage. Only valid when no page is in use; the next
+        allocation grows straight to the most pages used since the last reset
+        (plus an eighth), so a steady workload allocates once per cycle."""
+        if self.used_pages > 0:
+            raise RuntimeError("resetting a KV page pool with live pages")
+        if self._peak_used:
+            self._restore = self._peak_used + self._peak_used // 8 + 1
+        self._peak_used = 0
+        self.kv = []
+        self.memory = torch.zeros(0, self.width, device=self.device, dtype=self.dtype)
+        self.pages = 0
+        self.free = []
 
     def release(self, pages: list[int]) -> None:
         self.free.extend(pages)
@@ -320,6 +349,7 @@ def merged_encode(parts: list[tuple[PagedHistoryCache, list[tuple[int, int]], li
         counts = [min(chunk, targets[i] - entries[i].length) for i in short]
         _merged_append(parts[0][0], [entries[i] for i in short], counts,
                        [slots[i] for i in short], heads)
+        parts[0][0].appends += 1    # one shared pass, counted once
         for i, count in zip(short, counts):
             owners[i].encoded_tokens += count
     return parts[0][0]._gather_memory(entries, size)

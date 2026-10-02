@@ -157,6 +157,18 @@ float alignment. Local component gains range from 1.18x for batch preparation
 to 14x for response labels, with exact CPU update/replay comparisons. Complete
 PPO and GPU throughput gains remain unmeasured; no numeric-mode flag was promoted.
 
+The [October 1 speed deep dive](reports/speed-deep-dive-2026-10-01.md) reads the
+u2623-u4902 run's counters and adds, CPU-verified only: `--rollout-prefill-learner-cache`
+(opt-in, resume-overridable, tier 2 on learner seats: the learner's public KV
+cache is rebuilt for all current matches in one batched pass per chunk at the
+start of each collection); a separate page pool for the learner under
+`--rollout-paged-cache`, returned before every PPO update; `--profile-learn`
+(synchronized learn-phase times in `learn_phase_seconds`); and a kernel-level
+profile of chosen updates through `GUANZERO_TORCH_PROFILE_DIR` and
+`GUANZERO_TORCH_PROFILE_UPDATES`. With every new flag off, four CPU updates
+match `main` exactly in three configurations. No GPU measurement exists yet; the
+prepared kit is `.work/speed-prep-2026-10-01/`.
+
 ## Planted-habit diagnostic (September 30)
 
 Diagnostic only, with the three exceptions approved on September 30 (fixed
