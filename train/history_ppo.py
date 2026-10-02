@@ -613,33 +613,53 @@ class HistoryTrainer:
             return
         from torch.profiler import ProfilerActivity, profile
         cuda = "cuda" in (self.device.type, self.rollout_device.type)
-        activities = [ProfilerActivity.CPU] + ([ProfilerActivity.CUDA] if cuda else [])
-        if cuda:
-            torch.cuda.synchronize()
-        begin = time.perf_counter()
-        with profile(activities=activities) as profiler:
-            yield
-            if cuda:
-                torch.cuda.synchronize()
-        seconds = time.perf_counter() - begin
-        pick = lambda event, *names: next((getattr(event, name) for name in names
-                                           if hasattr(event, name)), 0)
-        events = [dict(name=event.key, count=event.count,
-                       device=str(getattr(event, "device_type", "")).rsplit(".", 1)[-1],
-                       self_cpu_us=event.self_cpu_time_total, cpu_us=event.cpu_time_total,
-                       self_device_us=pick(event, "self_device_time_total",
-                                           "self_cuda_time_total"),
-                       device_us=pick(event, "device_time_total", "cuda_time_total"))
-                  for event in profiler.key_averages()]
-        events.sort(key=lambda row: -(row["self_device_us"] or row["self_cpu_us"]))
         path = Path(directory) / (f"rank-{getattr(self, 'rank', 0)}-update-{index}-{phase}.json")
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(dict(
-            phase=phase, update=int(self.progress["updates"]), process_update=index,
-            wall_seconds=seconds, cuda=cuda, torch=torch.__version__,
-            self_device_seconds=sum(row["self_device_us"] for row in events) / 1e6,
-            self_cpu_seconds=sum(row["self_cpu_us"] for row in events) / 1e6,
-            events=events), indent=1) + "\n")
+        record = dict(phase=phase, update=int(self.progress["updates"]), process_update=index,
+                      cuda=cuda, torch=torch.__version__)
+
+        def failed(stage: str, error: Exception) -> None:
+            # A diagnostic must not end the run: record why there is no profile.
+            path.write_text(json.dumps(dict(record, events=[], error=(
+                f"{stage}: {type(error).__name__}: {error}")[:500]), indent=1) + "\n")
+
+        activities = [ProfilerActivity.CPU] + ([ProfilerActivity.CUDA] if cuda else [])
+        try:
+            if cuda:
+                torch.cuda.synchronize()
+            profiler = profile(activities=activities)
+            profiler.__enter__()
+        except Exception as error:
+            failed("start", error)
+            yield
+            return
+        begin = time.perf_counter()
+        try:
+            yield
+        finally:
+            try:
+                if cuda:
+                    torch.cuda.synchronize()
+                seconds = time.perf_counter() - begin
+                profiler.__exit__(None, None, None)
+                pick = lambda event, *names: next((getattr(event, name) for name in names
+                                                   if hasattr(event, name)), 0)
+                events = [dict(name=event.key, count=event.count,
+                               device=str(getattr(event, "device_type", "")).rsplit(".", 1)[-1],
+                               self_cpu_us=event.self_cpu_time_total,
+                               cpu_us=event.cpu_time_total,
+                               self_device_us=pick(event, "self_device_time_total",
+                                                   "self_cuda_time_total"),
+                               device_us=pick(event, "device_time_total", "cuda_time_total"))
+                          for event in profiler.key_averages()]
+                events.sort(key=lambda row: -(row["self_device_us"] or row["self_cpu_us"]))
+                path.write_text(json.dumps(dict(
+                    record, wall_seconds=seconds,
+                    self_device_seconds=sum(row["self_device_us"] for row in events) / 1e6,
+                    self_cpu_seconds=sum(row["self_cpu_us"] for row in events) / 1e6,
+                    events=events), indent=1) + "\n")
+            except Exception as error:
+                failed("finish", error)
 
     def collection_profiled(self) -> bool:
         """Profile this update's collection: on, after this process's warmup updates."""
