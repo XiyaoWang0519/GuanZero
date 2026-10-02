@@ -500,3 +500,50 @@ def test_two_history_policies_hear_the_same_events_and_agree_batched(checkpoint,
             np.testing.assert_array_equal(ours, theirs)
     config = EvalConfig(batch_size=4)
     assert play_duplicate_batch(deals, (a, a), (b, b), 0, config) == scalar
+
+
+# ---- frozen evaluator, end to end ------------------------------------------------
+
+def test_frozen_evaluator_batched_backend_end_to_end_matches_scalar(checkpoint, tmp_path):
+    import json
+
+    from eval import history_frozen as frozen
+    from infra.history_artifacts import engine_digest, sha256
+
+    actor, critic = fresh_player(TINY, seed=4)
+    baseline = tmp_path / "baseline.pt"
+    save_history_checkpoint(baseline, checkpoint_payload(actor, critic, lineage="test", seed=4))
+    fields = ("hands", "level", "team_levels", "owner", "leader", "prev_order", "fails")
+    deals = generate_deals(2, 13) + generate_tribute_deals(1, 13)
+    dev = tmp_path / "dev.json"
+    # A fresh deal has no previous finish order; only a tribute deal records one.
+    records = [{k: getattr(d, k) for k in fields if k != "prev_order" or min(d.prev_order) >= 0}
+               for d in deals]
+    dev.write_text(json.dumps(dict(deals=records,
+                                   policy_seed=10, match_seeds=[91])))
+    freeze = tmp_path / "freeze.json"
+    freeze.write_text(json.dumps(dict(
+        engine_digest=engine_digest(), development=dict(file=dev.name, sha256=sha256(dev)),
+        baselines=[dict(name="baseline", path=str(baseline), sha256=sha256(baseline))])))
+
+    batched = frozen.evaluate(freeze, checkpoint, tmp_path / "batched.json", backend="batched",
+                              batch_size=2)
+    assert json.loads((tmp_path / "batched.json").read_text()) == json.loads(json.dumps(batched))
+    assert batched["evaluator"] == dict(backend="batched", device="cpu", batch_size=2,
+                                        kv_cache=True, torch_threads=torch.get_num_threads())
+    report = batched["reports"]["baseline"]
+    assert report["baseline_sha256"] == sha256(baseline)
+    duplicates = report["duplicates"]
+    assert duplicates["deals"] == 3 and duplicates["rounds"] == 6
+    for key in ("mean_net_levels_per_round", "bootstrap_95_ci", "banker_rate", "pair_scores",
+                "results"):
+        assert key in duplicates
+    matches = report["full_matches"]
+    assert len(matches["pairs"]) == 1 and len(matches["bootstrap_95_ci"]) == 2
+    assert 0.0 <= matches["win_rate"] <= 1.0
+
+    scalar = frozen.evaluate(freeze, checkpoint, tmp_path / "scalar.json")
+    assert scalar["evaluator"]["kv_cache"] is False and scalar["evaluator"]["batch_size"] is None
+    # Same deals and seeds with greedy policies: on this small actor the KV cache
+    # and batch shape leave every choice, hence every result, unchanged.
+    assert batched["reports"] == scalar["reports"]

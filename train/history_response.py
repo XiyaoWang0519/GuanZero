@@ -25,6 +25,33 @@ def opponent_response_labels(buffer, store, rows: np.ndarray,
     own stream (``RoundEventStore.round_stream``); the labels are the same
     events, since a response never crosses the round boundary.
     """
+    rows = np.asarray(rows, np.int64)
+    if len(rows) < 8:
+        return _scalar_opponent_response_labels(buffer, store, rows, round_streams)
+    data = buffer.compact()
+    labels = np.zeros(len(rows), np.int64)
+    if any(not buffer.trajectories[trajectory].complete
+           for trajectory in np.unique(data["traj"][rows]).tolist()):
+        raise ValueError("response labels require a completed round")
+    # Group rows only for this call: streams and buffers may grow, reset or be
+    # compacted between minibatches, so no target or prefix cache is retained.
+    fields = ("env", "match", "round") if round_streams else ("env", "match")
+    groups: dict[tuple[int, ...], list[int]] = {}
+    for index, key in enumerate(zip(*(data[field][rows].tolist() for field in fields))):
+        groups.setdefault(key, []).append(index)
+    for key, positions in groups.items():
+        if len(positions) < 8:
+            labels[positions] = _scalar_opponent_response_labels(
+                buffer, store, rows[positions], round_streams)
+            continue
+        stream = store.round_stream(*key) if round_streams else store.stream(*key)
+        labels[positions] = _stream_labels(data, rows[positions], stream)
+    return labels
+
+
+def _scalar_opponent_response_labels(buffer, store, rows: np.ndarray,
+                                     round_streams: bool = False) -> np.ndarray:
+    """Original scan for small groups where vector setup would cost more."""
     data = buffer.compact()
     labels = np.zeros(len(rows), np.int64)
     for index, row in enumerate(np.asarray(rows, np.int64).tolist()):
@@ -60,4 +87,38 @@ def opponent_response_labels(buffer, store, rows: np.ndarray,
             labels[index] = (1 + (relative_seat == 3) * PLAY_ACTION_TYPES
                              + int(action_type.argmax()))
             break
+    return labels
+
+
+def _stream_labels(data, rows: np.ndarray, stream) -> np.ndarray:
+    """Advance all requested horizons together, without scanning old history."""
+    tokens, rounds, phases = stream.arrays()
+    prefix, seat, rnd, phase = (data[field][rows] for field in ("prefix", "seat", "round", "phase"))
+    if (prefix >= stream.prefix).any():
+        raise ValueError("executed action missing from public history")
+    own = tokens[prefix]
+    chosen = data["cand"][data["cand_start"][rows] + data["chosen"][rows], :146]
+    if ((rounds[prefix] != rnd).any() or (phases[prefix] != phase).any()
+            or (own[:, :4].sum(axis=1) != 1).any()
+            or (own[:, :4].argmax(axis=1) != seat).any()
+            or not np.array_equal(own[:, 4:150], chosen)):
+        raise ValueError("stored action does not match the public event at its prefix")
+    labels = np.zeros(len(rows), np.int64)
+    cursor = prefix + 1
+    active = np.arange(len(rows))
+    while len(active):
+        active = active[cursor[active] < stream.prefix]
+        active = active[rounds[cursor[active]] == rnd[active]]
+        if (phases[cursor[active]] != phase[active]).any():
+            raise ValueError("exchange inside a completed Play round")
+        relative = (tokens[cursor[active], :4].argmax(axis=1) - seat[active]) % 4
+        opposing = (relative == 1) | (relative == 3)
+        responding = active[opposing]
+        action_type = tokens[cursor[responding], 4 + 108:4 + 121]
+        kinds = action_type.argmax(axis=1)
+        if (action_type.sum(axis=1) != 1).any() or (kinds >= PLAY_ACTION_TYPES).any():
+            raise ValueError("invalid public Play action type")
+        labels[responding] = 1 + (relative[opposing] == 3) * PLAY_ACTION_TYPES + kinds
+        active = active[relative == 2]
+        cursor[active] += 1
     return labels
