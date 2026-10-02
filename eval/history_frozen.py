@@ -82,10 +82,16 @@ def evaluate(freeze_path: Path, candidate_path: Path, output: Path, backend: str
         reports[spec["name"]] = dict(baseline_sha256=spec["sha256"], duplicates=duplicate,
                                     full_matches=dict(pairs=pairs, win_rate=sum(wins) / len(wins),
                                                       bootstrap_95_ci=list(bootstrap_interval(wins))))
+    # The scalar backend recomputes the full prefix at every decision; the batched
+    # one encodes full-history streams through the KV cache (BatchActor skips it
+    # for windowed actors, which recompute their window).
+    kv_cache = backend == "batched" and not candidate.actor.config.window
     report = dict(candidate_sha256=sha256(candidate_path), freeze_sha256=sha256(freeze_path),
                   evaluation_source_sha256=source_identity()["source_sha256"],
                   reports=reports, evaluator=dict(backend=backend, device=device,
-                                                  batch_size=batch_size if backend == "batched" else None),
+                                                  batch_size=batch_size if backend == "batched" else None,
+                                                  kv_cache=kv_cache,
+                                                  torch_threads=torch.get_num_threads()),
                   split="development", selection="predeclared endpoint",
                   claim="small pilot diagnostic; no playing-strength promotion")
     output.write_text(json.dumps(report, indent=2) + "\n")
