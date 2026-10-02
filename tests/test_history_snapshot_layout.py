@@ -92,8 +92,11 @@ def scalar_reference(groups, slots, prefix, obs, seat, cand, offsets, counts,
 @pytest.mark.parametrize("seed", range(12))
 @pytest.mark.parametrize("unique", [True, False])
 @pytest.mark.parametrize("input_dtype", [np.uint8, np.float32])
-def test_merged_layout_matches_scalar_placement(seed, unique, input_dtype):
+@pytest.mark.parametrize("single_group", [True, False])
+def test_merged_layout_matches_scalar_placement(seed, unique, input_dtype, single_group):
     args = fixture(seed, unique, input_dtype)
+    if single_group:
+        args = (args[0][:1], args[1][:1], *args[2:])
     layout = merged_layout(*args)
     expected = scalar_reference(*args)
     for field in fields(layout):

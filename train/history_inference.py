@@ -84,7 +84,8 @@ class BatchedHistoryCache:
 
         The trainer owns its actor weights while collecting. Standalone encode
         calls keep their per-call mutation checks. A mutation inside this scope
-        rejects the collected data and clears stale cache state on exit.
+        raises and clears stale cache state on exit. The caller must discard
+        that failed rollout; the trainer propagates the error before learning.
         """
         if self._frozen_signature is not None:
             raise RuntimeError("nested frozen-weight intervals are unsupported")

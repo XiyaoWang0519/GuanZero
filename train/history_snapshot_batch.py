@@ -311,37 +311,53 @@ def merged_layout(groups, slots: list[int], prefix: np.ndarray, obs: np.ndarray,
     rows = np.concatenate([g.rows for g in groups])
     n = len(rows)
     row_counts = counts[rows]
-    sizes = np.asarray([len(g.rows) for g in groups], np.int64)
-    widths = np.asarray([max(int(g.max_candidates), 1) for g in groups], np.int64)
-    slot_ids = np.asarray(slots, np.int64)
-    row_ends = np.cumsum(sizes)
-    row_starts = row_ends - sizes
     S = max(slots) + 1
-    M = int(sizes.max())
-    group_cands = np.add.reduceat(row_counts, row_starts)
-    Cm = int(group_cands.max())
-    K = int(widths.max())
-    # Build the row/candidate scatter indices once across all identities.
-    # The old per-identity repeat/arange calls cost more than this arithmetic
-    # when many frozen policies contribute only a few rows each.
-    row_local = np.arange(n, dtype=np.int64) - np.repeat(row_starts, sizes)
-    row_pad = np.repeat(slot_ids * M, sizes) + row_local
-    seat_pad = np.zeros(S * M, np.int64)
+    row_numbers = np.arange(n, dtype=np.int64)
     seat_rows = seat[rows]
-    seat_pad[row_pad] = np.repeat(slot_ids * 4, sizes) + seat_rows
-    draws_per_group = sizes * widths
-    draw_ends = np.cumsum(draws_per_group)
-    draw_starts = draw_ends - draws_per_group
-    uniform_width = np.repeat(widths, sizes)
-    uniform_base = np.repeat(draw_starts, sizes) + uniform_width * row_local
-    cand_row = np.repeat(np.arange(n, dtype=np.int64), row_counts)
-    cand_starts = np.cumsum(group_cands) - group_cands
-    cand_pad = np.arange(len(cand_row), dtype=np.int64)
-    cand_pad += np.repeat(slot_ids * Cm - cand_starts, group_cands)
+    cand_row = np.repeat(row_numbers, row_counts)
+    candidate_numbers = np.arange(len(cand_row), dtype=np.int64)
+    if len(groups) == 1:
+        # A single identity needs no group expansion or cumulative boundaries.
+        # This is common while the population is first filling.
+        slot = slots[0]
+        M, Cm = n, len(cand_row)
+        K = max(int(groups[0].max_candidates), 1)
+        row_pad = slot * M + row_numbers
+        seat_pad = np.zeros(S * M, np.int64)
+        seat_pad[row_pad] = slot * 4 + seat_rows
+        uniform_base = row_numbers * K
+        uniform_width = np.full(n, K, np.int64)
+        cand_pad = slot * Cm + candidate_numbers
+        group_rows = [(0, n)]
+        draws = [(0, n * K)]
+    else:
+        sizes = np.asarray([len(g.rows) for g in groups], np.int64)
+        widths = np.asarray([max(int(g.max_candidates), 1) for g in groups], np.int64)
+        slot_ids = np.asarray(slots, np.int64)
+        row_ends = np.cumsum(sizes)
+        row_starts = row_ends - sizes
+        M = int(sizes.max())
+        group_cands = np.add.reduceat(row_counts, row_starts)
+        Cm = int(group_cands.max())
+        K = int(widths.max())
+        # Build the row/candidate scatter indices once across all identities.
+        # The old per-identity repeat/arange calls cost more than this arithmetic
+        # when many frozen policies contribute only a few rows each.
+        row_local = row_numbers - np.repeat(row_starts, sizes)
+        row_pad = np.repeat(slot_ids * M, sizes) + row_local
+        seat_pad = np.zeros(S * M, np.int64)
+        seat_pad[row_pad] = np.repeat(slot_ids * 4, sizes) + seat_rows
+        draws_per_group = sizes * widths
+        draw_ends = np.cumsum(draws_per_group)
+        draw_starts = draw_ends - draws_per_group
+        uniform_width = np.repeat(widths, sizes)
+        uniform_base = np.repeat(draw_starts, sizes) + uniform_width * row_local
+        cand_starts = np.cumsum(group_cands) - group_cands
+        cand_pad = candidate_numbers + np.repeat(slot_ids * Cm - cand_starts, group_cands)
+        group_rows = list(zip(row_starts.tolist(), row_ends.tolist()))
+        draws = list(zip(draw_starts.tolist(), draw_ends.tolist()))
     cand_state_pad = np.zeros(S * Cm, np.int64)
     cand_state_pad[cand_pad] = row_pad[cand_row]
-    group_rows = list(zip(row_starts.tolist(), row_ends.tolist()))
-    draws = list(zip(draw_starts.tolist(), draw_ends.tolist()))
     group_streams = []
     stream = np.empty(n, np.int64)
     stream_base = 0
@@ -358,7 +374,7 @@ def merged_layout(groups, slots: list[int], prefix: np.ndarray, obs: np.ndarray,
                 (local[k] for k in keys), dtype=np.int64, count=size)
         group_streams.append((stream_base, stream_base + len(group.keys)))
         stream_base += len(group.keys)
-    local_cand = np.arange(len(cand_row), dtype=np.int64) - (np.cumsum(row_counts) - row_counts)[cand_row]
+    local_cand = candidate_numbers - (np.cumsum(row_counts) - row_counts)[cand_row]
     src = ragged_index(offsets[rows], row_counts)
     length = max(int(p) for g in groups for p in (s.prefix for s in g.streams)) + 1
     arrays = (obs[rows].astype(np.uint8, copy=False), seat_rows, prefix[rows],
@@ -366,7 +382,7 @@ def merged_layout(groups, slots: list[int], prefix: np.ndarray, obs: np.ndarray,
               row_pad, seat_pad, stream, cand_pad, cand_state_pad, cand_row,
               cand_row * K + local_cand, uniform_base, uniform_width - 1)
     return MergedLayout(rows, group_rows, group_streams, arrays, draws, S, M, Cm, K, length,
-                        stream_base, bool(np.array_equal(stream, np.arange(n))))
+                        stream_base, bool(np.array_equal(stream, row_numbers)))
 
 
 def _linear(x: Tensor, tensors: dict[str, Tensor], name: str, slots: int) -> Tensor:

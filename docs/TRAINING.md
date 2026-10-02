@@ -147,6 +147,16 @@ reliable whole-update speedup or playing-strength improvement. Existing packed
 float-field offsets are preserved because odd-row alignment changes reduction
 bits. The chosen-only flag remains opt-in.
 
+The [October 1 host optimization](reports/training-stack-2026-10-01.md) factors
+learner match IDs once per compact buffer, batches response-label calculations,
+and vectorizes merged snapshot layouts. Trainer-owned collection validates KV
+cache weights at the start and end of its frozen interval; standalone collectors
+keep per-encode checks. Empty/singleton packed tensor transfers also handle
+non-unit strides. These changes preserve the existing configuration and packed
+float alignment. Local component gains range from 1.18x for batch preparation
+to 14x for response labels, with exact CPU update/replay comparisons. Complete
+PPO and GPU throughput gains remain unmeasured; no numeric-mode flag was promoted.
+
 ## Planted-habit diagnostic (September 30)
 
 Diagnostic only, with the three exceptions approved on September 30 (fixed
