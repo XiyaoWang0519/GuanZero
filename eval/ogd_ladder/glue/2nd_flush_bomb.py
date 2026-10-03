@@ -3,8 +3,8 @@
 pass_num, my_pass_num, tribute_result)``. Every argument after ``msg`` is the
 State attribute of the same name (``_myPos``, ``remain_cards``, ``history``,
 ``remain_cards_classbynum``, ``pass_num``, ``my_pass_num``,
-``tribute_result``), which ``State.parse`` maintains from the notify stream;
-its State is the 1st-lalala one plus a log file named after ``name``; that is the only place the bot keeps them, so the lost client passed them."""
+``tribute_result``), which ``State.parse`` maintains from the notify stream.
+Same interface as 1st-lalala; State/Action also log to ``<name>.log``."""
 from action import Action
 from state import State
 
