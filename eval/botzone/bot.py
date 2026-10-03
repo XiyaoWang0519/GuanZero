@@ -17,9 +17,16 @@ this file or inside the uploaded zip.
 
 Needs only NumPy and the standard library; Python 3.6 compatible.
 """
+import os
+
+# One BLAS thread: the matrices are tiny, and OpenBLAS otherwise reserves a
+# buffer per core at import, which pushed the process to 254 of Botzone's
+# 256 MB. Must run before numpy is imported.
+for _var in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_var, "1")
+
 import io
 import json
-import os
 import sys
 import time
 import traceback
@@ -150,11 +157,26 @@ class Bot(object):
         return [[card], [card]]
 
 
+def memory_mb() -> dict:
+    """Resident and virtual peak of this process from /proc, when present."""
+    out = {}
+    try:
+        with open("/proc/self/status") as status:
+            for line in status:
+                key = line.split(":")[0]
+                if key in ("VmHWM", "VmPeak"):
+                    out[key] = int(line.split()[1]) // 1024
+    except (IOError, OSError, ValueError, IndexError):
+        pass
+    return out
+
+
 def answer(bot: Bot, requests: list, responses: list) -> dict:
     started = time.time()
     log = RoundLog.from_turns(requests, responses)
     response = bot.respond(log)
     debug = {"ms": round(1000 * (time.time() - started), 1)}
+    debug.update(memory_mb())
     if bot.notes:
         debug["notes"] = bot.notes
     return {"response": response, "debug": json.dumps(debug)[:1000]}
