@@ -38,12 +38,27 @@ import gd
 import numpy as np
 
 from eval.botzone.bot import KEEP_RUNNING, Bot, answer, find_weights
-from eval.botzone.mirror import make_deal, partner, routing
+from eval.botzone.mirror import partner, prev_order, routing
 from eval.botzone.protocol import (LEVEL_NAMES, RoundLog, card_to_gd, claim_faces,
                                    claim_matches, physical_claim)
 from eval.history_policy import apply_and_observe
 
 PLAY = int(gd.Phase.Play)
+
+
+def make_deal(log: RoundLog, hands: list[list[int]]) -> gd.DealSpec:
+    """The referee's gd deal for a Botzone setup (same previous order as the bot)."""
+    deal = gd.DealSpec()
+    deal.hands = hands
+    deal.level = log.level
+    deal.team_levels = [log.level, log.level]
+    deal.owner = -1
+    order = prev_order(log)
+    if order is not None:
+        deal.prev_order = order
+    else:
+        deal.leader = log.leader_hint if log.leader_hint >= 0 else 0
+    return deal
 
 
 class IllegalResponse(RuntimeError):
@@ -337,7 +352,7 @@ class Referee:
             request = {"stage": "play", "history": slots, "done": list(done),
                        "pass_on": pass_on, "global": self._global(True)}
             reference_action = None
-            if self.reference is not None and isinstance(self.seats[seat], InProcessSeat):
+            if self.reference is not None and isinstance(self.seats[seat], (InProcessSeat, ProcessSeat)):
                 actions = self.canon.legal_actions(self.state)
                 if len(actions) > 1:
                     reference_action = actions[self.reference.select(

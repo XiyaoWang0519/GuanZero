@@ -1,58 +1,53 @@
-"""Rebuild a Botzone round in ``gd`` from what one seat has been told.
+"""Rebuild a Botzone round from what one seat has been told.
 
-The bot never sees the other hands, but ``gd`` needs four hands to apply
-plays. ``rebuild`` therefore deals the unseen cards to the other seats in a
-way consistent with everything public: each seat starts with every card it
-later plays or hands over (net of the cards it received), a tribute payer
-holds nothing that outranks its tribute card, and the big jokers sit where
-the announced anti-tribute (``resist``) says. It then replays the round
-(tribute, back-tribute, every play and pass) with ``auto_pass`` off and
-feeds each applied action to a public token stream exactly as the evaluators
-do (``eval.history_policy.apply_and_observe``).
+The bot never sees the other hands, but the engine (``pyengine``, the
+pure-Python port of ``gd``) keeps four hands. ``rebuild`` therefore deals
+the unseen cards to the other seats in a way consistent with everything
+public: each seat starts with every card it later plays or hands over (net of
+the cards it received), a tribute payer holds nothing that outranks its
+tribute card, and the big jokers sit where the announced anti-tribute
+(``resist``) says. It then replays the round (tribute, back-tribute, every
+play and pass, ``auto_pass`` off) and appends each applied action to a public
+token stream exactly as ``eval.history_policy.apply_and_observe`` does.
 
 Nothing the actor reads depends on that filling: the observation and the
 candidate encodings of the acting seat are functions of its own hand and of
 public events (``tests/test_botzone.py`` checks this across fillings).
 
-The replay stops at the seat's pending decision. If an event the replay
-needs has not been announced yet (the judge asks the two tribute payers, and
-the two receivers, in its own order), a stand-in legal choice of that seat
-is applied; this only happens before our own tribute or back-tribute, which
-use the engine's tribute heuristic on our own hand. Passes the positional
-history overwrote (see ``rebuild``) are restored as passes.
+Plays are taken as Botzone declares them: the reading comes from the claim
+(``pyengine.classify``), the cards from the action. The replay stops at our
+pending decision. If an event it needs has not been announced yet (the judge
+asks the two tribute payers, and the two receivers, in its own order), a
+stand-in legal choice of that seat is applied; this only happens before our
+own tribute or back-tribute, which use the tribute heuristic on our own hand.
+Passes the positional history overwrote (see ``_ImpliedPasses``) are
+restored as passes.
+
+Python 3.6 compatible, NumPy only.
 """
-from __future__ import annotations
-
 from collections import Counter
-from dataclasses import dataclass, field
 import random
+from typing import Dict, List, Optional, Sequence, Tuple
 
-import gd
 import numpy as np
 
-from eval.botzone.protocol import (BIG_JOKER, Move, RoundLog, card_to_gd, claim_matches,
-                                   power, rank_of)
-from eval.history_policy import apply_and_observe
+from . import pyengine as pe
+from .protocol import BIG_JOKER, Move, RoundLog, card_to_gd, power, rank_of
 
 TOKEN_DIM = 4 + 154 + 28
 
-TRIBUTE = int(gd.Phase.Tribute)
-BACK_TRIBUTE = int(gd.Phase.BackTribute)
-PLAY = int(gd.Phase.Play)
 
-
-class TokenStream:
+class TokenStream(object):
     """The public tokens of one round, laid out as ``train.logs.public_token``.
 
-    A torch-free stand-in for ``train.history_model.PublicStream`` (which
-    imports torch); ``tests/test_botzone.py`` checks the two agree token for
-    token.
+    A torch-free stand-in for ``train.history_model.PublicStream``;
+    ``tests/test_botzone.py`` checks the two agree token for token.
     """
 
     def __init__(self) -> None:
-        self.tokens: list[np.ndarray] = []
-        self.rounds: list[int] = []
-        self.phases: list[int] = []
+        self.tokens = []     # type: List[np.ndarray]
+        self.rounds = []     # type: List[int]
+        self.phases = []     # type: List[int]
 
     def append(self, event) -> None:
         token = np.zeros(TOKEN_DIM, dtype=np.uint8)
@@ -64,15 +59,33 @@ class TokenStream:
         self.rounds.append(int(event.round_index))
         self.phases.append(int(event.phase))
 
-    def arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def arrays(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         tokens = (np.stack(self.tokens) if self.tokens
                   else np.zeros((0, TOKEN_DIM), dtype=np.uint8))
         return (tokens, np.asarray(self.rounds, dtype=np.int64),
                 np.asarray(self.phases, dtype=np.int64))
 
 
+class _Event(object):
+    __slots__ = ("seat", "phase", "round_index", "encoded_action", "cards_left")
+
+    def __init__(self, seat, phase, round_index, encoded_action, cards_left) -> None:
+        self.seat, self.phase, self.round_index = seat, phase, round_index
+        self.encoded_action, self.cards_left = encoded_action, cards_left
+
+
+def apply_and_record(state: pe.State, action: pe.Action, stream) -> None:
+    """``state.apply`` plus the public token, like ``apply_and_observe``:
+    seat, phase and round before the action, the actor's count after it."""
+    seat, phase = state.to_move, state.phase
+    encoded = pe.encode_action(action, state, seat)
+    encoded[pe.ACT_TRIBUTE_FLAGS:] = 0.0
+    state.apply(action)
+    stream.append(_Event(seat, phase, state.round_index, encoded, sum(state.hands[seat])))
+
+
 class MirrorError(RuntimeError):
-    """The public record cannot be replayed in ``gd``."""
+    """The public record cannot be replayed."""
 
 
 def partner(seat: int) -> int:
@@ -83,8 +96,8 @@ def tribute_power(face: int, level: int) -> int:
     return power(rank_of(face), level)
 
 
-def prev_order(log: RoundLog) -> list[int] | None:
-    """The previous finishing order gd needs, or None without tribute.
+def prev_order(log: RoundLog) -> Optional[List[int]]:
+    """The previous finishing order the engine needs, or None without tribute.
 
     Botzone tells only the first and last finisher. With a double tribute
     the first's partner was second and the last's partner third; with a
@@ -94,15 +107,15 @@ def prev_order(log: RoundLog) -> list[int] | None:
         return None
     first, last = log.first, log.last
     if first < 0 or last < 0 or (first - last) % 2 == 0:
-        raise MirrorError(f"tribute {log.tribute} needs first and last on opposite teams, "
-                          f"got first={first} last={last}")
+        raise MirrorError("tribute %d needs first and last on opposite teams, got first=%d "
+                          "last=%d" % (log.tribute, first, last))
     if log.tribute >= 2:
         return [first, partner(first), partner(last), last]
     return [first, partner(last), partner(first), last]
 
 
-def routing(log: RoundLog, faces: dict[int, int]) -> dict[int, int]:
-    """Payer -> receiver of the tribute cards, as gd's ``house`` rules route them."""
+def routing(log: RoundLog, faces: Dict[int, int]) -> Dict[int, int]:
+    """Payer -> receiver of the tribute cards under the ``house`` rules."""
     order = prev_order(log)
     if order is None:
         return {}
@@ -118,29 +131,28 @@ def routing(log: RoundLog, faces: dict[int, int]) -> dict[int, int]:
     return {to_banker: banker, (down if to_banker == up else up): follower}
 
 
-@dataclass
-class Rebuilt:
+class Rebuilt(object):
     """A replayed round at our pending decision."""
-    engine: gd.Engine
-    canon: gd.Engine
-    state: gd.MatchState
-    stream: object
-    events: int
-    stand_ins: int = 0
-    implied_passes: int = 0
-    notes: list[str] = field(default_factory=list)
+
+    def __init__(self, state: pe.State, stream) -> None:
+        self.state = state
+        self.stream = stream
+        self.events = 0
+        self.stand_ins = 0
+        self.implied_passes = 0
+        self.notes = []      # type: List[str]
 
 
 def _faces(cards) -> Counter:
     return Counter(card_to_gd(c) for c in cards)
 
 
-def fill_hands(log: RoundLog, rng: random.Random) -> list[list[int]]:
-    """Four gd hands consistent with the log (ours is the real one)."""
+def fill_hands(log: RoundLog, rng: random.Random) -> List[List[int]]:
+    """Four hands of gd faces consistent with the log (ours is the real one)."""
     me, level = log.me, log.level
     mine = _faces(log.deliver)
     if sum(mine.values()) != 27:
-        raise MirrorError(f"deal of {sum(mine.values())} cards")
+        raise MirrorError("deal of %d cards" % sum(mine.values()))
     tribute_faces = {s: card_to_gd(c) for s, c in log.tribute_cards.items()}
     return_faces = {s: card_to_gd(c) for s, c in log.return_cards.items()}
     route = routing(log, tribute_faces) if not log.resist else {}
@@ -165,7 +177,7 @@ def fill_hands(log: RoundLog, rng: random.Random) -> list[list[int]]:
     if any(n < 0 for n in pool.values()):
         raise MirrorError("public cards exceed the deck")
     order = prev_order(log)
-    payers = []
+    payers = []          # type: List[int]
     if order is not None:
         payers = [order[2], order[3]] if log.tribute >= 2 else [order[3]]
     others = [s for s in range(4) if s != me]
@@ -180,13 +192,13 @@ def fill_hands(log: RoundLog, rng: random.Random) -> list[list[int]]:
 
     # Big jokers first: the anti-tribute is a fact about the payers' hands.
     payer_others = [s for s in payers if s != me]
-    jokers_with_payers = sum((mine if s == me else hold[s])[BIG_JOKER] for s in payers)
+    jokers = [sum((mine if s == me else hold[s])[BIG_JOKER] for s in payers)]
     if order is not None and log.resist:
         for seat in payer_others:
-            while jokers_with_payers < 2 and pool[BIG_JOKER] > 0 and need[seat] > 0:
+            while jokers[0] < 2 and pool[BIG_JOKER] > 0 and need[seat] > 0:
                 take(seat, BIG_JOKER)
-                jokers_with_payers += 1
-        if jokers_with_payers < 2:
+                jokers[0] += 1
+        if jokers[0] < 2:
             raise MirrorError("anti-tribute announced but the payers cannot hold both big jokers")
     capped = {}
     for seat in payer_others:
@@ -195,9 +207,10 @@ def fill_hands(log: RoundLog, rng: random.Random) -> list[list[int]]:
     blocked_joker = order is not None and not log.resist
 
     def allowed(seat: int, face: int) -> bool:
-        if seat in capped and not (face == level * 4 + 1) and tribute_power(face, level) > capped[seat]:
+        if (seat in capped and face != level * 4 + 1
+                and tribute_power(face, level) > capped[seat]):
             return False
-        if blocked_joker and seat in payers and face == BIG_JOKER and jokers_with_payers >= 1:
+        if blocked_joker and seat in payers and face == BIG_JOKER and jokers[0] >= 1:
             return False
         return True
 
@@ -210,10 +223,10 @@ def fill_hands(log: RoundLog, rng: random.Random) -> list[list[int]]:
     for face in cards:
         seats = [s for s in others if need[s] > 0 and allowed(s, face)]
         if not seats:
-            raise MirrorError(f"no seat can hold {gd.card_str(face)} consistently")
+            raise MirrorError("no seat can hold card %d consistently" % face)
         seat = rng.choice(seats)
         if face == BIG_JOKER and seat in payers:
-            jokers_with_payers += 1
+            jokers[0] += 1
         take(seat, face)
     hands = []
     for s in range(4):
@@ -222,44 +235,39 @@ def fill_hands(log: RoundLog, rng: random.Random) -> list[list[int]]:
     return hands
 
 
-def make_deal(log: RoundLog, hands: list[list[int]]) -> gd.DealSpec:
-    deal = gd.DealSpec()
-    deal.hands = hands
-    deal.level = log.level
-    deal.team_levels = [log.level, log.level]
-    deal.owner = -1
-    order = prev_order(log)
-    if order is not None:
-        deal.prev_order = order
-    else:
-        deal.leader = log.leader_hint if log.leader_hint >= 0 else 0
-    return deal
+def make_state(log: RoundLog, hands: Sequence[Sequence[int]]) -> pe.State:
+    leader = log.leader_hint if log.leader_hint >= 0 else 0
+    return pe.State(hands, log.level, [log.level, log.level], leader, prev_order(log))
 
 
-def _match_play(actions, move: Move, level: int):
-    if move.is_pass:
-        for action in actions:
-            if action.is_pass:
-                return action, "exact"
-        return None, "missing"
-    faces = sorted(card_to_gd(c) for c in move.action)
-    same = [a for a in actions if not a.is_pass and sorted(a.cards) == faces]
-    for action in same:
-        if claim_matches(action.type, int(action.key), list(action.cards), level, move.claim):
-            return action, "exact"
-    if same:
-        return same[0], "reading"
-    return None, "missing"
-
-
-def _match_card(engine: gd.Engine, state: gd.MatchState, face: int):
-    for action in engine.legal_actions(state):
-        if list(action.cards) == [face]:
+def _card_action(state: pe.State, face: int) -> Optional[pe.Action]:
+    for action in state.legal_actions():
+        if action.cards == [face]:
             return action
     return None
 
 
-class _ImpliedPasses:
+def _move_action(move: Move, level: int) -> pe.Action:
+    try:
+        return pe.classify([card_to_gd(c) for c in move.claim],
+                           [card_to_gd(c) for c in move.action], level)
+    except ValueError as error:
+        raise MirrorError(str(error))
+
+
+def _playable(state: pe.State, action: pe.Action) -> bool:
+    """Whether the seat to move may make this play now (Botzone's reading)."""
+    top = state.top
+    if action.is_pass:
+        return not top.is_pass
+    hand = state.hands[state.to_move]
+    if any(hand[c] < n for c, n in enumerate(action.counts)):
+        return False
+    return pe.beats_reading(action.type, action.key, action.bomb_size,
+                            top.type, top.key, top.bomb_size)
+
+
+class _ImpliedPasses(object):
     """Passes the positional play history overwrote.
 
     Between two of our turns the history keeps each seat's latest move only.
@@ -269,13 +277,13 @@ class _ImpliedPasses:
     ours that still moves later in the same window, at most once per window.
     """
 
-    def __init__(self, moves: list[Move], me: int) -> None:
+    def __init__(self, moves: Sequence[Move], me: int) -> None:
         self.me = me
-        self.used: set[tuple[int, int]] = set()
+        self.used = set()    # type: set
         # For each position: the end of its window (our next move) and the
         # seats that still move in the window from there on.
         self.end = [len(moves)] * (len(moves) + 1)
-        self.later: list[frozenset] = [frozenset()] * (len(moves) + 1)
+        self.later = [frozenset()] * (len(moves) + 1)
         for i in range(len(moves) - 1, -1, -1):
             if moves[i].seat == me:
                 self.end[i], self.later[i] = i, frozenset()
@@ -290,8 +298,7 @@ class _ImpliedPasses:
     def use(self, position: int, seat: int) -> None:
         self.used.add((self.end[position], seat))
 
-    def jiefeng_pending(self, state: gd.MatchState, seat: int, holder: int,
-                        position: int) -> bool:
+    def jiefeng_pending(self, state: pe.State, seat: int, holder: int, position: int) -> bool:
         """The trick holder has finished, ``seat`` is its partner and every
         other seat that must still pass before the lead comes back may have
         lost that pass: read the partner's play as the jiefeng lead.
@@ -300,36 +307,23 @@ class _ImpliedPasses:
         play, is legal but almost never sensible, and the history cannot tell
         the two apart.
         """
-        if holder < 0 or len(state.hand(holder)) or seat != partner(holder):
+        if holder < 0 or any(state.hands[holder]) or seat != partner(holder):
             return False
-        between = [s for s in ((seat + 1) % 4,) if len(state.hand(s))]
+        between = [s for s in ((seat + 1) % 4,) if any(state.hands[s])]
         return all(self.allowed(position, s) for s in between)
 
 
-def rebuild(log: RoundLog, *, seed: int = 0, stream_factory=None) -> Rebuilt:
+def rebuild(log: RoundLog, seed: int = 0, stream_factory=None) -> Rebuilt:
     """Replay the round up to our pending decision (``state.to_move == log.me``)."""
-    rules = gd.RuleConfig.house()
-    engine = gd.Engine(rules, gd.ActionConfig.full())
-    canon = gd.Engine(rules, gd.ActionConfig())
-    engine.auto_pass = False
-    canon.auto_pass = False
-    state = gd.MatchState()
-    hands = fill_hands(log, random.Random(seed))
-    engine.set_deal(state, make_deal(log, hands))
+    state = make_state(log, fill_hands(log, random.Random(seed)))
     stream = (stream_factory or TokenStream)()
-    built = Rebuilt(engine, canon, state, stream, 0)
-
-    class _Listener:
-        def observe(self, event) -> None:
-            stream.append(event)
-
-    listeners = (_Listener(),)
+    built = Rebuilt(state, stream)
     me, level = log.me, log.level
     tribute_faces = {s: card_to_gd(c) for s, c in log.tribute_cards.items()}
     return_faces = {s: card_to_gd(c) for s, c in log.return_cards.items()}
-    if prev_order(log) is not None and log.resist != (int(state.phase) == PLAY):
-        raise MirrorError(f"anti-tribute mismatch: botzone {log.resist}, "
-                          f"gd {int(state.phase) == PLAY}")
+    if prev_order(log) is not None and log.resist != state.anti_tribute:
+        raise MirrorError("anti-tribute mismatch: botzone %s, replay %s"
+                          % (log.resist, state.anti_tribute))
     moves = list(log.moves)
     implied = _ImpliedPasses(moves, me)
     holder = -1
@@ -339,63 +333,60 @@ def rebuild(log: RoundLog, *, seed: int = 0, stream_factory=None) -> Rebuilt:
         guard += 1
         if guard > 1000:
             raise MirrorError("replay does not terminate")
-        phase = int(state.phase)
-        seat = int(state.to_move)
-        if phase in (TRIBUTE, BACK_TRIBUTE):
-            known = (tribute_faces if phase == TRIBUTE else return_faces).get(seat)
+        phase, seat = state.phase, state.to_move
+        if phase in (pe.PHASE_TRIBUTE, pe.PHASE_BACK_TRIBUTE):
+            known = (tribute_faces if phase == pe.PHASE_TRIBUTE else return_faces).get(seat)
             if known is None:
                 if seat == me:
                     return built
                 # Not announced yet: a stand-in for a choice ours does not depend on.
-                action = engine.legal_actions(state)[0]
+                action = state.legal_actions()[0]
                 built.stand_ins += 1
             else:
-                action = _match_card(engine, state, known)
+                action = _card_action(state, known)
                 if action is None:
-                    raise MirrorError(f"{'tribute' if phase == TRIBUTE else 'return'} "
-                                      f"{gd.card_str(known)} of seat {seat} is not legal in gd")
-            apply_and_observe(engine, state, action, listeners)
+                    raise MirrorError("%s %d of seat %d is not legal" % (
+                        "tribute" if phase == pe.PHASE_TRIBUTE else "return", known, seat))
+            apply_and_record(state, action, stream)
             built.events += 1
             continue
-        if phase != PLAY:
-            raise MirrorError(f"replay reached phase {phase} with {len(moves) - position} "
-                              "moves left")
+        if phase != pe.PHASE_PLAY:
+            raise MirrorError("replay reached phase %d with %d moves left"
+                              % (phase, len(moves) - position))
         if position == len(moves):
             if seat != me:
-                raise MirrorError(f"replay ends with seat {seat} to move, not ours ({me})")
+                raise MirrorError("replay ends with seat %d to move, not ours (%d)" % (seat, me))
             if built.stand_ins:
                 raise MirrorError("a stand-in tribute choice reached the play phase")
             return built
         move = moves[position]
-        actions = engine.legal_actions(state)
-        pass_action = next((a for a in actions if a.is_pass), None)
-        if pass_action is not None and implied.allowed(position, seat):
-            matched = None if move.seat != seat else _match_play(actions, move, level)[0]
-            if matched is None or (not move.is_pass
-                                   and implied.jiefeng_pending(state, seat, holder, position)):
-                apply_and_observe(engine, state, pass_action, listeners)
+        action = _move_action(move, level)
+        following = not state.top.is_pass
+        if following and implied.allowed(position, seat):
+            playable = move.seat == seat and _playable(state, action)
+            if not playable or (not move.is_pass
+                                and implied.jiefeng_pending(state, seat, holder, position)):
+                apply_and_record(state, pe.PASS_ACTION, stream)
                 implied.use(position, seat)
                 built.events += 1
                 built.implied_passes += 1
                 continue
         if move.seat != seat:
-            raise MirrorError(f"move {position} by seat {move.seat}, gd has seat {seat} to move")
-        action, how = _match_play(actions, move, level)
-        if action is None:
-            raise MirrorError(f"move {position} {move} is not legal in gd")
-        if how != "exact":
-            built.notes.append(f"reading:{position}")
-        if pass_action is None:
+            raise MirrorError("move %d by seat %d, the replay has seat %d to move"
+                              % (position, move.seat, seat))
+        if not _playable(state, action):
+            raise MirrorError("move %d %r is not playable" % (position, move))
+        if not following:
             holder = -1                       # a new trick starts with this lead
         if not action.is_pass:
             holder = seat
-        apply_and_observe(engine, state, action, listeners)
+        apply_and_record(state, action, stream)
         built.events += 1
         position += 1
 
 
-def own_hand(log: RoundLog, built: Rebuilt) -> list[int]:
-    """Our physical ids, matched to gd's view of our hand."""
+def own_hand(log: RoundLog, built: Rebuilt) -> List[int]:
+    """Our physical ids, matched to the replay's view of our hand."""
     me = log.me
     physical = list(log.deliver)
     tribute_route = routing(log, {s: card_to_gd(c) for s, c in log.tribute_cards.items()})
@@ -418,11 +409,11 @@ def own_hand(log: RoundLog, built: Rebuilt) -> list[int]:
     return physical
 
 
-def decision_arrays(built: Rebuilt, actions) -> tuple[np.ndarray, np.ndarray]:
+def decision_arrays(built: Rebuilt, actions: Sequence[pe.Action]
+                    ) -> Tuple[np.ndarray, np.ndarray]:
     """Observation and candidate encodings of the seat to move."""
-    state, canon = built.state, built.canon
-    seat = int(state.to_move)
-    obs = np.asarray(state.observation(seat), dtype=np.float32)
-    cand = np.stack([np.asarray(canon.encode_action(a, state, seat), dtype=np.float32)
-                     for a in actions])
+    state = built.state
+    seat = state.to_move
+    obs = pe.encode_observation(state, seat)
+    cand = np.stack([pe.encode_action(a, state, seat) for a in actions])
     return obs, cand

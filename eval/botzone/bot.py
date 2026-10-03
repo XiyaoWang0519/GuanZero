@@ -1,53 +1,66 @@
 """Botzone GuanDan bot: the history Transformer behind the Botzone JSON protocol.
 
-One turn: rebuild the round from every request so far (``eval.botzone.mirror``),
-then answer. Tribute and back-tribute use the engine's tribute heuristic on
-our own hand, exactly as every evaluation of the history player does; plays
-are the greedy argmax of the NumPy actor (``eval.botzone.numpy_actor``) over
-the canonical candidates Botzone can express. A failure anywhere falls back
-to a safe legal answer and says so in ``debug``.
+One turn: rebuild the round from every request so far (``mirror``), then
+answer. Tribute and back-tribute use the engine's tribute heuristic on our
+own hand, exactly as every evaluation of the history player does; plays are
+the greedy argmax of the NumPy actor (``numpy_actor``) over the canonical
+candidates Botzone can express. A failure anywhere falls back to a safe legal
+answer and says so in ``debug``.
 
 Modes, as on Botzone: by default one JSON line in (``{"requests", "responses"}``),
 one line out, exit. ``--keep-running`` prints Botzone's keep-running marker
-and then reads one bare request per line (local judge speed).
+and then reads one bare request per line.
 
-Weights: ``--weights PATH``, else ``$GZ_BOTZONE_WEIGHTS``, else ``data/gz_actor.npz``
-(Botzone user storage), else ``gz_actor.npz`` next to this file.
+Weights: ``--weights PATH``, else ``$GZ_BOTZONE_WEIGHTS``, else
+``data/gz_actor.npz`` (Botzone user storage), else ``gz_actor.npz`` next to
+this file or inside the uploaded zip.
+
+Needs only NumPy and the standard library; Python 3.6 compatible.
 """
-from __future__ import annotations
-
+import io
 import json
 import os
-from pathlib import Path
 import sys
 import time
 import traceback
+import zipfile
+from typing import List, Optional
 
 import numpy as np
 
-from eval.botzone.protocol import (RoundLog, card_to_gd, claim_faces, physical_claim)
+from . import pyengine as pe
+from .protocol import RoundLog, card_to_gd, claim_faces, physical_claim
 
 KEEP_RUNNING = ">>>BOTZONE_REQUEST_KEEP_RUNNING<<<"
+WEIGHTS_NAME = "gz_actor.npz"
 
 
-def find_weights(explicit: str | None = None) -> Path | None:
-    here = Path(__file__).resolve().parent
+def find_weights(explicit: Optional[str] = None):
+    """A weights path, an open file object from inside our zip, or None."""
+    here = os.path.dirname(os.path.abspath(__file__))
     for candidate in (explicit, os.environ.get("GZ_BOTZONE_WEIGHTS"),
-                      os.path.join("data", "gz_actor.npz"), str(here / "gz_actor.npz")):
-        if candidate and Path(candidate).is_file():
-            return Path(candidate)
+                      os.path.join("data", WEIGHTS_NAME), os.path.join(here, WEIGHTS_NAME)):
+        if candidate and os.path.isfile(candidate):
+            return candidate
+    # Running from an uploaded zip: the weights sit at the archive root.
+    archive = here
+    while archive and not os.path.isfile(archive):
+        parent = os.path.dirname(archive)
+        archive = "" if parent == archive else parent
+    if archive and zipfile.is_zipfile(archive):
+        with zipfile.ZipFile(archive) as z:
+            if WEIGHTS_NAME in z.namelist():
+                return io.BytesIO(z.read(WEIGHTS_NAME))
     return None
 
 
-class Bot:
-    def __init__(self, weights: Path | None) -> None:
-        from eval.botzone.numpy_actor import NumpyHistoryActor
+class Bot(object):
+    def __init__(self, weights) -> None:
+        from .numpy_actor import NumpyHistoryActor
 
         self.actor = NumpyHistoryActor.load(weights) if weights is not None else None
-        self.notes: list[str] = []
-        self.last_choice: dict | None = None
-
-    # -- answers ---------------------------------------------------------------
+        self.notes = []          # type: List[str]
+        self.last_choice = None
 
     def respond(self, log: RoundLog) -> object:
         self.notes = []
@@ -62,36 +75,29 @@ class Bot:
             return self._fallback(log)
 
     def _respond(self, log: RoundLog) -> object:
-        from eval.botzone.mirror import decision_arrays, own_hand, rebuild
+        from .mirror import decision_arrays, own_hand, rebuild
 
         built = rebuild(log)
-        self.notes.extend(built.notes)
-        state, canon = built.state, built.canon
-        if int(state.to_move) != log.me:
-            raise RuntimeError(f"replay has seat {state.to_move} to move, not {log.me}")
+        state = built.state
+        if state.to_move != log.me:
+            raise RuntimeError("replay has seat %d to move, not %d" % (state.to_move, log.me))
         hand = own_hand(log, built)
-        self.notes.extend(n for n in built.notes if n not in self.notes)
-        actions = canon.legal_actions(state)
+        self.notes.extend(built.notes)
+        actions = state.legal_actions()
         if log.stage in ("tribute", "return"):
-            action = actions[canon.greedy(state)]
-            face = list(action.cards)[0]
-            return [self._physical([face], hand)[0]]
+            action = actions[pe.tribute_choice(state, actions)]
+            return [self._physical(action.cards, hand)[0]]
         if log.stage != "play":
             return []
-        expressible = []
         declared = []
         for action in actions:
-            if action.is_pass:
-                expressible.append(True)
-                declared.append([])
-                continue
-            claim = claim_faces(action.type, int(action.key), list(action.cards), log.level)
-            expressible.append(claim is not None)
-            declared.append(claim)
+            declared.append([] if action.is_pass else
+                            claim_faces(action.type_name, action.key, action.cards, log.level))
+        expressible = [d is not None for d in declared]
         if not any(expressible):
             raise RuntimeError("no candidate Botzone can express")
         if self.actor is None or len(actions) == 1:
-            choice = next(i for i, ok in enumerate(expressible) if ok)
+            choice = expressible.index(True)
         else:
             obs, cand = decision_arrays(built, actions)
             tokens, rounds, phases = built.stream.arrays()
@@ -101,16 +107,15 @@ class Bot:
             if choice != int(np.argmax(logits)):
                 self.notes.append("inexpressible_top")
         action = actions[choice]
-        self.last_choice = {"type": action.type, "key": int(action.key),
-                            "cards": sorted(int(c) for c in action.cards)}
+        self.last_choice = {"type": action.type_name, "key": action.key, "cards": action.cards}
         if action.is_pass:
             return [[], []]
-        faces = list(action.cards)
+        faces = action.cards
         used = self._physical(faces, hand)
         return [used, physical_claim(faces, declared[choice], used)]
 
     @staticmethod
-    def _physical(faces: list[int], hand: list[int]) -> list[int]:
+    def _physical(faces: List[int], hand: List[int]) -> List[int]:
         pool = list(hand)
         out = []
         for face in faces:
@@ -120,7 +125,7 @@ class Bot:
                     out.append(card)
                     break
             else:
-                raise RuntimeError(f"face {face} is not in our physical hand")
+                raise RuntimeError("face %d is not in our physical hand" % face)
         return out
 
     def _fallback(self, log: RoundLog) -> object:
@@ -136,7 +141,8 @@ class Bot:
                         hand.remove(card)
         if log.stage in ("tribute", "return"):
             return [hand[0]] if hand else []
-        last_own = max([i for i, m in enumerate(log.moves) if m.seat == log.me], default=-1)
+        own = [i for i, m in enumerate(log.moves) if m.seat == log.me]
+        last_own = own[-1] if own else -1
         following = any(not m.is_pass and m.seat != log.me for m in log.moves[last_own + 1:])
         if following or not hand:
             return [[], []]
@@ -145,21 +151,19 @@ class Bot:
 
 
 def answer(bot: Bot, requests: list, responses: list) -> dict:
-    started = time.perf_counter()
+    started = time.time()
     log = RoundLog.from_turns(requests, responses)
     response = bot.respond(log)
-    debug = {"ms": round(1000 * (time.perf_counter() - started), 1)}
+    debug = {"ms": round(1000 * (time.time() - started), 1)}
     if bot.notes:
         debug["notes"] = bot.notes
     return {"response": response, "debug": json.dumps(debug)[:1000]}
 
 
-def main(argv: list[str] | None = None) -> None:
+def main(argv: Optional[List[str]] = None) -> None:
     argv = list(sys.argv[1:] if argv is None else argv)
     keep_running = "--keep-running" in argv
-    explicit = None
-    if "--weights" in argv:
-        explicit = argv[argv.index("--weights") + 1]
+    explicit = argv[argv.index("--weights") + 1] if "--weights" in argv else None
     bot = Bot(find_weights(explicit))
     line = sys.stdin.readline()
     if not line:

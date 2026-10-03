@@ -1,10 +1,10 @@
-# Botzone bot, steps 1, 2 and 4 (October 3, 2026)
+# Botzone bot, steps 1 to 4 (October 3, 2026)
 
 Goal: enter the main lineage (u15094, `aux-full/latest.pt`, id `98b489f5…`) on
 the Botzone GuanDan ladder, where DanLM ranked first in April 2026. Done here:
-the protocol layer (1), a NumPy forward pass (2) and a local judge (4). Not
-done: step 3, running without our compiled `gd` extension (Botzone's sandbox
-is Python 3.6 with NumPy), and any upload.
+the protocol layer (1), a NumPy forward pass (2), a pure-Python engine so the
+bot runs without our compiled `gd` extension in Botzone's Python 3.6 + NumPy
+sandbox (3), and a local judge (4). Not done: the upload.
 
 ## What exists
 
@@ -13,10 +13,12 @@ is Python 3.6 with NumPy), and any upload.
 | `eval/botzone/protocol.py` | Botzone card ids ↔ gd faces, levels, `claim` building and parsing, the per-round request log. Stdlib only, Python 3.6 grammar. |
 | `eval/botzone/numpy_actor.py` | The actor's inference path in NumPy (stream encoder, private query, candidate head). Python 3.6 grammar. |
 | `eval/botzone/export.py` | Checkpoint → `.npz` with the policy weights only. u15094: 1,357,953 parameters, 5.5 MB. |
-| `eval/botzone/mirror.py` | Rebuilds the round in gd from what one seat was told, then replays it into a public token stream. |
+| `eval/botzone/pyengine.py` | Pure-Python port of the gd parts the bot needs: canonical and full move generation in gd's order, tribute choices, the round state machine (house rules, `auto_pass` off), action and observation encoding, the tribute heuristic. Python 3.6 grammar. |
+| `eval/botzone/mirror.py` | Rebuilds the round in `pyengine` from what one seat was told, then replays it into a public token stream. Python 3.6 grammar. |
+| `eval/botzone/pack.py` | Builds the upload zip: a `gzbot` package, `__main__.py` and, with `--embed`, the weights (5.1 MB). |
 | `eval/botzone/bot.py` | The bot: traditional mode (default) and `--keep-running`. |
 | `eval/botzone/judge.py` | Local referee in gd speaking the Botzone protocol, with a torch reference check. |
-| `tests/test_botzone.py` | 9 tests. |
+| `tests/test_botzone.py`, `tests/test_botzone_engine.py` | 16 tests. |
 
 The bot plays exactly like our evaluations do. Tribute and back-tribute use
 the engine heuristic, and play is the greedy argmax over the canonical
@@ -71,7 +73,32 @@ with both wild cards as the pair (T-FH-04).
    `tribute_cards` values given as lists, and the ordering rules come from
    the wiki and FableDan's notes, not from logs of our own. The local judge
    reproduces our reading of them, not the platform.
-3. **Step 3.** `mirror.py` and `bot.py` need `gd` (move generation,
-   observation and action encoding, tribute heuristic). Botzone cannot load
-   our extension, so these need a pure-Python port, checked against gd
-   bit for bit, before the bot can run there.
+3. **Botzone limits not yet seen.** The upload size limit and whether the
+   sandbox accepts a zip with embedded weights are untested; the bot also
+   reads `data/gz_actor.npz` from Botzone user storage as a fallback.
+
+## Step 3: the pure-Python engine
+
+`pyengine.py` follows `cpp/src` line by line. `tests/test_botzone_engine.py`
+plays rounds in lockstep in both engines (no tribute, single, double, forced
+anti-tribute) and compares, at every step, the legal action list in gd's
+order (canonical, plus full mode on a third of the rounds), every seat's
+observation, the encoding of every candidate, the tribute heuristic's choice,
+the hands and the final order; and the move sets of random hands holding both
+wild cards against random tops in both modes. At 25 times the default size
+(600 rounds, 5,000 hands) everything matched exactly.
+
+The bot itself no longer imports gd or torch (a test runs the packed zip with
+both imports blocked). It now reads other seats' plays straight from their
+claims instead of looking them up in gd's full legal set, which also makes
+it faster: at most 58 ms per decision in process.
+
+Results with the pure-Python bot:
+
+- 600 judge games, same seed as above: identical to the gd version, with 0
+  illegal responses, 0 fallbacks, and 22,126 of 22,126 plays equal to the torch
+  policy (+2.39 levels per round against greedy).
+- The packed zip ran under Python 3.6.15 with NumPy 1.19.5 in Docker
+  (`python:3.6-slim`). Keep-running mode: 12 games, 469 of 469 plays equal to
+  the torch policy. Traditional mode, a new process per turn: 2 games, 41 of
+  41, at most 885 ms per turn including container start.

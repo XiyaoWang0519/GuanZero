@@ -182,7 +182,7 @@ def test_actor_inputs_do_not_depend_on_the_hidden_filling(player):
             views = []
             for seed in (0, 1, 2):
                 built = mirror.rebuild(log, seed=seed)
-                actions = built.canon.legal_actions(built.state)
+                actions = built.state.legal_actions()
                 obs, cand = mirror.decision_arrays(built, actions)
                 views.append((obs, cand, *built.stream.arrays()))
             for other in views[1:]:
@@ -220,3 +220,34 @@ def test_bot_process_both_modes(player, tmp_path):
         report = judge.run(seats, 1, 3, str(weights), swap=False)
         assert report["illegal"] == [], report
         assert not any(key.startswith("note_") for key in report["counts"]), report
+
+
+def test_packed_zip_runs_without_gd_or_torch(player, tmp_path):
+    """The upload archive runs from a clean path: no repo, no gd, no torch."""
+    import subprocess
+    import sys
+    from eval.botzone.pack import pack
+
+    _, _, weights = player
+    archive = tmp_path / "gz_bot.zip"
+    pack(weights, archive, embed=True)
+    guard = tmp_path / "guard"
+    guard.mkdir()
+    # Any import of gd or torch fails inside the bot process.
+    (guard / "gd.py").write_text("raise ImportError('gd is not available on Botzone')\n")
+    (guard / "torch.py").write_text("raise ImportError('torch is not available on Botzone')\n")
+    command = f"{sys.executable} {archive}"
+    env_path = str(guard)
+    import os
+    old = os.environ.get("PYTHONPATH")
+    os.environ["PYTHONPATH"] = env_path
+    try:
+        report = judge.run(["proc:" + command, "greedy", "proc:" + command + " --traditional",
+                            "greedy"], 1, 4, None, swap=False)
+    finally:
+        if old is None:
+            del os.environ["PYTHONPATH"]
+        else:
+            os.environ["PYTHONPATH"] = old
+    assert report["illegal"] == [], report
+    assert not any(key.startswith("note_") for key in report["counts"]), report
