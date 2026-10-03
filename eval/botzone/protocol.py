@@ -14,11 +14,10 @@ the card it stands for. A pass is ``[[], []]``.
 
 The judge asks every seat that has not finished, passes included, so the
 public play sequence equals ``gd``'s with ``auto_pass`` off. A play request's
-``history`` is positional on the real platform: four slots, slot ``i``
-holding the latest move of seat ``(me + i) % 4`` since our own last move, an
-empty list for a seat that did not move (observed by FableDan in platform
-logs; the wiki shows a list of ``{"player", "response"}`` dicts instead, and
-both are accepted here).
+``history`` on the platform (match logs, October 3, 2026) is the last four
+moves of the round in order, each ``{"player", "response"}``, padded at the
+front with ``[]`` or ``{}`` early in the round. Four positional slots, as
+FableDan describes, are accepted too.
 
 This module needs only the standard library and stays Python 3.6
 compatible: Botzone runs Python 3.6.
@@ -296,6 +295,7 @@ class RoundLog(object):
         self.stage = ""
         self.first_play_seen = False
         self.leader_hint = -1    # first mover of the round as the requests show it
+        self.positional = False  # a history arrived as positional slots
 
     def _global(self, g: dict) -> None:
         if not g:
@@ -323,16 +323,25 @@ class RoundLog(object):
                 self.leader_hint = self.me
             return
         new = []                 # type: List[Move]
-        if any(isinstance(h, dict) for h in history):
+
+        def is_move(entry) -> bool:
+            return isinstance(entry, dict) and "player" in entry and "response" in entry
+
+        if any(is_move(h) for h in history) or all(isinstance(h, dict) for h in history):
+            # The platform: the last four moves of the round in order, padded
+            # at the front with [] or {}. Our own latest move is among them
+            # unless more than three moves followed it (a jiefeng window).
             start = 0
             for i, entry in enumerate(history):
-                if isinstance(entry, dict) and int(entry.get("player", -1)) == self.me:
+                if is_move(entry) and int(entry["player"]) == self.me:
                     start = i + 1
             for entry in history[start:]:
-                if isinstance(entry, dict):
+                if is_move(entry):
                     action, claim = entry["response"]
                     new.append(Move(int(entry["player"]), action, claim))
         else:
+            # Positional slots (FableDan's description), kept for robustness.
+            self.positional = True
             for i in range(1, len(history)):
                 entry = history[i]
                 if isinstance(entry, list) and len(entry) == 2:

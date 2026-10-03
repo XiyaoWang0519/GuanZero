@@ -96,7 +96,10 @@ def test_round_log_reads_both_history_formats():
     wiki = {"stage": "play", "done": [], "pass_on": -1, "global": {"level": "5"},
             "history": [{"player": 3, "response": [[40], [40]]},
                         {"player": 0, "response": [[], []]}]}
-    for request in (positional, wiki):
+    platform = {"stage": "play", "done": [], "pass_on": -1, "global": {"level": "5"},
+                "history": [{}, {}, {"player": 3, "response": [[40], [40]]},
+                            {"player": 0, "response": [[], []]}]}
+    for request in (positional, wiki, platform):
         log = RoundLog.from_turns([deal, request], [[]])
         assert log.me == 1 and log.level == 3
         assert [(m.seat, m.action, m.is_pass) for m in log.moves] == [(3, [40], False),
@@ -200,10 +203,11 @@ def test_actor_inputs_do_not_depend_on_the_hidden_filling(player):
     assert len(checked) > 50
 
 
-def test_judge_games_match_the_torch_policy(player):
+@pytest.mark.parametrize("history_format", ["botzone", "positional"])
+def test_judge_games_match_the_torch_policy(player, history_format):
     _, checkpoint, weights = player
     report = judge.run(["bot", "greedy", "bot", "greedy"], 12, 9, str(weights),
-                       reference=str(checkpoint))
+                       reference=str(checkpoint), history_format=history_format)
     counts = report["counts"]
     assert report["illegal"] == []
     assert not any(key.startswith("note_") for key in counts), report["note_samples"]

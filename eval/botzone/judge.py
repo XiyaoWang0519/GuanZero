@@ -2,12 +2,14 @@
 
 The referee deals 108 physical cards, runs the tribute phases and the play in
 ``gd`` (``house`` rules, ``auto_pass`` off) and talks to each seat exactly the
-way the Botzone judge does, as far as the wiki and FableDan's platform notes
-describe it: requests per stage, tribute payers asked last-finisher first,
-back-tribute receivers first-finisher first, positional four-slot play
-history, ``done`` and ``pass_on``. Every response is checked: the cards must
-be in the seat's physical hand and the claim must name a legal ``gd``
-reading of them. An illegal or failed response ends the game as a loss for
+way the Botzone judge does, as far as the wiki and the platform's match logs
+show it: requests per stage, tribute payers asked last-finisher first,
+back-tribute receivers first-finisher first, the play history as the last
+four moves in order, padded with ``[]`` or ``{}`` as the platform sends it
+(``--history positional`` for four positional slots instead), ``done`` and
+``pass_on``. Every response is checked: the cards must be in the seat's
+physical hand and the claim must name a legal ``gd`` reading of them. An
+illegal or failed response ends the game as a loss for
 that seat's team, as on Botzone.
 
 Seats: ``bot`` (``eval.botzone.bot`` in-process, the traditional full-replay
@@ -181,7 +183,11 @@ class GreedySeat:
 # ---- referee ---------------------------------------------------------------------
 
 class Referee:
-    def __init__(self, seats: list, rng: random.Random, reference=None) -> None:
+    def __init__(self, seats: list, rng: random.Random, reference=None,
+                 history_format: str = "botzone") -> None:
+        if history_format not in ("botzone", "positional"):
+            raise ValueError("history_format is botzone or positional")
+        self.history_format = history_format
         self.seats = seats
         self.rng = rng
         self.reference = reference
@@ -196,6 +202,10 @@ class Referee:
         self.agree = Counter()
 
     # -- helpers -------------------------------------------------------------------
+
+    def padding(self) -> object:
+        """Empty history entry: the platform has sent both [] and {}."""
+        return {} if self.tribute else []
 
     def _global(self, full: bool) -> dict:
         g = {"level": LEVEL_NAMES[self.level], "tribute": self.tribute,
@@ -343,12 +353,17 @@ class Referee:
         decisions = 0
         while int(self.state.phase) == PLAY:
             seat = int(self.state.to_move)
-            last_self = max([i for i, (p, _) in enumerate(history) if p == seat], default=-1)
-            slots: list = [[], [], [], []]
-            if last_self >= 0:
-                slots[0] = history[last_self][1]
-            for p, response in history[last_self + 1:]:
-                slots[(p - seat) % 4] = response
+            if self.history_format == "positional":
+                last_self = max([i for i, (p, _) in enumerate(history) if p == seat], default=-1)
+                slots: list = [[], [], [], []]
+                if last_self >= 0:
+                    slots[0] = history[last_self][1]
+                for p, response in history[last_self + 1:]:
+                    slots[(p - seat) % 4] = response
+            else:
+                # The platform: the last four moves in order, front-padded.
+                slots = [{"player": p, "response": r} for p, r in history[-4:]]
+                slots = [self.padding() for _ in range(4 - len(slots))] + slots
             request = {"stage": "play", "history": slots, "done": list(done),
                        "pass_on": pass_on, "global": self._global(True)}
             reference_action = None
@@ -420,7 +435,7 @@ def make_seat(spec: str, bot: Bot | None):
 
 
 def run(seats_spec: list[str], games: int, seed: int, weights: str | None,
-        reference: str | None = None, swap: bool = True) -> dict:
+        reference: str | None = None, swap: bool = True, history_format: str = "botzone") -> dict:
     bot = Bot(find_weights(weights)) if "bot" in seats_spec else None
     ref = None
     if reference:
@@ -439,7 +454,7 @@ def run(seats_spec: list[str], games: int, seed: int, weights: str | None,
         if flipped:
             lineup = lineup[1:] + lineup[:1]      # the A team moves to seats 1 and 3
         seats = [make_seat(s, bot) for s in lineup]
-        referee = Referee(seats, random.Random(rng.getrandbits(63)), ref)
+        referee = Referee(seats, random.Random(rng.getrandbits(63)), ref, history_format)
         kind = kinds[game % 3] if game % 6 < 3 else kinds[(game // 2) % 3]
         try:
             result = referee.play_game(kind)
@@ -479,12 +494,15 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--reference", default=None,
                         help="history_ppo checkpoint to compare in-process bot plays against")
     parser.add_argument("--no-swap", action="store_true", help="keep team A in seats 0 and 2")
+    parser.add_argument("--history", default="botzone", choices=("botzone", "positional"),
+                        help="play history format sent to the bots")
     parser.add_argument("--out", default=None)
     args = parser.parse_args(argv)
     seats = args.seats.split(",")
     if len(seats) != 4:
         parser.error("--seats needs four entries")
-    report = run(seats, args.games, args.seed, args.weights, args.reference, not args.no_swap)
+    report = run(seats, args.games, args.seed, args.weights, args.reference, not args.no_swap,
+                 args.history)
     text = json.dumps(report, indent=2)
     print(text)
     if args.out:

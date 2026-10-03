@@ -20,8 +20,8 @@ pending decision. If an event it needs has not been announced yet (the judge
 asks the two tribute payers, and the two receivers, in its own order), a
 stand-in legal choice of that seat is applied; this only happens before our
 own tribute or back-tribute, which use the tribute heuristic on our own hand.
-Passes the positional history overwrote (see ``_ImpliedPasses``) are
-restored as passes.
+Passes the history no longer shows (see ``_ImpliedPasses``) are restored
+as passes.
 
 Python 3.6 compatible, NumPy only.
 """
@@ -268,13 +268,14 @@ def _playable(state: pe.State, action: pe.Action) -> bool:
 
 
 class _ImpliedPasses(object):
-    """Passes the positional play history overwrote.
+    """Passes the play history no longer shows.
 
-    Between two of our turns the history keeps each seat's latest move only.
-    A seat moves twice in that window only when the lead jumps to a finished
-    seat's partner (jiefeng): the passes that closed the finished seat's
-    trick are lost. A pass may therefore be restored for a seat other than
-    ours that still moves later in the same window, at most once per window.
+    A seat moves twice between two of our turns only when the lead jumps to
+    a finished seat's partner (jiefeng). The platform's last-four list then
+    keeps every move unless more than four happened; positional slots keep
+    each seat's latest move only and lose the passes that closed the
+    finished seat's trick. A pass may be restored for a seat other than ours
+    that still moves later in the same window, at most once per window.
     """
 
     def __init__(self, moves: Sequence[Move], me: int) -> None:
@@ -364,7 +365,9 @@ def rebuild(log: RoundLog, seed: int = 0, stream_factory=None) -> Rebuilt:
         following = not state.top.is_pass
         if following and implied.allowed(position, seat):
             playable = move.seat == seat and _playable(state, action)
-            if not playable or (not move.is_pass
+            # Only positional slots can hide the passes before a jiefeng lead;
+            # the platform's last-four list keeps them.
+            if not playable or (log.positional and not move.is_pass
                                 and implied.jiefeng_pending(state, seat, holder, position)):
                 apply_and_record(state, pe.PASS_ACTION, stream)
                 implied.use(position, seat)
