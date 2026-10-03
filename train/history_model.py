@@ -26,7 +26,7 @@ reused from the old player; no old weights, references or datasets.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 import math
 from pathlib import Path
 from typing import Any
@@ -41,6 +41,8 @@ from train.ckpt import load_checkpoint, save_checkpoint
 from train.logs import TOKEN_DIM, public_token
 from train.model import mlp
 from train.history_response import RESPONSE_CLASSES
+from train.history_aux import (HIDDEN_SEATS, NEXT_LOGITS, NUM_CARDS, canonical_aux_heads,
+                               parse_aux_heads)
 
 STAGE = "history_ppo"
 TOKEN_SCHEMA_VERSION = 1      # 186 public dims + round index + phase; no forced bit
@@ -69,8 +71,16 @@ class HistoryPolicyConfig:
     # true style z enters the private query through a zero-initialised
     # embedding. Recorded in checkpoints only when on (``config_record``).
     style_input: bool = False
+    # Auxiliary prediction heads on the shared encoder (train/history_aux.py):
+    # a comma-separated subset of "next", "belief", "outcome" in that order.
+    # They read the encoder/decision state and never enter the scoring path.
+    # Recorded in checkpoints only when non-empty (``config_record``).
+    aux_heads: str = ""
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "aux_heads", canonical_aux_heads(self.aux_heads))
+        if "next" in self.aux_head_names and self.window:
+            raise ValueError("the next-token head needs the full-history encoder (window 0)")
         if min(self.width, self.layers, self.heads, self.max_rounds, self.action_width,
                self.fusion_width, self.critic_width, self.critic_layers) <= 0:
             raise ValueError("every size must be positive")
@@ -81,13 +91,20 @@ class HistoryPolicyConfig:
         if self.response_mode not in ("none", "auxiliary", "explicit"):
             raise ValueError("response_mode must be none, auxiliary or explicit")
 
+    @property
+    def aux_head_names(self) -> tuple[str, ...]:
+        return parse_aux_heads(self.aux_heads)
+
 
 def config_record(config: HistoryPolicyConfig) -> dict[str, Any]:
-    """``asdict(config)`` without ``style_input`` when it is off, so every
-    other checkpoint keeps its exact architecture record."""
+    """``asdict(config)`` without ``style_input`` when it is off and without
+    ``aux_heads`` when empty, so every other checkpoint keeps its exact
+    architecture record."""
     record = asdict(config)
     if not record["style_input"]:
         del record["style_input"]
+    if not record["aux_heads"]:
+        del record["aux_heads"]
     return record
 
 
@@ -410,9 +427,46 @@ class HistoryActor(nn.Module):
                                                   width + config.action_width, bias=False)
                 nn.init.zeros_(self.response_bridge.weight)
         if config.style_input:
-            # Last, so every other parameter keeps its initialisation and order.
+            # After the base actor, so every other parameter keeps its initialisation and order.
             self.style_embedding = nn.Embedding(3, width)
             nn.init.zeros_(self.style_embedding.weight)
+        # Auxiliary heads come last (``extend_actor`` and the optimizer remap rely
+        # on it) and draw from a forked RNG stream, so the base actor and the
+        # critic created after it are initialised exactly as without heads.
+        heads = config.aux_head_names
+        if heads:
+            with torch.random.fork_rng(devices=[]):
+                torch.manual_seed(0x4175)
+                if "next" in heads:
+                    self.next_head = nn.Sequential(mlp(width, width, 1), nn.Linear(width, NEXT_LOGITS))
+                if "belief" in heads:
+                    self.belief_head = nn.Sequential(mlp(width, width, 1),
+                                                     nn.Linear(width, NUM_CARDS * HIDDEN_SEATS))
+                if "outcome" in heads:
+                    self.outcome_head = nn.Sequential(mlp(width, width, 1), nn.Linear(width, 1))
+
+    # -- auxiliary heads --------------------------------------------------------
+
+    @property
+    def aux_head_names(self) -> tuple[str, ...]:
+        return self.config.aux_head_names
+
+    def auxiliary_parameter_names(self) -> set[str]:
+        """State-dict keys that belong to the auxiliary heads."""
+        prefixes = tuple(f"{name}_head." for name in self.aux_head_names)
+        return {key for key in self.state_dict() if key.startswith(prefixes)} if prefixes else set()
+
+    def next_logits(self, encoded: Tensor) -> Tensor:
+        """``[B, S, NEXT_LOGITS]`` next-token logits for encoded positions ``[B, S, width]``."""
+        return self.next_head(encoded)
+
+    def belief_logits(self, state: Tensor) -> Tensor:
+        """``[n, 54, 3]``: per card, the relative seat (+1, +2, +3) of each unseen copy."""
+        return self.belief_head(state).view(len(state), NUM_CARDS, HIDDEN_SEATS)
+
+    def outcome_value(self, state: Tensor) -> Tensor:
+        """``[n]`` predicted round return of the acting team."""
+        return self.outcome_head(state).squeeze(-1)
 
     # -- public side ----------------------------------------------------------
 
@@ -552,12 +606,16 @@ class HistoryActor(nn.Module):
         out = out.transpose(1, 2)[match_index, rank].reshape(count, width)
         return self.out_proj(out)
 
-    def decision_states(self, encoded: Tensor | None, inputs: DecisionInputs) -> Tensor:
+    def decision_states(self, encoded: Tensor | None, inputs: DecisionInputs,
+                        collect: list | None = None) -> Tensor:
         """One state per decision from its private query and visible prefix.
 
         ``encoded`` is ``encode_batch(inputs.streams)`` for the full-history
         actor and is ignored by the windowed control, which encodes its own
         per-decision windows. A decision attends to positions ``<= prefix``.
+        ``collect``, when a list, receives every encoded stream tensor this
+        call produced as ``(encoded, group)`` (``group`` None for the whole
+        batch) for the next-token head; the computation itself is unchanged.
         """
         query = self.private(inputs.obs.float()) + self.seat(inputs.seat)
         if self.config.style_input:
@@ -570,10 +628,12 @@ class HistoryActor(nn.Module):
             allowed = torch.arange(stream.shape[1], device=stream.device)[None] <= lengths[:, None]
             attended = self._attend(query, keys, values, allowed)
         elif encoded is None and inputs.match_groups is not None:
-            attended = self._attend_length_groups(query, inputs)
+            attended = self._attend_length_groups(query, inputs, collect)
         else:
             if encoded is None:
                 encoded = self.encode_batch(inputs.streams)
+            if collect is not None:
+                collect.append((encoded, None))
             attended = self._attend_encoded(query, encoded, inputs.match_index, inputs.prefix,
                                             inputs.one_decision_per_stream,
                                             inputs.match_rank, inputs.match_slots)
@@ -606,7 +666,8 @@ class HistoryActor(nn.Module):
             attended[rows] = self._attend(query[rows], keys[b:b + 1], values[b:b + 1], allowed)
         return attended
 
-    def _attend_length_groups(self, query: Tensor, inputs: DecisionInputs) -> Tensor:
+    def _attend_length_groups(self, query: Tensor, inputs: DecisionInputs,
+                              collect: list | None = None) -> Tensor:
         """``_attend_encoded`` per length group: each group's streams are encoded
         only as far as its decisions read (causal, so every visible position is
         exactly what the full-length encode gives) and padded only to the
@@ -618,6 +679,8 @@ class HistoryActor(nn.Module):
             encoded = self.encode_stream(s.tokens[group.matches, :n], s.rounds[group.matches, :n],
                                          s.phases[group.matches, :n],
                                          s.lengths[group.matches].clamp(max=n))
+            if collect is not None:
+                collect.append((encoded, group))
             parts.append(self._attend_encoded(query[group.rows], encoded, group.local_match,
                                               inputs.prefix[group.rows], False,
                                               group.match_rank, group.match_slots))
@@ -839,3 +902,20 @@ def load_history_checkpoint(path: str | Path, device: str | torch.device = "cpu"
     actor.load_state_dict(payload["model"])
     critic.load_state_dict(payload["critic"])
     return actor.to(device), critic.to(device), payload
+
+
+def extend_actor(base: HistoryActor, config: HistoryPolicyConfig) -> HistoryActor:
+    """The same actor with ``config``'s auxiliary heads added (freshly
+    initialised); every other parameter is copied, so the policy is unchanged.
+    Only ``aux_heads`` may differ between the two configurations, and heads
+    are never removed."""
+    if config_record(replace(base.config, aux_heads=config.aux_heads)) != config_record(config):
+        raise ValueError("extend_actor changes only the auxiliary heads")
+    if not set(base.aux_head_names) <= set(config.aux_head_names):
+        raise ValueError("auxiliary heads cannot be removed from a trained actor")
+    actor = HistoryActor(config)
+    missing, unexpected = actor.load_state_dict(base.state_dict(), strict=False)
+    added = actor.auxiliary_parameter_names() - base.auxiliary_parameter_names()
+    if unexpected or set(missing) != added:
+        raise ValueError(f"extended actor weights do not fit: missing {missing}, extra {unexpected}")
+    return actor.to(next(base.parameters()).device)

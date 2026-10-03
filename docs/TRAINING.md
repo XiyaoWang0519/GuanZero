@@ -169,6 +169,36 @@ profile of chosen updates through `GUANZERO_TORCH_PROFILE_DIR` and
 match `main` exactly in three configurations. No GPU measurement exists yet; the
 prepared kit is `.work/speed-prep-2026-10-01/`.
 
+## Auxiliary heads on the shared encoder (October 2)
+
+`--aux-heads next,belief,outcome` (any subset; `train/history_aux.py`, report
+[aux-heads-2026-10-02](reports/aux-heads-2026-10-02.md)) adds supervised heads
+that read the encoder or decision state and never enter the scoring path:
+`next` predicts the next public token at every encoded stream position (all
+seats and phases; factorised over the token's fields, not a flat action
+vocabulary), `belief` predicts for each card the relative seat of every unseen
+copy from the stored hidden counts, `outcome` regresses the acting team's round
+return. Their summed loss enters the actor loss with `--aux-coef` (default 0.1),
+ramped linearly over `--aux-warmup-updates` updates from the heads' insertion.
+Metrics: `aux_loss`, `aux_coefficient`, `next_loss`, `next_type_accuracy`,
+`next_seat_accuracy`, `next_cards_exact`, `belief_loss` against
+`belief_baseline` (the hand-size proportional guess that uniform determinization
+implies), `outcome_loss` against `outcome_baseline` (target variance).
+
+A trained lineage takes the heads on resume:
+`--resume latest.pt --resume-set aux_heads=next,belief,outcome --resume-set
+aux_coef=0.1 --resume-set aux_warmup_updates=200`. Head weights start fresh,
+every other weight and its Adam moments continue, the policy is identical at
+insertion (checked bitwise on u9989's weights), the change is recorded in
+`config_changes` and `progress.aux_start_update`, and old population snapshots
+load without head weights (snapshot digests and saved snapshots exclude heads).
+Heads cannot be removed. With `aux_heads` empty the trainer is bitwise the
+previous code (three single-threaded CPU updates in the production
+configuration match commit `fabcb71`). CPU cost at the production architecture:
+learn +4 to +6 percent, collect unchanged. Readiness: CPU tests only
+(`tests/test_history_aux.py`); the CUDA gate and the three-arm night from u9989
+(control | next | next+belief+outcome, evaluated against DanLM) have not run.
+
 ## Planted-habit diagnostic (September 30)
 
 Diagnostic only, with the three exceptions approved on September 30 (fixed

@@ -22,6 +22,14 @@ import torch
 from train.history_model import HistoryActor
 
 
+def snapshot_weights(model: HistoryActor) -> dict[str, torch.Tensor]:
+    """A snapshot's acting weights: the state dict without auxiliary heads, which
+    snapshots never use. Digests and saved snapshots are over this view, so a
+    lineage keeps its snapshot identities when heads are added."""
+    skip = model.auxiliary_parameter_names()
+    return {k: v for k, v in model.state_dict().items() if k not in skip}
+
+
 def weights_digest(state: dict[str, torch.Tensor]) -> str:
     digest = hashlib.sha256()
     for name, tensor in sorted(state.items()):
@@ -59,7 +67,7 @@ class HistoryPopulation:
         model = copy.deepcopy(self.actor).requires_grad_(False).train()
         self.models[identity] = model
         self.metadata[identity] = dict(identity=identity, lineage=self.lineage,
-                                       update=update, sha256=weights_digest(model.state_dict()))
+                                       update=update, sha256=weights_digest(snapshot_weights(model)))
         if self.archive_every and update % self.archive_every == 0:
             self.archive.append(identity)
             if len(self.archive) > self.archive_size:
@@ -110,7 +118,7 @@ class HistoryPopulation:
                     seat_matches=dict(self.seat_matches), decisions=dict(self.decisions),
                     snapshots={i: dict(metadata=self.metadata[i],
                                        model={k: v.detach().cpu().clone()
-                                              for k, v in model.state_dict().items()})
+                                              for k, v in snapshot_weights(model).items()})
                                for i, model in self.models.items()})
 
     def load_state_dict(self, state: dict) -> None:
@@ -128,7 +136,12 @@ class HistoryPopulation:
                     or weights_digest(record["model"]) != meta["sha256"]):
                 raise ValueError("population snapshot identity/digest mismatch")
             model = copy.deepcopy(self.actor).requires_grad_(False).train()
-            model.load_state_dict(record["model"])
+            # A snapshot saved before auxiliary heads were added lacks their
+            # weights; snapshots only act, so those heads keep the copied values.
+            missing, unexpected = model.load_state_dict(record["model"], strict=False)
+            if unexpected or not set(missing) <= model.auxiliary_parameter_names():
+                raise ValueError(f"population snapshot weights do not fit: missing {missing}, "
+                                 f"extra {unexpected}")
             self.models[identity], self.metadata[identity] = model, dict(meta)
         self.archive = [int(i) for i in state.get("archive", [])]
         if not set(self.archive) <= set(self.models):
