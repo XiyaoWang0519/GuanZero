@@ -10,6 +10,8 @@ seat's decisions in the current episode; the strategy only prints those two.
 from AIAction_back import AIAction
 from state import State
 
+from eval.ogd_ladder.glue import _compat
+
 
 class Glue:
     def __init__(self) -> None:
@@ -19,6 +21,7 @@ class Glue:
         self.rounds = 0
 
     def handle(self, msg: dict):
+        msg = _compat.fix_beginning(msg)
         if msg.get("stage") == "beginning":
             self.pos = msg["myPos"]
             self.rounds = 0

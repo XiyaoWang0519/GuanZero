@@ -6,11 +6,14 @@ classes take the client's open log file (only printed to; a ``str`` would be
 turned into an unbounded StringIO, so we pass ``/dev/null``). ``MyAction``
 reads the hand grouping (``myOrderedCards``) and teammate/opponent tracking
 the ``State`` builds from every message, so ``state.parse`` runs first.
+Protocol fix: integer ranks in the beginning notify (``_compat.fix_beginning``).
 """
 import os
 
 from my_action import MyAction
 from state import State
+
+from eval.ogd_ladder.glue import _compat
 
 
 class Glue:
@@ -20,6 +23,7 @@ class Glue:
         self.action = MyAction(log)
 
     def handle(self, msg: dict):
+        msg = _compat.fix_beginning(msg)
         try:
             self.state.parse(msg)
         except KeyError:
