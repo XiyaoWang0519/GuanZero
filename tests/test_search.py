@@ -105,3 +105,105 @@ def test_search_spec_takes_config_overrides():
                 "search@unseen_threshold=30:"):
         with pytest.raises(ValueError):
             load_policy(bad)
+
+
+def test_history_search_isolates_branches_and_hidden_truth():
+    import numpy as np
+    import torch
+    from eval.history_policy import HistoryPolicy, apply_and_observe, resolve_forced_passes
+    from train.history_model import HistoryPolicyConfig, fresh_player
+
+    torch.set_num_threads(1)
+    actor, _ = fresh_player(HistoryPolicyConfig(width=16, layers=1, heads=2,
+        action_width=16, fusion_width=16, critic_width=16, critic_layers=1), seed=3)
+    base = HistoryPolicy(actor)
+    search = SearchPolicy(base, SearchConfig(time_ms=10000, max_worlds=2, max_actions=3))
+    search.start_match()
+    engine, state = gd.Engine(), gd.MatchState()
+    engine.auto_pass = False
+    engine.new_match(state, 33)
+    for _ in range(300):
+        resolve_forced_passes(engine, state, [search])
+        assert state.phase == gd.Phase.Play
+        actions = engine.legal_actions(state)
+        unseen = 108 - len(state.hand(state.to_move)) - sum(len(state.played(s)) for s in range(4))
+        if unseen <= 12 and len(actions) >= 2:
+            break
+        apply_and_observe(engine, state, actions[engine.greedy(state)], [search])
+    else:
+        raise AssertionError('no late decision')
+    before = [a.copy() for a in base.stream.arrays()]
+    serialized = state.serialize()
+    alternate = state.determinize_uniform(state.to_move, 991)
+    choices = []
+    for source in (state, alternate):
+        choices.append(search.select(engine, source, engine.legal_actions(source), random.Random(765)))
+        for expected, actual in zip(before, base.stream.arrays()):
+            np.testing.assert_array_equal(expected, actual)
+        assert state.serialize() == serialized
+        assert engine.auto_pass is False
+    assert search.completed == 2 and choices[0] == choices[1]
+    # An expired budget also preserves the live stream and root decision.
+    fallback = SearchPolicy(base, SearchConfig(time_ms=0.000001))
+    assert fallback.select(engine, state, actions, random.Random(7)) == base.select(engine, state, actions, random.Random(7))
+    assert fallback.fallbacks == 1
+    for expected, actual in zip(before, base.stream.arrays()):
+        np.testing.assert_array_equal(expected, actual)
+
+
+def test_history_search_checkpoint_duplicate_lifecycle(tmp_path):
+    import torch
+    from eval.policies import load_policy
+    from eval.duplicate import generate_deals, play_duplicate
+    from train.history_model import HistoryPolicyConfig, fresh_player, checkpoint_payload, save_history_checkpoint
+
+    torch.set_num_threads(1)
+    actor, critic = fresh_player(HistoryPolicyConfig(width=16, layers=1, heads=2,
+        action_width=16, fusion_width=16, critic_width=16, critic_layers=1), seed=3)
+    path = tmp_path / 'history.pt'
+    save_history_checkpoint(path, checkpoint_payload(actor, critic, lineage='test', seed=3))
+    search = load_policy(f'search@time_ms=0.000001:{path}')
+    opponent = load_policy(str(path))
+    score = play_duplicate(generate_deals(1, 13)[0], search, opponent, 5)
+    assert score.pair_difference == 0
+    assert search.blueprint.matches_started == opponent.matches_started == 2
+    assert search.blueprint.stream is not opponent.stream
+
+
+@pytest.mark.parametrize('batch_size', [1, 5, 64])
+def test_all_actions_batched_search_matches_scalar(batch_size):
+    import numpy as np
+    import torch
+    from eval.history_policy import HistoryPolicy, apply_and_observe, resolve_forced_passes
+    from train.history_model import HistoryPolicyConfig, fresh_player
+    torch.set_num_threads(1)
+    actor, _ = fresh_player(HistoryPolicyConfig(width=16, layers=1, heads=2,
+        action_width=16, fusion_width=16, critic_width=16, critic_layers=1), seed=3)
+    base = HistoryPolicy(actor)
+    base.start_match()
+    engine, state = gd.Engine(), gd.MatchState()
+    engine.auto_pass = False
+    engine.new_match(state, 33)
+    for _ in range(300):
+        resolve_forced_passes(engine, state, [base])
+        actions = engine.legal_actions(state)
+        unseen = 108-len(state.hand(state.to_move))-sum(len(state.played(s)) for s in range(4))
+        if unseen <= 12 and len(actions) > 4:
+            break
+        apply_and_observe(engine, state, actions[engine.greedy(state)], [base])
+    else:
+        raise AssertionError('no wide late root')
+    original = [a.copy() for a in base.stream.arrays()]
+    results = []
+    for size in (0, batch_size):
+        policy = SearchPolicy(base, SearchConfig(max_actions=0, max_worlds=4, min_worlds=4,
+            max_rollout_steps=0, time_ms=60000, selection='mean', rollout_batch_size=size))
+        chosen = policy.select(engine, state, actions, random.Random(71))
+        record = policy.decisions[0]
+        assert record['candidates'] == record['legal_actions'] == len(actions)
+        assert record['worlds'] == 4
+        results.append((chosen, record['means']))
+        for old, current in zip(original, base.stream.arrays()):
+            np.testing.assert_array_equal(old, current)
+        assert not engine.auto_pass
+    assert results[0] == results[1]
