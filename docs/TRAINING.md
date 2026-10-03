@@ -195,9 +195,10 @@ load without head weights (snapshot digests and saved snapshots exclude heads).
 Heads cannot be removed. With `aux_heads` empty the trainer is bitwise the
 previous code (three single-threaded CPU updates in the production
 configuration match commit `fabcb71`). CPU cost at the production architecture:
-learn +4 to +6 percent, collect unchanged. Readiness: CPU tests only
-(`tests/test_history_aux.py`); the CUDA gate and the three-arm night from u9989
-(control | next | next+belief+outcome, evaluated against DanLM) have not run.
+learn +4 to +6 percent, collect unchanged. Readiness: CUDA-gated and run
+(Oct 3 2026): from u9989, one night, control -1.635 / next -1.649 / all three
+heads **-1.558** against DanLM (±0.035; report). The heads are a production
+option; a resume with `--resume-set aux_heads=...` is the launch path.
 
 ## Planted-habit diagnostic (September 30)
 
