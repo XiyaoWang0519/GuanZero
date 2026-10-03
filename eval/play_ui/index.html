@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>掼蛋人机对战</title>
+<style>
+:root {
+  --felt: #1f5d3f; --felt-dark: #174a32; --ink: #f3f1e8; --muted: #b9cbbd;
+  --card: #fffdf7; --red: #c8312b; --black: #1d1d1f; --gold: #f2c14e;
+  --panel: rgba(0,0,0,.22); --accent: #f2c14e;
+}
+* { box-sizing: border-box; }
+body { margin: 0; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: radial-gradient(ellipse at center, var(--felt) 0%, var(--felt-dark) 100%);
+  color: var(--ink); min-height: 100vh; }
+button { font: inherit; border: 0; border-radius: 8px; padding: 8px 16px; cursor: pointer;
+  background: #e9e4d4; color: #1d1d1f; font-weight: 600; }
+button.primary { background: var(--accent); }
+button:disabled { opacity: .4; cursor: default; }
+input[type=text] { font: inherit; width: 110px; padding: 6px 8px; border-radius: 6px; border: 0; }
+#top { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; padding: 10px 16px;
+  background: var(--panel); }
+#top .info b { color: var(--gold); font-size: 1.15em; }
+#top .spacer { flex: 1; }
+#main { display: grid; grid-template-columns: 1fr 280px; gap: 12px; padding: 12px 16px; }
+#table { display: grid; grid-template-columns: 1fr 2fr 1fr; grid-template-rows: auto 1fr auto;
+  gap: 10px; min-height: 360px; }
+.seat { background: var(--panel); border-radius: 12px; padding: 10px; display: flex;
+  flex-direction: column; align-items: center; gap: 8px; min-height: 140px;
+  border: 2px solid transparent; transition: border-color .2s; }
+.seat.turn { border-color: var(--gold); }
+.seat .name { font-weight: 700; }
+.seat .name .tag { font-size: .8em; color: var(--muted); font-weight: 400; margin-left: 4px; }
+.seat .count { font-size: .9em; color: var(--muted); }
+.seat .count.low { color: #ff8a7a; font-weight: 700; }
+.badge { background: var(--gold); color: #3a2a00; border-radius: 10px; padding: 1px 8px;
+  font-size: .8em; font-weight: 700; }
+#s2 { grid-column: 2; grid-row: 1; }
+#s3 { grid-column: 1; grid-row: 2; }
+#s1 { grid-column: 3; grid-row: 2; }
+#s0 { grid-column: 2; grid-row: 3; }
+#center { grid-column: 2; grid-row: 2; display: flex; align-items: center; justify-content: center;
+  color: var(--muted); text-align: center; }
+.play { display: flex; align-items: center; gap: 6px; min-height: 64px; flex-wrap: wrap;
+  justify-content: center; }
+.play .label { font-size: .85em; color: var(--muted); }
+.play .p { font-size: .75em; color: var(--muted); }
+.pass { color: var(--muted); font-size: 1.1em; }
+.cards { display: flex; }
+.c { width: 40px; height: 58px; background: var(--card); border-radius: 6px; color: var(--black);
+  box-shadow: 0 1px 3px rgba(0,0,0,.4); display: flex; flex-direction: column; align-items: flex-start;
+  justify-content: flex-start; padding: 3px 0 0 3px; flex-shrink: 0; font-weight: 700; line-height: 1.05; margin-left: -14px; user-select: none;
+  border: 2px solid transparent; }
+.cards .c:first-child { margin-left: 0; }
+.c.red { color: var(--red); }
+.c.wild { border-color: var(--gold); background: #fff4d2; }
+.c .r { font-size: 16px; letter-spacing: -1px; }
+.c .s { font-size: 15px; }
+.c.joker .r, .c.joker .s { font-size: 14px; }
+#handwrap { padding: 4px 16px 18px; }
+#hand { display: flex; justify-content: center; flex-wrap: nowrap; padding-top: 22px; min-height: 120px; }
+#hand .c { width: 62px; height: 88px; margin-left: -30px; padding: 4px 0 0 5px; cursor: pointer; transition: transform .08s; }
+#hand .c:first-child { margin-left: 0; }
+#hand .c .r { font-size: 21px; letter-spacing: -1px; }
+#hand .c .s { font-size: 19px; }
+#hand .c.joker .r, #hand .c.joker .s { font-size: 18px; }
+#hand .c.sel { transform: translateY(-20px); box-shadow: 0 0 0 2px var(--accent), 0 4px 8px rgba(0,0,0,.4); }
+#hand .c.hinted { outline: 3px dashed #7fd1ff; }
+#controls { display: flex; gap: 10px; justify-content: center; align-items: center; margin-top: 10px;
+  flex-wrap: wrap; }
+#msg { min-height: 1.4em; text-align: center; color: #ffd6a0; margin-top: 6px; }
+#hints { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 6px; }
+#hints .h { background: var(--panel); border-radius: 8px; padding: 4px 8px; cursor: pointer;
+  display: flex; gap: 6px; align-items: center; }
+#hints .h:hover { background: rgba(0,0,0,.35); }
+#side { background: var(--panel); border-radius: 12px; padding: 10px; display: flex;
+  flex-direction: column; gap: 8px; max-height: calc(100vh - 90px); }
+#side h3 { margin: 0; font-size: 1em; }
+#log { overflow-y: auto; flex: 1; font-size: .88em; line-height: 1.5; }
+#log .who { color: var(--gold); margin-right: 4px; }
+#log .p { color: var(--muted); font-size: .85em; }
+#log .sys { color: #9fe3b5; }
+#hist { font-size: .85em; color: var(--muted); }
+.overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none;
+  align-items: center; justify-content: center; z-index: 10; }
+.overlay.show { display: flex; }
+.dialog { background: #23402f; border-radius: 14px; padding: 18px 22px; max-width: 900px;
+  width: calc(100% - 32px); max-height: 90vh; overflow-y: auto; }
+.dialog h2 { margin: 0 0 10px; }
+.dialog .row { margin: 8px 0; }
+.dialog .cards .c { width: 30px; height: 44px; margin-left: -10px; }
+.dialog .cards .c .r { font-size: 13px; } .dialog .cards .c .s { font-size: 12px; }
+.dialog .opts { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+label.chk { display: flex; gap: 4px; align-items: center; cursor: pointer; }
+.thinking { color: var(--gold); font-size: .85em; }
+.revealed .cards .c { width: 26px; height: 38px; margin-left: -12px; }
+.revealed .cards .c .r { font-size: 12px; } .revealed .cards .c .s { font-size: 11px; }
+.keys { color: var(--muted); font-size: .8em; text-align: center; margin-top: 4px; }
+@media (max-width: 860px) {
+  #main { grid-template-columns: 1fr; }
+  #side { max-height: 260px; }
+  body { overflow-x: hidden; }
+  #main > div { min-width: 0; }
+  #table { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .seat { min-width: 0; overflow: hidden; }
+  #hand { justify-content: flex-start; overflow-x: auto; }
+  #hand .c { width: 40px; height: 60px; margin-left: -24px; padding: 2px 0 0 3px; }
+  #hand .c .r { font-size: 15px; } #hand .c .s { font-size: 13px; }
+}
+</style>
+</head>
+<body>
+<div id="top">
+  <div class="info">第 <b id="round">-</b> 局</div>
+  <div class="info">打 <b id="level">-</b></div>
+  <div class="info">我方 <b id="lv0">-</b> · 对方 <b id="lv1">-</b></div>
+  <div class="info" id="owner"></div>
+  <div class="spacer"></div>
+  <label class="chk"><input type="checkbox" id="reveal"> 明牌（看模型手牌）</label>
+  <input type="text" id="seed" placeholder="种子(可空)">
+  <button class="primary" id="newgame">新对局</button>
+</div>
+<div id="main">
+  <div>
+    <div id="table">
+      <div class="seat" id="s2"></div>
+      <div class="seat" id="s3"></div>
+      <div id="center"><div id="centertext">点「新对局」开始。你坐下方，另外三家（包括对家队友）都是模型。</div></div>
+      <div class="seat" id="s1"></div>
+      <div class="seat" id="s0"></div>
+    </div>
+    <div id="handwrap">
+      <div id="hand"></div>
+      <div id="controls">
+        <button id="clear">清空</button>
+        <button id="hint">提示（模型怎么打）</button>
+        <button id="pass">不出</button>
+        <button class="primary" id="play">出牌</button>
+      </div>
+      <div id="hints"></div>
+      <div id="msg"></div>
+      <div class="keys">快捷键：Enter 出牌 · P 不出 · H 提示 · Esc 清空</div>
+    </div>
+  </div>
+  <div id="side">
+    <h3>出牌记录</h3>
+    <div id="log"></div>
+    <h3>每局结果</h3>
+    <div id="hist"></div>
+    <div id="model" style="font-size:.75em;color:var(--muted);word-break:break-all"></div>
+  </div>
+</div>
+<div class="overlay" id="optover"><div class="dialog"><h2>这手牌有几种出法</h2>
+  <div class="opts" id="opts"></div>
+  <div class="opts"><button id="optcancel">取消</button></div></div></div>
+<div class="overlay" id="endover"><div class="dialog" id="enddlg"></div></div>
+<script>
+const SEATS = ["你", "下家", "对家", "上家"];
+const TAGS = ["", "模型·对手", "模型·队友", "模型·对手"];
+const FINISH = ["头游", "二游", "三游", "末游"];
+const SUIT = {S: "♠", H: "♥", C: "♣", D: "♦"};
+let view = null, selected = new Set(), busy = false, hinted = new Set();
+const $ = id => document.getElementById(id);
+
+async function api(path, body = {}) {
+  const r = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body)});
+  const out = await r.json();
+  if (!r.ok) throw new Error(out.error || r.statusText);
+  return out;
+}
+
+function cardEl(c) {
+  const d = document.createElement("div");
+  d.className = "c";
+  if (c.r === "BJ" || c.r === "RJ") {
+    d.classList.add("joker");
+    if (c.r === "RJ") d.classList.add("red");
+    d.innerHTML = `<span class="r">${c.r === "RJ" ? "大" : "小"}</span><span class="s">王</span>`;
+  } else {
+    if (c.s === "H" || c.s === "D") d.classList.add("red");
+    if (c.w) { d.classList.add("wild"); d.title = "逢人配（红桃级牌）"; }
+    d.innerHTML = `<span class="r">${c.r}</span><span class="s">${SUIT[c.s]}</span>`;
+  }
+  return d;
+}
+function cardsEl(cards) {
+  const w = document.createElement("div"); w.className = "cards";
+  cards.forEach(c => w.appendChild(cardEl(c))); return w;
+}
+const cardText = c => c.r === "BJ" ? "小王" : c.r === "RJ" ? "大王" : c.r + SUIT[c.s];
+
+function renderSeat(seat, table, left, order, toMove, thinking) {
+  const el = $("s" + seat); el.innerHTML = "";
+  el.classList.toggle("turn", seat === toMove && !view?.result);
+  const name = document.createElement("div"); name.className = "name";
+  name.innerHTML = `${SEATS[seat]}<span class="tag">${TAGS[seat]}</span>`;
+  const rank = order.indexOf(seat);
+  if (rank >= 0) name.innerHTML += ` <span class="badge">${FINISH[rank]}</span>`;
+  el.appendChild(name);
+  if (seat !== 0) {
+    const n = document.createElement("div");
+    n.className = "count" + (left[seat] > 0 && left[seat] <= 10 ? " low" : "");
+    n.textContent = left[seat] > 0 ? `剩 ${left[seat]} 张` : "已出完"; el.appendChild(n);
+  }
+  const p = document.createElement("div"); p.className = "play";
+  const t = table[seat];
+  if (t) {
+    if (t.pass) p.innerHTML = `<span class="pass">不出</span>`;
+    else {
+      p.appendChild(cardsEl(t.cards));
+      const l = document.createElement("span"); l.className = "label"; l.textContent = t.label;
+      p.appendChild(l);
+    }
+    if (t.p != null) {
+      const q = document.createElement("span"); q.className = "p";
+      q.textContent = `置信 ${Math.round(t.p * 100)}%`; q.title = "模型给这一手的概率"; p.appendChild(q);
+    }
+  } else if (seat === toMove && thinking) {
+    p.innerHTML = `<span class="thinking">思考中…</span>`;
+  }
+  el.appendChild(p);
+  if (view?.hands && seat !== 0) {
+    const r = document.createElement("div"); r.className = "revealed";
+    r.appendChild(cardsEl(view.hands[seat])); el.appendChild(r);
+  }
+}
+
+function renderTable(table, left, order, toMove, thinking = false) {
+  for (let s = 0; s < 4; s++) renderSeat(s, table, left, order, toMove, thinking);
+}
+
+function renderHand() {
+  const h = $("hand"); h.innerHTML = "";
+  view.hand.forEach((c, i) => {
+    const d = cardEl(c);
+    if (selected.has(i)) d.classList.add("sel");
+    if (hinted.has(i)) d.classList.add("hinted");
+    d.onclick = () => { selected.has(i) ? selected.delete(i) : selected.add(i); renderHand(); };
+    h.appendChild(d);
+  });
+}
+
+function renderLog() {
+  const l = $("log"); l.innerHTML = "";
+  view.log.forEach(e => {
+    const d = document.createElement("div");
+    if (e.seat == null) { d.className = "sys"; d.textContent = e.text; }
+    else {
+      d.innerHTML = `<span class="who">${SEATS[e.seat]}</span>`;
+      d.appendChild(document.createTextNode(e.text));
+      if (e.p != null) d.innerHTML += ` <span class="p">${Math.round(e.p * 100)}%</span>`;
+    }
+    l.appendChild(d);
+  });
+  l.scrollTop = l.scrollHeight;
+  const hs = $("hist"); hs.innerHTML = "";
+  view.history.forEach((r, i) => {
+    const mine = r.winning_team === 0;
+    const d = document.createElement("div");
+    d.textContent = `第${i + 1}局 ${mine ? "我方" : "对方"}升${r.gain}级 → 我方${r.levels_after[0]} 对方${r.levels_after[1]}`;
+    hs.appendChild(d);
+  });
+}
+
+function render() {
+  if (!view) return;
+  $("round").textContent = view.round;
+  $("level").textContent = view.level;
+  $("lv0").textContent = view.team_levels[0];
+  $("lv1").textContent = view.team_levels[1];
+  $("owner").textContent = view.owner == null ? "" : (view.owner === 0 ? "我方坐庄" : "对方坐庄");
+  $("model").textContent = "模型：" + view.model + " · 种子 " + view.seed;
+  renderTable(view.table, view.left, view.order, view.to_move);
+  renderHand(); renderLog();
+  const phaseText = {tribute: "进贡：选一张牌进贡", back: "还贡：选一张牌还给对方", play: ""}[view.phase] || "";
+  $("centertext").textContent = view.your_turn ? (phaseText || "轮到你出牌") : "";
+  $("play").disabled = !view.your_turn || busy;
+  $("pass").disabled = !view.can_pass || busy;
+  $("hint").disabled = !view.your_turn || busy;
+  $("clear").disabled = busy;
+  if (view.result) showEnd();
+}
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function animate(events) {
+  for (const e of events) {
+    if (e.kind === "play" || e.kind === "tribute") {
+      if (e.seat === 0 && e.kind === "play" && !e.forced) {
+        renderTable(e.table, e.left, e.order, (e.seat + 1) % 4, true);
+        await sleep(150); continue;
+      }
+      renderTable(e.table, e.left, e.order, (e.seat + 1) % 4, true);
+      await sleep(e.forced ? 120 : e.kind === "tribute" ? 400 : 650);
+    }
+  }
+}
+
+async function run(path, body) {
+  if (busy) return;
+  busy = true; $("msg").textContent = ""; render();
+  try {
+    const out = await api(path, {...body, reveal: $("reveal").checked});
+    if (out.error) { $("msg").textContent = out.error; return; }
+    if (out.options) { busy = false; showOptions(out.options, body.cards); return; }
+    selected.clear(); hinted.clear(); $("hints").innerHTML = "";
+    if (out.events) await animate(out.events);
+    view = out.view;
+  } catch (err) { $("msg").textContent = err.message; }
+  finally { busy = false; render(); }
+}
+
+function selectedIds() { return [...selected].map(i => view.hand[i].id); }
+
+function showOptions(opts, cards) {
+  const box = $("opts"); box.innerHTML = "";
+  opts.forEach(o => {
+    const b = document.createElement("button"); b.textContent = o.label;
+    b.onclick = () => { $("optover").classList.remove("show"); run("/api/play", {cards, option: o.index}); };
+    box.appendChild(b);
+  });
+  $("optover").classList.add("show");
+}
+$("optcancel").onclick = () => $("optover").classList.remove("show");
+
+function showEnd() {
+  const r = view.result, d = $("enddlg"); d.innerHTML = "";
+  const mine = r.winning_team === 0;
+  const h = document.createElement("h2");
+  h.textContent = r.match_over ? (r.match_winner === 0 ? "🎉 你们赢下了整场比赛！" : "整场比赛输了")
+    : `${mine ? "我方" : "对方"}赢了这局，升 ${r.gain} 级`;
+  d.appendChild(h);
+  const o = document.createElement("div"); o.className = "row";
+  o.textContent = r.order.map((s, i) => `${FINISH[i]}：${SEATS[s]}`).join("　") +
+    `　｜　级数 我方 ${r.levels_after[0]} · 对方 ${r.levels_after[1]}`;
+  d.appendChild(o);
+  const t = document.createElement("div"); t.className = "row"; t.textContent = "本局开局时四家的手牌（进贡前）：";
+  d.appendChild(t);
+  r.hands.forEach((hand, s) => {
+    const row = document.createElement("div"); row.className = "row";
+    row.innerHTML = `<div style="margin-bottom:4px">${SEATS[s]}</div>`; row.appendChild(cardsEl(hand));
+    d.appendChild(row);
+  });
+  const opts = document.createElement("div"); opts.className = "opts";
+  const b = document.createElement("button"); b.className = "primary";
+  b.textContent = r.match_over ? "再来一场" : "下一局";
+  b.onclick = () => { $("endover").classList.remove("show");
+    r.match_over ? run("/api/new", {seed: ""}) : run("/api/next", {}); };
+  const c = document.createElement("button"); c.textContent = "看牌桌";
+  c.onclick = () => { $("endover").classList.remove("show"); $("centertext").innerHTML = "";
+    const again = document.createElement("button"); again.className = "primary";
+    again.textContent = r.match_over ? "再来一场" : "下一局"; again.onclick = b.onclick;
+    $("centertext").appendChild(again); };
+  opts.appendChild(c); opts.appendChild(b); d.appendChild(opts);
+  if (!$("endover").dataset.shown || $("endover").dataset.shown !== String(view.history.length)) {
+    $("endover").dataset.shown = String(view.history.length);
+    $("endover").classList.add("show");
+  } else if (!$("endover").classList.contains("show")) {
+    $("centertext").innerHTML = "";
+    const again = document.createElement("button"); again.className = "primary";
+    again.textContent = r.match_over ? "再来一场" : "下一局"; again.onclick = b.onclick;
+    $("centertext").appendChild(again);
+  }
+}
+
+$("newgame").onclick = () => { $("endover").dataset.shown = ""; run("/api/new", {seed: $("seed").value.trim()}); };
+$("play").onclick = () => {
+  if (!selected.size) { $("msg").textContent = "先点选要出的牌"; return; }
+  run("/api/play", {cards: selectedIds()});
+};
+$("pass").onclick = () => run("/api/play", {cards: []});
+$("clear").onclick = () => { selected.clear(); hinted.clear(); renderHand(); };
+$("reveal").onchange = () => run("/api/state", {});
+$("hint").onclick = async () => {
+  if (busy || !view?.your_turn) return;
+  try {
+    const out = await api("/api/hint", {});
+    const box = $("hints"); box.innerHTML = "";
+    out.hints.forEach((h, k) => {
+      const d = document.createElement("div"); d.className = "h";
+      d.title = "点击选中这手牌";
+      if (h.cards.length) d.appendChild(cardsEl(h.cards));
+      const s = document.createElement("span");
+      s.textContent = `${h.label} ${Math.round(h.p * 100)}%`; d.appendChild(s);
+      d.onclick = () => h.ids.length ? pickIds(h.ids)
+        : (selected.clear(), renderHand(), $("msg").textContent = "模型建议不出（按 P 或点「不出」）");
+      box.appendChild(d);
+      if (k === 0) pickIds(h.ids, true);
+    });
+  } catch (err) { $("msg").textContent = err.message; }
+};
+function pickIds(ids, hintOnly = false) {
+  const used = new Set();
+  const picks = ids.map(id => {
+    const i = view.hand.findIndex((c, j) => c.id === id && !used.has(j));
+    used.add(i); return i;
+  }).filter(i => i >= 0);
+  if (hintOnly) hinted = new Set(picks); else selected = new Set(picks);
+  renderHand();
+}
+document.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT") return;
+  if (e.key === "Enter") $("play").click();
+  else if (e.key === "p" || e.key === "P") { if (!$("pass").disabled) $("pass").click(); }
+  else if (e.key === "h" || e.key === "H") $("hint").click();
+  else if (e.key === "Escape") $("clear").click();
+});
+api("/api/state", {}).then(out => { view = out.view; render(); }).catch(() => {});
+</script>
+</body>
+</html>
