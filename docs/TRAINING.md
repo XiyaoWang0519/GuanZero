@@ -394,6 +394,24 @@ follow the bounded shutdown plan and report any loss.
 
 ## Independent evaluation
 
+**Yardsticks from October 3, 2026.** B11 is saturated (the lineage wins ~86% of
+matches; the three Oct 3 arms were indistinguishable on 256 deals while DanLM
+separated them), so a nightly report uses: the external yardstick, DanLM on
+4,000 deals (±0.035); the internal yardstick, the new endpoint against the
+previous lineage endpoint on 2,000 deals (`python -m eval.lineage_eval`,
+batched MPS, about 7 minutes; identical checkpoints score exactly 0); and B11 on
+256 deals as a one-line sanity check only. `scripts/eval_night.sh SEGMENT NAME
+BASELINE.pt` runs all three plus a checkpoint curve against the baseline
+(`scripts/eval_night_summary.py` prints it). First use: u15094 vs u9989 +0.198
+[0.141, 0.259] on 2,000 deals.
+
+**Engine digest, version 2 (October 3, 2026).** `infra.history_artifacts.engine_digest`
+covers the game-dynamics sources only (`cpp/include/gd/*.h`, `cpp/src/*.cpp`
+minus the evaluation-only `search.h`/`search.cpp`; `python/bindings.cpp` is out).
+A resume accepts an older checkpoint when the version-2 digest recomputed from
+its recorded per-file hashes matches (`engine_compatible`); frozen evaluation
+files may carry either digest; the B11 freeze was rewritten with the new one.
+
 Freeze MLP evaluator checkpoint hashes and their exact policy semantics before
 the pilot. An old checkpoint may load its own reference inside the evaluator
 to reproduce its old behavior; that reference must not enter the learner.
