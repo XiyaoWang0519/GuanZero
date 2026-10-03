@@ -3,7 +3,10 @@
 You take seat 0 (bottom); the checkpoint plays the other three seats, so
 your partner (seat 2, top) is the model too. Play is greedy and without
 search, exactly ``HistoryPolicy`` as the evaluators run it, tribute
-included (the engine's tribute heuristic for the model seats). The model
+included (the engine's tribute heuristic for the model seats). The page
+shows only what a player at the table would know: your hand, the public
+plays, card counts and a tracker of the cards not yet seen. On your turn it
+also shows the model's top moves for your hand. The model
 sees one match-long public stream, fed every applied action of every seat,
 your plays and forced passes included.
 
@@ -69,8 +72,7 @@ def action_label(action: gd.Action) -> str:
 class Game:
     """One match: the human at seat 0, the policy at seats 1 to 3."""
 
-    def __init__(self, policy: HistoryPolicy, seed: int, reveal: bool = False,
-                 top_k: int = 3) -> None:
+    def __init__(self, policy: HistoryPolicy, seed: int, top_k: int = 3) -> None:
         rules = gd.RuleConfig.house()
         self.policy = policy
         self.engine = gd.Engine(rules)
@@ -78,7 +80,6 @@ class Game:
         self.engine.auto_pass = False
         self.full.auto_pass = False
         self.seed = seed
-        self.reveal = reveal
         self.top_k = top_k
         self.rng = random.Random(seed)
         self.state = gd.MatchState()
@@ -96,7 +97,8 @@ class Game:
         self.result: dict | None = None
         self.saw_tribute = False
         self.anti_logged = False
-        self.start_hands = [list(self.state.hand(s)) for s in range(4)]
+        self.played: Counter = Counter()
+        self.advice_cache: tuple[int, dict] | None = None
         self.level = int(self.state.level)
 
     def next_round(self) -> list[dict]:
@@ -108,8 +110,7 @@ class Game:
 
     # -- applying actions -----------------------------------------------------
 
-    def record(self, seat: int, action: gd.Action, forced: bool = False,
-               confidence: float | None = None) -> dict:
+    def record(self, seat: int, action: gd.Action, forced: bool = False) -> dict:
         state = self.state
         phase = int(state.phase)
         new_trick = phase == PLAY and bool(state.top_is_open)
@@ -138,15 +139,14 @@ class Game:
                 self.table = [None] * 4
             shown = {"pass": bool(action.is_pass), "label": action_label(action),
                      "cards": action_cards(action, self.level)}
-            if confidence is not None:
-                shown["p"] = round(confidence, 3)
+            self.played.update(action.cards)
             self.table[seat] = shown
             event.update(kind="play", new_trick=new_trick, **shown)
             if not forced:
                 text = shown["label"]
                 if not action.is_pass:
                     text += " " + " ".join(card_text(c) for c in shown["cards"])
-                self.log.append({"seat": seat, "text": text, "p": shown.get("p")})
+                self.log.append({"seat": seat, "text": text})
         event["table"] = list(self.table)
         event["left"] = [len(state.hand(s)) for s in range(4)]
         event["order"] = list(state.order)
@@ -187,8 +187,7 @@ class Game:
             if seat == HUMAN:
                 return events
             choice, top = self.model_choice(actions)
-            confidence = top[0][1] if top else None
-            events.append(self.record(seat, actions[choice], confidence=confidence))
+            events.append(self.record(seat, actions[choice]))
         events.append(self.finish_round())
         return events
 
@@ -206,10 +205,8 @@ class Game:
             "levels_after": [RANKS[x] for x in result.levels],
             "match_over": int(result.match_winner) >= 0,
             "match_winner": int(result.match_winner) if int(result.match_winner) >= 0 else None,
-            "hands": [[card_out(c, self.level) for c in sorted_cards(h, self.level)]
-                      for h in self.start_hands],
         }
-        self.rounds.append({k: v for k, v in self.result.items() if k != "hands"})
+        self.rounds.append(dict(self.result))
         mine = int(result.winning_team) == HUMAN % 2
         self.log.append({"seat": None, "text": (
             f"本局结束：{'我方' if mine else '对方'}升 {int(result.gain)} 级，"
@@ -249,16 +246,37 @@ class Game:
             return f"{card_json(cards[0], self.level)['r']} 起"
         return f"{len(cards)} 张"
 
-    def hint(self) -> dict:
-        actions = self.engine.legal_actions(self.state)
-        if int(self.state.to_move) != HUMAN:
+    def advice(self) -> dict:
+        """The model's top moves for your hand at this decision (cached per position)."""
+        if int(self.state.to_move) != HUMAN or self.result is not None:
             raise ValueError("it is not your turn")
+        key = int(self.state.hash())
+        if self.advice_cache and self.advice_cache[0] == key:
+            return self.advice_cache[1]
+        actions = self.engine.legal_actions(self.state)
         choice, top = self.model_choice(actions)
         if not top:
             top = [(choice, 1.0)]
-        return {"hints": [{"label": action_label(actions[i]), "p": round(p, 3),
-                           "cards": action_cards(actions[i], self.level),
-                           "ids": [int(c) for c in actions[i].cards]} for i, p in top]}
+        out = {"hints": [{"label": action_label(actions[i]), "p": round(p, 3),
+                          "cards": action_cards(actions[i], self.level),
+                          "ids": [int(c) for c in actions[i].cards]} for i, p in top]}
+        self.advice_cache = (key, out)
+        return out
+
+    def unseen(self) -> list[dict]:
+        """Per rank, the copies neither in your hand nor played this round."""
+        mine = Counter(self.state.hand(HUMAN))
+        rows = []
+        for rank in range(13):
+            ids = range(4 * rank, 4 * rank + 4)
+            gone = sum(mine[c] + self.played[c] for c in ids)
+            wild = 4 * rank + 1
+            rows.append({"r": RANKS[rank], "left": 8 - gone, "level": rank == self.level,
+                         "wild": 2 - mine[wild] - self.played[wild] if rank == self.level else None})
+        for card, name in ((52, "小王"), (53, "大王")):
+            rows.append({"r": name, "left": 2 - mine[card] - self.played[card],
+                         "level": False, "wild": None})
+        return rows
 
     # -- view -----------------------------------------------------------------
 
@@ -270,10 +288,6 @@ class Game:
         can_pass = False
         if your_turn and phase == PLAY:
             can_pass = any(a.is_pass for a in self.engine.legal_actions(state))
-        hands = None
-        if self.reveal:
-            hands = [[card_out(c, self.level) for c in sorted_cards(state.hand(s), self.level)]
-                     for s in range(4)]
         team_levels = list(state.levels)
         return {
             "seed": self.seed,
@@ -292,16 +306,16 @@ class Game:
             "table": list(self.table),
             "log": self.log[-80:],
             "result": self.result,
-            "hands": hands,
+            "unseen": self.unseen(),
+            "advice": self.advice() if your_turn else None,
             "history": self.rounds,
             "model": self.policy.name,
         }
 
 
 class Server:
-    def __init__(self, policy: HistoryPolicy, reveal: bool = False) -> None:
+    def __init__(self, policy: HistoryPolicy) -> None:
         self.policy = policy
-        self.reveal = reveal
         self.lock = threading.Lock()
         self.game: Game | None = None
 
@@ -310,13 +324,11 @@ class Server:
             if path == "/api/new":
                 seed = body.get("seed")
                 seed = int(seed) if seed not in (None, "") else random.randrange(1, 2**31)
-                self.game = Game(self.policy, seed, bool(body.get("reveal", self.reveal)))
+                self.game = Game(self.policy, seed)
                 return {"events": self.game.advance(), "view": self.game.view()}
             game = self.game
             if game is None:
                 return {"view": None}
-            if "reveal" in body:
-                game.reveal = bool(body["reveal"])
             out: dict[str, Any] = {}
             if path == "/api/state":
                 pass
@@ -324,8 +336,6 @@ class Server:
                 out = game.play(body.get("cards", []), body.get("option"))
             elif path == "/api/next":
                 out = {"events": game.next_round()}
-            elif path == "/api/hint":
-                out = game.hint()
             else:
                 raise KeyError(path)
             out["view"] = game.view()
@@ -382,7 +392,6 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--threads", type=int, default=2,
                         help="torch CPU threads; small by default so the machine stays responsive")
-    parser.add_argument("--reveal", action="store_true", help="show the model's hands")
     parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args(argv)
 
@@ -390,7 +399,7 @@ def main(argv: list[str] | None = None) -> None:
 
     torch.set_num_threads(max(1, args.threads))
     policy = load_history_policy(args.checkpoint, device=args.device)
-    server = Server(policy, args.reveal)
+    server = Server(policy)
     try:
         httpd = ThreadingHTTPServer((args.host, args.port), make_handler(server))
     except OSError as exc:

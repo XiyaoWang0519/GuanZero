@@ -70,10 +70,9 @@ input[type=text] { font: inherit; width: 110px; padding: 6px 8px; border-radius:
 #controls { display: flex; gap: 10px; justify-content: center; align-items: center; margin-top: 10px;
   flex-wrap: wrap; }
 #msg { min-height: 1.4em; text-align: center; color: #ffd6a0; margin-top: 6px; }
-#hints { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 6px; }
-#hints .h { background: var(--panel); border-radius: 8px; padding: 4px 8px; cursor: pointer;
+#advice .h { background: var(--panel); border-radius: 8px; padding: 4px 8px; cursor: pointer;
   display: flex; gap: 6px; align-items: center; }
-#hints .h:hover { background: rgba(0,0,0,.35); }
+#advice .h:hover { background: rgba(0,0,0,.35); }
 #side { background: var(--panel); border-radius: 12px; padding: 10px; display: flex;
   flex-direction: column; gap: 8px; max-height: calc(100vh - 90px); }
 #side h3 { margin: 0; font-size: 1em; }
@@ -94,8 +93,14 @@ input[type=text] { font: inherit; width: 110px; padding: 6px 8px; border-radius:
 .dialog .opts { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
 label.chk { display: flex; gap: 4px; align-items: center; cursor: pointer; }
 .thinking { color: var(--gold); font-size: .85em; }
-.revealed .cards .c { width: 26px; height: 38px; margin-left: -12px; }
-.revealed .cards .c .r { font-size: 12px; } .revealed .cards .c .s { font-size: 11px; }
+#advice { display: flex; gap: 8px; justify-content: center; align-items: center; flex-wrap: wrap;
+  margin-top: 8px; min-height: 52px; }
+#advice .title { color: var(--muted); font-size: .85em; }
+#tracker { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; font-size: .85em; }
+#tracker .t { background: rgba(0,0,0,.18); border-radius: 6px; padding: 2px 0; text-align: center; }
+#tracker .t b { display: block; font-size: 1.05em; }
+#tracker .t.zero { opacity: .35; }
+#tracker .t.lvl { outline: 2px solid var(--gold); }
 .keys { color: var(--muted); font-size: .8em; text-align: center; margin-top: 4px; }
 @media (max-width: 860px) {
   #main { grid-template-columns: 1fr; }
@@ -117,7 +122,7 @@ label.chk { display: flex; gap: 4px; align-items: center; cursor: pointer; }
   <div class="info">我方 <b id="lv0">-</b> · 对方 <b id="lv1">-</b></div>
   <div class="info" id="owner"></div>
   <div class="spacer"></div>
-  <label class="chk"><input type="checkbox" id="reveal"> 明牌（看模型手牌）</label>
+  <label class="chk"><input type="checkbox" id="showadvice" checked> 显示模型建议</label>
   <input type="text" id="seed" placeholder="种子(可空)">
   <button class="primary" id="newgame">新对局</button>
 </div>
@@ -134,16 +139,18 @@ label.chk { display: flex; gap: 4px; align-items: center; cursor: pointer; }
       <div id="hand"></div>
       <div id="controls">
         <button id="clear">清空</button>
-        <button id="hint">提示（模型怎么打）</button>
+        <button id="hint">按建议选牌</button>
         <button id="pass">不出</button>
         <button class="primary" id="play">出牌</button>
       </div>
-      <div id="hints"></div>
+      <div id="advice"></div>
       <div id="msg"></div>
-      <div class="keys">快捷键：Enter 出牌 · P 不出 · H 提示 · Esc 清空</div>
+      <div class="keys">快捷键：Enter 出牌 · P 不出 · H 按建议选牌 · Esc 清空</div>
     </div>
   </div>
   <div id="side">
+    <h3>记牌器 <span style="font-weight:400;color:var(--muted);font-size:.8em">（除你手牌外还没出的）</span></h3>
+    <div id="tracker"></div>
     <h3>出牌记录</h3>
     <div id="log"></div>
     <h3>每局结果</h3>
@@ -213,18 +220,10 @@ function renderSeat(seat, table, left, order, toMove, thinking) {
       const l = document.createElement("span"); l.className = "label"; l.textContent = t.label;
       p.appendChild(l);
     }
-    if (t.p != null) {
-      const q = document.createElement("span"); q.className = "p";
-      q.textContent = `置信 ${Math.round(t.p * 100)}%`; q.title = "模型给这一手的概率"; p.appendChild(q);
-    }
   } else if (seat === toMove && thinking) {
     p.innerHTML = `<span class="thinking">思考中…</span>`;
   }
   el.appendChild(p);
-  if (view?.hands && seat !== 0) {
-    const r = document.createElement("div"); r.className = "revealed";
-    r.appendChild(cardsEl(view.hands[seat])); el.appendChild(r);
-  }
 }
 
 function renderTable(table, left, order, toMove, thinking = false) {
@@ -250,7 +249,6 @@ function renderLog() {
     else {
       d.innerHTML = `<span class="who">${SEATS[e.seat]}</span>`;
       d.appendChild(document.createTextNode(e.text));
-      if (e.p != null) d.innerHTML += ` <span class="p">${Math.round(e.p * 100)}%</span>`;
     }
     l.appendChild(d);
   });
@@ -273,12 +271,12 @@ function render() {
   $("owner").textContent = view.owner == null ? "" : (view.owner === 0 ? "我方坐庄" : "对方坐庄");
   $("model").textContent = "模型：" + view.model + " · 种子 " + view.seed;
   renderTable(view.table, view.left, view.order, view.to_move);
-  renderHand(); renderLog();
+  renderHand(); renderLog(); renderTracker(); renderAdvice();
   const phaseText = {tribute: "进贡：选一张牌进贡", back: "还贡：选一张牌还给对方", play: ""}[view.phase] || "";
   $("centertext").textContent = view.your_turn ? (phaseText || "轮到你出牌") : "";
   $("play").disabled = !view.your_turn || busy;
   $("pass").disabled = !view.can_pass || busy;
-  $("hint").disabled = !view.your_turn || busy;
+  $("hint").disabled = !view.advice || busy;
   $("clear").disabled = busy;
   if (view.result) showEnd();
 }
@@ -301,10 +299,10 @@ async function run(path, body) {
   if (busy) return;
   busy = true; $("msg").textContent = ""; render();
   try {
-    const out = await api(path, {...body, reveal: $("reveal").checked});
+    const out = await api(path, body);
     if (out.error) { $("msg").textContent = out.error; return; }
     if (out.options) { busy = false; showOptions(out.options, body.cards); return; }
-    selected.clear(); hinted.clear(); $("hints").innerHTML = "";
+    selected.clear(); hinted.clear();
     if (out.events) await animate(out.events);
     view = out.view;
   } catch (err) { $("msg").textContent = err.message; }
@@ -335,13 +333,6 @@ function showEnd() {
   o.textContent = r.order.map((s, i) => `${FINISH[i]}：${SEATS[s]}`).join("　") +
     `　｜　级数 我方 ${r.levels_after[0]} · 对方 ${r.levels_after[1]}`;
   d.appendChild(o);
-  const t = document.createElement("div"); t.className = "row"; t.textContent = "本局开局时四家的手牌（进贡前）：";
-  d.appendChild(t);
-  r.hands.forEach((hand, s) => {
-    const row = document.createElement("div"); row.className = "row";
-    row.innerHTML = `<div style="margin-bottom:4px">${SEATS[s]}</div>`; row.appendChild(cardsEl(hand));
-    d.appendChild(row);
-  });
   const opts = document.createElement("div"); opts.className = "opts";
   const b = document.createElement("button"); b.className = "primary";
   b.textContent = r.match_over ? "再来一场" : "下一局";
@@ -371,24 +362,45 @@ $("play").onclick = () => {
 };
 $("pass").onclick = () => run("/api/play", {cards: []});
 $("clear").onclick = () => { selected.clear(); hinted.clear(); renderHand(); };
-$("reveal").onchange = () => run("/api/state", {});
-$("hint").onclick = async () => {
-  if (busy || !view?.your_turn) return;
-  try {
-    const out = await api("/api/hint", {});
-    const box = $("hints"); box.innerHTML = "";
-    out.hints.forEach((h, k) => {
-      const d = document.createElement("div"); d.className = "h";
-      d.title = "点击选中这手牌";
-      if (h.cards.length) d.appendChild(cardsEl(h.cards));
-      const s = document.createElement("span");
-      s.textContent = `${h.label} ${Math.round(h.p * 100)}%`; d.appendChild(s);
-      d.onclick = () => h.ids.length ? pickIds(h.ids)
-        : (selected.clear(), renderHand(), $("msg").textContent = "模型建议不出（按 P 或点「不出」）");
-      box.appendChild(d);
-      if (k === 0) pickIds(h.ids, true);
-    });
-  } catch (err) { $("msg").textContent = err.message; }
+function renderTracker() {
+  const box = $("tracker"); box.innerHTML = "";
+  view.unseen.forEach(u => {
+    const d = document.createElement("div");
+    d.className = "t" + (u.left === 0 ? " zero" : "") + (u.level ? " lvl" : "");
+    d.innerHTML = `${u.r}<b>${u.left}</b>`;
+    if (u.wild != null) d.title = `其中红桃${u.r}（逢人配）还剩 ${u.wild} 张`;
+    if (u.wild != null) d.innerHTML += `<span style="font-size:.75em;color:var(--gold)">配${u.wild}</span>`;
+    box.appendChild(d);
+  });
+}
+function renderAdvice() {
+  const box = $("advice"); box.innerHTML = ""; hinted.clear();
+  const adv = view.advice;
+  if (!adv || !$("showadvice").checked || busy) { renderHand(); return; }
+  const t = document.createElement("span"); t.className = "title"; t.textContent = "模型建议：";
+  box.appendChild(t);
+  adv.hints.forEach((h, k) => {
+    const d = document.createElement("div"); d.className = "h";
+    d.title = "点击选中这手牌";
+    if (h.cards.length) d.appendChild(cardsEl(h.cards));
+    const s = document.createElement("span");
+    s.textContent = `${h.label} ${Math.round(h.p * 100)}%`; d.appendChild(s);
+    d.onclick = () => h.ids.length ? pickIds(h.ids)
+      : (selected.clear(), renderHand(), $("msg").textContent = "模型建议不出（按 P 或点「不出」）");
+    box.appendChild(d);
+    if (k === 0) pickIds(h.ids, true);
+  });
+}
+$("showadvice").onchange = () => {
+  try { localStorage.setItem("gd-advice", $("showadvice").checked ? "1" : "0"); } catch (e) {}
+  renderAdvice();
+};
+try { if (localStorage.getItem("gd-advice") === "0") $("showadvice").checked = false; } catch (e) {}
+$("hint").onclick = () => {
+  if (busy || !view?.advice) return;
+  const top = view.advice.hints[0];
+  if (top.ids.length) pickIds(top.ids);
+  else { selected.clear(); renderHand(); $("msg").textContent = "模型建议不出（按 P 或点「不出」）"; }
 };
 function pickIds(ids, hintOnly = false) {
   const used = new Set();

@@ -71,7 +71,8 @@ The rules are specified in [docs/RULES.md](docs/RULES.md). Training entry points
 ```
 
 You take the bottom seat; the checkpoint plays the other three, your partner
-included, greedily and without search. `提示` shows the model's top three moves
-for your seat with their probabilities, and `明牌` reveals the model's hands.
+included, greedily and without search. The page shows only what a player at
+the table knows (your hand, public plays, card counts, a tracker of the cards
+not yet seen) plus, on your turn, the model's top three moves for your hand.
 The server is `eval/play_vs_model.py` (one process, two torch threads by
-default; `--threads`, `--port`, `--reveal`).
+default; `--threads`, `--port`).
