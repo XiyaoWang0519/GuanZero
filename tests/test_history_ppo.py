@@ -173,7 +173,12 @@ def test_resume_under_other_source_only_on_request(tmp_path):
                                             source_sha256="old-source", revision="old"))
     with pytest.raises(ValueError, match="identity mismatch"):
         HistoryTrainer(small_config(updates=2), tmp_path / "strict", resume=older)
-    for name, identity in (("engine.pt", dict(engine_digest="other-engine")),
+    # An engine mismatch is a changed dynamics source (the recorded digest alone
+    # may differ across digest versions; the per-file hashes decide).
+    other_engine = dict(good["run_identity"]["source"],
+                        files=dict(good["run_identity"]["source"]["files"],
+                                   **{"cpp/src/rules.cpp": "0" * 64}))
+    for name, identity in (("engine.pt", dict(engine_digest="other-engine", source=other_engine)),
                            ("tokens.pt", dict(token_schema=99))):
         with pytest.raises(ValueError, match="identity mismatch"):
             HistoryTrainer(small_config(updates=2), tmp_path / name[:-3], resume=variant(name, **identity),

@@ -12,7 +12,7 @@ from pathlib import Path
 import gd
 import torch
 
-from infra.history_artifacts import sha256, engine_digest, source_identity
+from infra.history_artifacts import sha256, engine_digest, legacy_engine_digest, source_identity
 from eval.arena import play_matches
 from eval.batched import EvalConfig, play_duplicate_batch, play_match_slots_batch
 from eval.duplicate import (bootstrap_interval, evaluate_duplicates, summarize_duplicates)
@@ -43,7 +43,7 @@ def evaluate(freeze_path: Path, candidate_path: Path, output: Path, backend: str
     if backend == "scalar" and device != "cpu":
         raise ValueError("the scalar reference backend runs on cpu")
     freeze = json.loads(freeze_path.read_text())
-    if freeze.get("engine_digest") != engine_digest():
+    if freeze.get("engine_digest") not in (engine_digest(), legacy_engine_digest()):
         raise ValueError("frozen evaluation engine digest mismatch")
     root = freeze_path.parent
     dev_path = root / freeze["development"]["file"]

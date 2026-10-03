@@ -47,7 +47,7 @@ import gd
 import numpy as np
 import torch
 from torch.nn import functional as F
-from infra.history_artifacts import engine_digest, source_identity, sha256
+from infra.history_artifacts import engine_compatible, engine_digest, source_identity, sha256
 
 from train.ckpt import restore_rng, rng_state
 from train.history_model import (extend_actor, STAGE, TOKEN_SCHEMA_VERSION,
@@ -473,11 +473,13 @@ class HistoryTrainer:
         if payload is not None and payload.get("run_identity") != self.run_identity:
             saved = payload.get("run_identity") or {}
             if not (allow_source_change
-                    and saved.get("engine_digest") == self.run_identity["engine_digest"]
+                    and engine_compatible(saved)
                     and saved.get("token_schema") == self.run_identity["token_schema"]):
                 raise ValueError("resume source/engine/token identity mismatch")
             self.source_changes.append(dict(
                 at_update=int(payload["progress"]["updates"]),
+                previous_engine_digest=saved.get("engine_digest"),
+                engine_digest=self.run_identity["engine_digest"],
                 previous_source_sha256=saved.get("source", {}).get("source_sha256"),
                 previous_revision=saved.get("source", {}).get("revision"),
                 source_sha256=self.run_identity["source"]["source_sha256"],
