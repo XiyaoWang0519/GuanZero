@@ -33,6 +33,12 @@ def _old_action(action):
 def to_2020(msg: dict) -> dict:
     """The competition-era form of an OpenGuanDan message."""
     msg = dict(msg)
+    if msg.get("stage") == "beginning":
+        # OpenGuanDan sends the beginning ranks as engine indices (2..14);
+        # every other message, and the bots, use rank characters.
+        for key in ("curRank", "selfRank", "oppoRank"):
+            if isinstance(msg.get(key), int):
+                msg[key] = "23456789TJQKA"[msg[key] - 2]
     if "actionList" in msg:
         msg["actionList"] = [_old_action(a) for a in msg["actionList"]]
     for key in ("curAction", "greaterAction"):
