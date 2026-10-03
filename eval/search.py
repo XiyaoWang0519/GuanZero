@@ -42,6 +42,13 @@ class SearchConfig:
     # History blueprints only: root candidates are the blueprint's choice plus its
     # next most probable actions, top_actions in all (0: the max_actions rule).
     top_actions: int = 0
+    # Hidden-hand worlds: "uniform" shuffles the unseen copies (determinize_uniform);
+    # "belief" (history blueprints with a belief head) deals each unseen copy to a
+    # seat in proportion to the actor's per-card seat probabilities, among the
+    # seats with room (MatchState.determinize_weighted). belief_floor mixes a
+    # uniform share into those probabilities so no seat is ever ruled out.
+    sampler: str = "uniform"
+    belief_floor: float = 0.0
 
     def __post_init__(self) -> None:
         if not (0 <= self.unseen_threshold <= 108
@@ -55,7 +62,9 @@ class SearchConfig:
                 and self.rollout_batch_size >= 0 and self.selection in ("prior", "mean")
                 and self.trigger in ("unseen", "hand", "unsure", "hand_or_unsure")
                 and 0 <= self.hand_threshold <= 27 and 0 < self.confidence_threshold <= 1
-                and (self.top_actions == 0 or self.top_actions >= 2)):
+                and (self.top_actions == 0 or self.top_actions >= 2)
+                and self.sampler in ("uniform", "belief")
+                and math.isfinite(self.belief_floor) and 0 <= self.belief_floor <= 1):
             raise ValueError("invalid search configuration")
 
 
@@ -80,7 +89,11 @@ class SearchPolicy:
         self.name = f"search-residual:{blueprint.name}"
         self.checkpoint_id = getattr(blueprint, "checkpoint_id", None)
         self.needs_history = isinstance(blueprint, HistoryPolicy)
+        if self.config.sampler == "belief" and not (
+                self.needs_history and "belief" in getattr(blueprint.actor, "aux_head_names", ())):
+            raise TypeError("the belief sampler needs a history blueprint with a belief head")
         self.action_mode = getattr(blueprint, "action_mode", "canonical")
+        self._world_weights: list[float] | None = None
         self.calls = self.triggered = self.completed = self.fallbacks = self.overrides = 0
         self.elapsed_ms: list[float] = []
         self.worlds_completed: list[int] = []
@@ -133,11 +146,34 @@ class SearchPolicy:
             return float(engine.end_round(branch).seat_return[seat])
 
     def _root_log_probs(self, engine, state, actions):
-        """The history blueprint's log-probability of every root candidate."""
+        """The history blueprint's log-probability of every root candidate; with the
+        belief sampler, also this decision's per-card seat weights (one actor pass)."""
         import torch
+        from train.history_model import segment_log_softmax
+        actor = self.blueprint.actor
         with torch.inference_mode():
-            return self.blueprint.actor.candidate_log_probs(
-                self.blueprint.decision_inputs(engine, state, actions)).float().cpu().numpy()
+            inputs = self.blueprint.decision_inputs(engine, state, actions)
+            decision = actor.decision_states(None, inputs)
+            logits = actor.candidate_logits(decision, inputs.cand, inputs.offsets, rows=inputs.rows)
+            log_probs = segment_log_softmax(logits, inputs.rows, inputs.decisions)
+            if self.config.sampler == "belief":
+                # [54, 3] per-card probabilities over relative seats +1, +2, +3.
+                probs = torch.softmax(actor.belief_logits(decision)[0].float(), dim=-1)
+                floor = self.config.belief_floor
+                probs = (1.0 - floor) * probs + floor / 3.0
+                # determinize_weighted wants relative-seat-major: [(r - 1) * 54 + card].
+                self._world_weights = probs.transpose(0, 1).reshape(-1).cpu().tolist()
+        return log_probs.float().cpu().numpy()
+
+    def sample_world(self, state: gd.MatchState, seat: int, rng: random.Random) -> gd.MatchState:
+        """One legal hidden-hand world for the root decision: uniform, or weighted by
+        the belief head's seat probabilities computed for this decision."""
+        seed = rng.getrandbits(64)
+        if self.config.sampler == "belief":
+            if self._world_weights is None:
+                raise RuntimeError("belief weights are computed at the root before sampling")
+            return state.determinize_weighted(seat, seed, self._world_weights)
+        return state.determinize_uniform(seat, seed)
 
     def select(self, engine: gd.Engine, state: gd.MatchState,
                actions: Sequence[gd.Action], rng: random.Random) -> int:
@@ -151,6 +187,7 @@ class SearchPolicy:
         # Card counts are public (every play token carries the actor's count).
         counts = [len(state.hand(s)) for s in range(4)]
         log_probs = None
+        self._world_weights = None
         if self.config.trigger in ("unsure", "hand_or_unsure"):
             if not self.needs_history:
                 raise TypeError("the unsure trigger needs a history blueprint")
@@ -173,7 +210,8 @@ class SearchPolicy:
         baseline_probability = None
         if self.needs_history:
             # The blueprint's own distribution over the root candidates: recorded for
-            # every search, and the ranking behind ``top_actions``.
+            # every search, the ranking behind ``top_actions`` and, with the belief
+            # sampler, this decision's hidden-hand weights.
             if log_probs is None:
                 log_probs = self._root_log_probs(engine, state, actions)
             baseline_probability = float(math.exp(log_probs[baseline]))
@@ -193,8 +231,8 @@ class SearchPolicy:
         for _ in range(0 if self.config.rollout_batch_size else self.config.max_worlds):
             if time.perf_counter() >= deadline:
                 break
-            # This seed comes solely from the evaluation RNG, never state.hash.
-            sample = state.determinize_uniform(seat, rng.getrandbits(64))
+            # The seed comes solely from the evaluation RNG, never state.hash.
+            sample = self.sample_world(state, seat, rng)
             values: list[float] = []
             for action_index in candidates:
                 if time.perf_counter() >= deadline:
@@ -214,6 +252,7 @@ class SearchPolicy:
         self.elapsed_ms.append(elapsed)
         self.worlds_completed.append(worlds)
         record = {"unseen": unseen, "own_cards": counts[seat], "min_cards": min(counts),
+                  "sampler": self.config.sampler,
                   "baseline_probability": baseline_probability,
                   "legal_actions": len(actions), "candidates": len(candidates),
                   "worlds": worlds, "elapsed_ms": elapsed, "baseline": baseline,

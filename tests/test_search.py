@@ -207,3 +207,94 @@ def test_all_actions_batched_search_matches_scalar(batch_size):
             np.testing.assert_array_equal(old, current)
         assert not engine.auto_pass
     assert results[0] == results[1]
+
+
+def _tiny_belief_actor(seed=3):
+    from train.history_model import HistoryPolicyConfig, fresh_player
+    return fresh_player(HistoryPolicyConfig(width=16, layers=1, heads=2, action_width=16,
+                                            fusion_width=16, critic_width=16, critic_layers=1,
+                                            aux_heads="belief"), seed=seed)[0]
+
+
+def test_belief_sampler_needs_a_belief_head_and_valid_config():
+    from eval.history_policy import HistoryPolicy
+    from train.history_model import HistoryPolicyConfig, fresh_player
+
+    with pytest.raises(ValueError, match="invalid search configuration"):
+        SearchConfig(sampler="posterior")
+    with pytest.raises(ValueError, match="invalid search configuration"):
+        SearchConfig(sampler="belief", belief_floor=1.5)
+    with pytest.raises(TypeError, match="belief head"):
+        SearchPolicy(GreedyPolicy(), SearchConfig(sampler="belief"))
+    plain = fresh_player(HistoryPolicyConfig(width=16, layers=1, heads=2, action_width=16,
+                                             fusion_width=16, critic_width=16, critic_layers=1), 3)[0]
+    with pytest.raises(TypeError, match="belief head"):
+        SearchPolicy(HistoryPolicy(plain), SearchConfig(sampler="belief"))
+    SearchPolicy(HistoryPolicy(_tiny_belief_actor()), SearchConfig(sampler="belief"))
+
+
+def test_belief_sampler_worlds_follow_the_head_and_stay_legal(monkeypatch):
+    import numpy as np
+    import torch
+    from eval.history_policy import HistoryPolicy, apply_and_observe, resolve_forced_passes
+
+    torch.set_num_threads(1)
+    actor = _tiny_belief_actor()
+    base = HistoryPolicy(actor)
+    search = SearchPolicy(base, SearchConfig(sampler="belief", time_ms=10000, max_worlds=3,
+                                             max_actions=2, min_worlds=1))
+    search.start_match()
+    engine, state = gd.Engine(), gd.MatchState()
+    engine.auto_pass = False
+    engine.new_match(state, 44)
+    for _ in range(60):
+        resolve_forced_passes(engine, state, [search])
+        actions = engine.legal_actions(state)
+        if len(actions) >= 2 and sum(len(state.played(s)) for s in range(4)) > 20:
+            break
+        apply_and_observe(engine, state, actions[engine.greedy(state)], [search])
+    seat = state.to_move
+    # Point the head at the truth: for every card, the relative seats holding its
+    # unseen copies. A seat the head rules out never receives a copy; counts are conserved.
+    truth = np.zeros((54, 3))
+    for r in range(1, 4):
+        for card in state.hand((seat + r) % 4):
+            truth[card, r - 1] += 1
+    logits = torch.where(torch.as_tensor(truth) > 0, 20.0, -20.0).float()[None]
+    monkeypatch.setattr(actor, "belief_logits", lambda decision: logits)
+    actions = engine.legal_actions(state)
+    search._root_log_probs(engine, state, actions)
+    assert search._world_weights is not None and len(search._world_weights) == 162
+    # Per-card marginals carry no joint constraint, so a seat can fill up before
+    # all its true cards are dealt and the remainder falls back to other seats;
+    # the worlds must still be legal and place far more copies right than a
+    # uniform shuffle does.
+    def placed_right(world):
+        hits = total = 0
+        for r in range(1, 4):
+            for card in world.hand((seat + r) % 4):
+                hits += truth[card, r - 1] > 0
+                total += 1
+        return hits / total
+
+    rng = random.Random(5)
+    belief_scores, uniform_scores = [], []
+    for _ in range(10):
+        world = search.sample_world(state, seat, rng)
+        assert world.hand(seat) == state.hand(seat)
+        for r in range(1, 4):
+            assert len(world.hand((seat + r) % 4)) == len(state.hand((seat + r) % 4))
+        total = sorted(c for s in range(4) for c in world.hand(s)) + sorted(
+            c for s in range(4) for c in world.played(s))
+        assert total == sorted(c for s in range(4) for c in state.hand(s)) + sorted(
+            c for s in range(4) for c in state.played(s))
+        belief_scores.append(placed_right(world))
+        uniform_scores.append(placed_right(state.determinize_uniform(seat, rng.getrandbits(64))))
+    assert np.mean(belief_scores) > 0.85 > np.mean(uniform_scores) + 0.3
+    # End to end: the root pass computes the weights and the search completes.
+    config = SearchConfig(sampler="belief", trigger="hand", hand_threshold=27, time_ms=10000,
+                          max_worlds=2, max_actions=2, min_worlds=1)
+    search = SearchPolicy(base, config)
+    search.start_match()
+    search.select(engine, state, actions, random.Random(9))
+    assert search.completed == 1 and search.decisions[-1]["sampler"] == "belief"

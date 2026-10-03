@@ -103,7 +103,7 @@ def batched_world_values(search, engine, state, actions, candidates, seat, rng, 
     worlds_per_wave = max(1, search.config.rollout_batch_size // count)
     while completed < search.config.max_worlds and time.perf_counter() < deadline:
         n = min(worlds_per_wave, search.config.max_worlds - completed)
-        worlds = [state.determinize_uniform(seat, rng.getrandbits(64)) for _ in range(n)]
+        worlds = [search.sample_world(state, seat, rng) for _ in range(n)]
         samples = [world for world in worlds for _ in candidates]
         choices = candidates * n
         values = []

@@ -310,6 +310,17 @@ PYBIND11_MODULE(_gd_core, m) {
       })
       .def("determinize_uniform", &determinize_uniform,
            py::arg("observer"), py::arg("seed"))
+      .def("determinize_weighted", [](const MatchState& s, int observer, uint64_t seed,
+                                      const std::vector<float>& weights) {
+        if (weights.size() != 3 * kNumCardIds)
+          throw std::invalid_argument("weights must hold 3 x 54 entries (relative seat, card)");
+        SeatWeights table{};
+        for (int r = 0; r < 3; ++r)
+          for (int c = 0; c < kNumCardIds; ++c) table[r][c] = weights[r * kNumCardIds + c];
+        return determinize_weighted(s, observer, seed, table);
+      }, py::arg("observer"), py::arg("seed"), py::arg("weights"),
+         "Weighted hidden-hand sample: weights[(r - 1) * 54 + card] for the seat r "
+         "places after the observer (r = 1, 2, 3); see gd/search.h.")
       .def_static("deserialize", [](const py::bytes& b) {
         MatchState s;
         const std::string str = b;
