@@ -135,7 +135,7 @@ def test_round_outcomes_and_trainer_with_heads(tmp_path):
                 "outcome_baseline", "next_type_accuracy", "next_seat_accuracy", "next_cards_exact"):
         assert key in line and np.isfinite(line[key]), key
     assert line["aux_coefficient"] == pytest.approx(0.1) and line["aux_loss"] > 0
-    assert line["next_loss"] > line["belief_loss"] > 0 and line["outcome_loss"] > 0
+    assert line["next_loss"] > 0 and line["belief_loss"] > 0 and line["outcome_loss"] > 0
     changed = [n for n, p in trainer.actor.named_parameters() if not torch.equal(before[n], p)]
     assert set(trainer.actor.auxiliary_parameter_names()) <= set(changed)
     assert any(n.startswith("stream.") for n in changed)

@@ -53,6 +53,7 @@ MULTI_HOT_FIELDS = (("cards1", CARDS1), ("cards2", CARDS2))
 BOMB_CLASSES = BOMB.stop - BOMB.start + 1      # sizes 4..10 plus "not a bomb"
 NEXT_LOGITS = (sum(s.stop - s.start for _, s in ONE_HOT_FIELDS)
                + sum(s.stop - s.start for _, s in MULTI_HOT_FIELDS) + BOMB_CLASSES)
+NEXT_FIELDS = len(ONE_HOT_FIELDS) + len(MULTI_HOT_FIELDS) + 1   # the bomb field
 HIDDEN_SEATS = 3
 NUM_CARDS = 54
 
@@ -90,10 +91,12 @@ def next_token_loss(logits: Tensor, tokens: Tensor, valid: Tensor) -> dict[str, 
 
     ``logits`` ``[..., NEXT_LOGITS]`` predict ``tokens`` ``[..., TOKEN_DIM]`` at
     the same index (the caller aligns position ``s`` with token ``s``);
-    ``valid`` ``[...]`` masks padding. Returns the summed field loss
-    (``next_loss``), each field's mean, and type/seat accuracies plus the
-    fraction of positions whose 108 card bits are all right (``next_cards_exact``).
-    Means are over valid positions; an all-padding batch gives zeros.
+    ``valid`` ``[...]`` masks padding. Returns the field losses' mean
+    (``next_loss``; the mean over the eight fields keeps this head at the same
+    order of magnitude as the other heads, so ``aux_coef`` weighs them evenly),
+    each field's own mean, and type/seat accuracies plus the fraction of
+    positions whose 108 card bits are all right (``next_cards_exact``). Means
+    are over valid positions; an all-padding batch gives zeros.
     """
     logits = logits.reshape(-1, NEXT_LOGITS).float()
     tokens = tokens.reshape(-1, TOKEN_DIM)
@@ -127,7 +130,7 @@ def next_token_loss(logits: Tensor, tokens: Tensor, valid: Tensor) -> dict[str, 
     stats["next_bomb_loss"] = masked_mean(
         F.cross_entropy(logits[:, NEXT_SLICES["bomb"]], bomb_target, reduction="none"))
     loss = loss + stats["next_bomb_loss"]
-    stats["next_loss"] = loss
+    stats["next_loss"] = loss / NEXT_FIELDS
     return stats
 
 
