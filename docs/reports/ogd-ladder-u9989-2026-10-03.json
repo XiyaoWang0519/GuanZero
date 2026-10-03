@@ -1,0 +1,392 @@
+{
+  "policy": "/mnt/project-files/checkpoints/u9989.pt",
+  "seeds": 50,
+  "per_opponent": {
+    "1st-lalala": {
+      "matches": 100,
+      "decided": 100,
+      "match_wins": 98,
+      "match_win_rate": 0.98,
+      "match_win_ci": [
+        0.9299868370580063,
+        0.9944981477650318
+      ],
+      "rounds": 899,
+      "round_first_rate": 0.6896551724137931,
+      "round_first_ci": [
+        0.6586595325846228,
+        0.719036842947918
+      ],
+      "net_levels_per_round": 1.3448275862068966,
+      "net_levels_se_naive": 0.07089082435094003,
+      "rounds_mirror_failed": 0,
+      "our_decisions": 45554,
+      "our_fallback_decisions": 0,
+      "bot_decisions": 47255,
+      "bot_failures": {},
+      "mean_match_seconds": 3.9243859551100035
+    },
+    "2nd-egg-pancake": {
+      "matches": 100,
+      "decided": 100,
+      "match_wins": 84,
+      "match_win_rate": 0.84,
+      "match_win_ci": [
+        0.7557955544110557,
+        0.8990479765052628
+      ],
+      "rounds": 1040,
+      "round_first_rate": 0.6326923076923077,
+      "round_first_ci": [
+        0.6029549950556577,
+        0.6614529381020168
+      ],
+      "net_levels_per_round": 0.7076923076923077,
+      "net_levels_se_naive": 0.07226631499875824,
+      "rounds_mirror_failed": 0,
+      "our_decisions": 46631,
+      "our_fallback_decisions": 0,
+      "bot_decisions": 47955,
+      "bot_failures": {},
+      "mean_match_seconds": 3.9559921160699947
+    },
+    "2nd-flush-bomb": {
+      "matches": 100,
+      "decided": 100,
+      "match_wins": 99,
+      "match_win_rate": 0.99,
+      "match_win_ci": [
+        0.9455124752390653,
+        0.9982326134344526
+      ],
+      "rounds": 875,
+      "round_first_rate": 0.7028571428571428,
+      "round_first_ci": [
+        0.6717427961614731,
+        0.7321980277594701
+      ],
+      "net_levels_per_round": 1.4068571428571428,
+      "net_levels_se_naive": 0.07085300898000452,
+      "rounds_mirror_failed": 0,
+      "our_decisions": 44245,
+      "our_fallback_decisions": 0,
+      "bot_decisions": 46006,
+      "bot_failures": {},
+      "mean_match_seconds": 3.821469375799995
+    },
+    "2nd-no-ai": {
+      "matches": 100,
+      "decided": 100,
+      "match_wins": 25,
+      "match_win_rate": 0.25,
+      "match_win_ci": [
+        0.1754509400372426,
+        0.3430464637007583
+      ],
+      "rounds": 1013,
+      "round_first_rate": 0.3810463968410661,
+      "round_first_ci": [
+        0.3516422072079312,
+        0.41134939345042093
+      ],
+      "net_levels_per_round": -0.5765054294175715,
+      "net_levels_se_naive": 0.07554956649323456,
+      "rounds_mirror_failed": 0,
+      "our_decisions": 42494,
+      "our_fallback_decisions": 0,
+      "bot_decisions": 41937,
+      "bot_failures": {},
+      "mean_match_seconds": 24.428907862800017
+    },
+    "3rd-chick-squad": {
+      "matches": 100,
+      "decided": 100,
+      "match_wins": 97,
+      "match_win_rate": 0.97,
+      "match_win_ci": [
+        0.915479219195973,
+        0.9897456617765851
+      ],
+      "rounds": 951,
+      "round_first_rate": 0.6519453207150369,
+      "round_first_ci": [
+        0.6211130173218701,
+        0.6815549854128243
+      ],
+      "net_levels_per_round": 1.167192429022082,
+      "net_levels_se_naive": 0.07138964710092374,
+      "rounds_mirror_failed": 0,
+      "our_decisions": 45082,
+      "our_fallback_decisions": 0,
+      "bot_decisions": 45963,
+      "bot_failures": {},
+      "mean_match_seconds": 3.3942041383999912
+    },
+    "3rd-ez": {
+      "matches": 100,
+      "decided": 100,
+      "match_wins": 57,
+      "match_win_rate": 0.57,
+      "match_win_ci": [
+        0.4721521169586435,
+        0.6626686099947162
+      ],
+      "rounds": 1088,
+      "round_first_rate": 0.5174632352941176,
+      "round_first_ci": [
+        0.4877615226916012,
+        0.5470420605387867
+      ],
+      "net_levels_per_round": 0.16268382352941177,
+      "net_levels_se_naive": 0.07270886808621982,
+      "rounds_mirror_failed": 0,
+      "our_decisions": 51758,
+      "our_fallback_decisions": 0,
+      "bot_decisions": 52276,
+      "bot_failures": {},
+      "mean_match_seconds": 4.668835027980017
+    },
+    "3rd-hulalala": {
+      "matches": 100,
+      "decided": 100,
+      "match_wins": 100,
+      "match_win_rate": 1.0,
+      "match_win_ci": [
+        0.9630051925239981,
+        0.9999999999999999
+      ],
+      "rounds": 879,
+      "round_first_rate": 0.7087599544937428,
+      "round_first_ci": [
+        0.677867580561666,
+        0.7378355308458616
+      ],
+      "net_levels_per_round": 1.4118316268486917,
+      "net_levels_se_naive": 0.07027050049898793,
+      "rounds_mirror_failed": 0,
+      "our_decisions": 44497,
+      "our_fallback_decisions": 0,
+      "bot_decisions": 46199,
+      "bot_failures": {},
+      "mean_match_seconds": 3.6712960090400157
+    },
+    "fin-caiji": {
+      "matches": 100,
+      "decided": 100,
+      "match_wins": 99,
+      "match_win_rate": 0.99,
+      "match_win_ci": [
+        0.9455124752390653,
+        0.9982326134344526
+      ],
+      "rounds": 904,
+      "round_first_rate": 0.7256637168141593,
+      "round_first_ci": [
+        0.6956688925874471,
+        0.7537487150656942
+      ],
+      "net_levels_per_round": 1.3285398230088497,
+      "net_levels_se_naive": 0.0676459566512056,
+      "rounds_mirror_failed": 0,
+      "our_decisions": 38622,
+      "our_fallback_decisions": 0,
+      "bot_decisions": 40155,
+      "bot_failures": {},
+      "mean_match_seconds": 2.7354483911799754
+    },
+    "fin-egg-expert": {
+      "matches": 100,
+      "decided": 100,
+      "match_wins": 96,
+      "match_win_rate": 0.96,
+      "match_win_ci": [
+        0.9016278276739262,
+        0.984336949448152
+      ],
+      "rounds": 900,
+      "round_first_rate": 0.6877777777777778,
+      "round_first_ci": [
+        0.6567580706542752,
+        0.7172012602727368
+      ],
+      "net_levels_per_round": 1.2966666666666666,
+      "net_levels_se_naive": 0.07025730910119364,
+      "rounds_mirror_failed": 0,
+      "our_decisions": 43241,
+      "our_fallback_decisions": 0,
+      "bot_decisions": 44656,
+      "bot_failures": {},
+      "mean_match_seconds": 3.6784351634200085
+    },
+    "fin-go-go-go": {
+      "matches": 100,
+      "decided": 100,
+      "match_wins": 100,
+      "match_win_rate": 1.0,
+      "match_win_ci": [
+        0.9630051925239981,
+        0.9999999999999999
+      ],
+      "rounds": 696,
+      "round_first_rate": 0.8520114942528736,
+      "round_first_ci": [
+        0.8237000452910089,
+        0.8764583905607609
+      ],
+      "net_levels_per_round": 2.0704022988505746,
+      "net_levels_se_naive": 0.06180179824322849,
+      "rounds_mirror_failed": 0,
+      "our_decisions": 32565,
+      "our_fallback_decisions": 0,
+      "bot_decisions": 35444,
+      "bot_failures": {},
+      "mean_match_seconds": 3.1345032384600064
+    },
+    "fin-guanglan-iot": {
+      "matches": 100,
+      "decided": 100,
+      "match_wins": 93,
+      "match_win_rate": 0.93,
+      "match_win_ci": [
+        0.8625032899347025,
+        0.965681175635936
+      ],
+      "rounds": 928,
+      "round_first_rate": 0.6724137931034483,
+      "round_first_ci": [
+        0.6415599714678679,
+        0.7018460322992959
+      ],
+      "net_levels_per_round": 1.1551724137931034,
+      "net_levels_se_naive": 0.07125417507231205,
+      "rounds_mirror_failed": 0,
+      "our_decisions": 44012,
+      "our_fallback_decisions": 0,
+      "bot_decisions": 45350,
+      "bot_failures": {},
+      "mean_match_seconds": 3.651357005280015
+    },
+    "fin-honest-seu": {
+      "matches": 100,
+      "decided": 100,
+      "match_wins": 100,
+      "match_win_rate": 1.0,
+      "match_win_ci": [
+        0.9630051925239981,
+        0.9999999999999999
+      ],
+      "rounds": 718,
+      "round_first_rate": 0.8245125348189415,
+      "round_first_ci": [
+        0.7949822025172048,
+        0.8505887925598316
+      ],
+      "net_levels_per_round": 1.926183844011142,
+      "net_levels_se_naive": 0.06694378381997594,
+      "rounds_mirror_failed": 0,
+      "our_decisions": 35791,
+      "our_fallback_decisions": 0,
+      "bot_decisions": 38453,
+      "bot_failures": {},
+      "mean_match_seconds": 6.186159688820007
+    },
+    "fin-njupt-guandan-ai": {
+      "matches": 100,
+      "decided": 100,
+      "match_wins": 55,
+      "match_win_rate": 0.55,
+      "match_win_ci": [
+        0.45244427031643447,
+        0.6438562489359654
+      ],
+      "rounds": 1123,
+      "round_first_rate": 0.4951024042742654,
+      "round_first_ci": [
+        0.4659264271615452,
+        0.5243117749069622
+      ],
+      "net_levels_per_round": 0.09617097061442564,
+      "net_levels_se_naive": 0.0693597973217317,
+      "rounds_mirror_failed": 0,
+      "our_decisions": 50464,
+      "our_fallback_decisions": 0,
+      "bot_decisions": 50221,
+      "bot_failures": {},
+      "mean_match_seconds": 3.6874481829499883
+    },
+    "fin-xishang-tech": {
+      "matches": 100,
+      "decided": 100,
+      "match_wins": 100,
+      "match_win_rate": 1.0,
+      "match_win_ci": [
+        0.9630051925239981,
+        0.9999999999999999
+      ],
+      "rounds": 755,
+      "round_first_rate": 0.8450331125827815,
+      "round_first_ci": [
+        0.8174796140305417,
+        0.8690931832436194
+      ],
+      "net_levels_per_round": 1.8900662251655629,
+      "net_levels_se_naive": 0.06093692759319807,
+      "rounds_mirror_failed": 0,
+      "our_decisions": 37083,
+      "our_fallback_decisions": 0,
+      "bot_decisions": 39272,
+      "bot_failures": {},
+      "mean_match_seconds": 3.1912097631199687
+    },
+    "part-369": {
+      "matches": 100,
+      "decided": 100,
+      "match_wins": 60,
+      "match_win_rate": 0.6,
+      "match_win_ci": [
+        0.5020007846184025,
+        0.6906002538863971
+      ],
+      "rounds": 1111,
+      "round_first_rate": 0.5121512151215122,
+      "round_first_ci": [
+        0.4827672128477921,
+        0.5414514743630189
+      ],
+      "net_levels_per_round": 0.24932493249324933,
+      "net_levels_se_naive": 0.0710304041274313,
+      "rounds_mirror_failed": 0,
+      "our_decisions": 52118,
+      "our_fallback_decisions": 0,
+      "bot_decisions": 52316,
+      "bot_failures": {
+        "act_error": 4
+      },
+      "mean_match_seconds": 4.560519025900008
+    },
+    "part-youre-right": {
+      "matches": 100,
+      "decided": 100,
+      "match_wins": 100,
+      "match_win_rate": 1.0,
+      "match_win_ci": [
+        0.9630051925239981,
+        0.9999999999999999
+      ],
+      "rounds": 570,
+      "round_first_rate": 0.9649122807017544,
+      "round_first_ci": [
+        0.946426535438194,
+        0.97717328723064
+      ],
+      "net_levels_per_round": 2.687719298245614,
+      "net_levels_se_naive": 0.03856704869512321,
+      "rounds_mirror_failed": 0,
+      "our_decisions": 26766,
+      "our_fallback_decisions": 0,
+      "bot_decisions": 29227,
+      "bot_failures": {},
+      "mean_match_seconds": 2.1451538341899594
+    }
+  }
+}
