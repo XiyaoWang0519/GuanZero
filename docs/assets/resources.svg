@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 300" width="880" height="300" role="img" aria-labelledby="t d">
+<title id="t">GuanZero resources compared with the strongest published Guandan agent</title>
+<desc id="d">Policy parameters: 1.36M for GuanZero versus 4.00M for the reference agent (34%). Self-play rounds: 13.1M versus 33.3M (39%).</desc>
+<style>
+.bg{fill:#fbf8f3}.ink{fill:#1d1a16}.ink2{fill:#5b5650}.mute{fill:#8a847b}
+.ref{fill:#d8d1c5}.ours{fill:#c0392b}.axis{stroke:#bdb5a8;stroke-width:1}
+text{font-family:ui-sans-serif,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif}
+.serif{font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif}
+</style>
+<rect class="bg" width="880" height="300" rx="14"/>
+<text class="ink serif" x="76" y="34" font-size="19">A fraction of the resources</text>
+<text class="ink2" x="76" y="54" font-size="12.5">GuanZero today compared with the strongest published Guandan agent · bar length relative to that agent</text>
+<rect class="ours" x="76" y="74" width="14" height="10" rx="2"/><text class="ink2" x="96" y="83" font-size="12">GuanZero</text>
+<rect class="ref" x="176" y="74" width="14" height="10" rx="2"/><text class="ink2" x="196" y="83" font-size="12">strongest published agent</text>
+<text class="ink" x="76" y="140" font-size="14" font-weight="600">Policy parameters</text>
+<rect class="ref" x="230" y="118" width="550.0" height="16" rx="4"/>
+<text class="ink2" x="788" y="131" font-size="12.5">4.00M</text>
+<rect class="ours" x="230" y="138" width="187.0" height="16" rx="4"/>
+<text class="ink" x="425.0" y="151" font-size="12.5" font-weight="600">1.36M  ·  34%</text>
+<text class="ink" x="76" y="222" font-size="14" font-weight="600">Self-play rounds</text>
+<rect class="ref" x="230" y="200" width="550.0" height="16" rx="4"/>
+<text class="ink2" x="788" y="213" font-size="12.5">33.3M</text>
+<rect class="ours" x="230" y="220" width="216.4" height="16" rx="4"/>
+<text class="ink" x="454.4" y="233" font-size="12.5" font-weight="600">13.1M  ·  39%</text>
+<text class="mute" x="76" y="280" font-size="11.5">Rounds: the reference agent counts 33.3M training episodes, taken here as one round each (60.7 transitions per episode vs our 75.3 decisions per round).</text>
+</svg>

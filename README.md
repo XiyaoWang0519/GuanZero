@@ -33,7 +33,12 @@ deal is replayed with the teams swapped, which cancels most of the luck of the c
 - **Still climbing.** Over about 1B decisions the gap to the reference agent shrank from **−2.05** to **−1.56** levels per round, about +0.07 per 100M decisions and no plateau in the measured range.
 - **Search adds more.** Test-time search adds +0.30 levels per round (**−1.34**) with no extra training, about what 450M more self-play decisions would buy on the current curve.
 - **Cheap.** Everything so far ran on one rented GPU at a time, for about US$106 in total. The reference agent is still clearly stronger.
+- **Lean.** GuanZero has about a third of the reference agent's parameters (1.36M vs 4.00M) and has so far played about 40% of its self-play rounds (13.1M vs 33.3M), on one GPU at a time.
 - On the public [Botzone](https://www.botzone.org.cn/) Guandan ladder, the plain policy without search reached **rank 40** (1,018 points) on October 3, 2026.
+
+<p align="center">
+  <img src="docs/assets/resources.svg" alt="GuanZero uses 1.36M policy parameters versus 4.00M for the strongest published agent (34%), and 13.1M self-play rounds versus 33.3M (39%)" width="100%">
+</p>
 
 Every number links back to its evaluation in [strength-summary-2026-10-04](docs/reports/strength-summary-2026-10-04.md).
 

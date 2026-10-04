@@ -65,6 +65,25 @@ reported in transitions, which need not equal our decisions.
 The search gain of +0.30 is converted to training volume with the overall slope
 of the curve above, +0.066 levels per round per 100M decisions (about 450M).
 
+## Resources compared with the reference agent
+
+Read from the reference checkpoint `ckpts/DanLM_v1/dansformer_v1_best_eval.pt`:
+4,003,073 model parameters (Q head 2,363,393; Transformer blocks 885,888; hand
+MLP 660,096; RoPE tables 81,920 of these are fixed buffers),
+`total_transitions` 2,019,950,592, `episode_count` 33,274,126,
+`train_step_count` 246,560 at batch size 8,192, 15 actors, inference on
+`cuda:3` (so at least four GPUs). Its training code is not published, so the
+definition of an episode is inferred: 60.7 transitions per episode is close to
+our 75.3 decisions per round, so an episode is taken to be one round.
+
+GuanZero u15094: 1,357,953 policy parameters (the exported Botzone actor;
+[botzone-bot-2026-10-03](botzone-bot-2026-10-03.md)), 989,200,384 decisions and
+13,134,820 rounds (`metrics.jsonl` of the aux-full segment).
+
+These are resource comparisons only. GuanZero is weaker (-1.56 levels per
+round), and the reference agent's own curve flattens early, so no sample
+efficiency advantage over it is claimed.
+
 ## Test-time search on u9989
 
 Same configuration and the same 300 deals, on u9989 (654.6M decisions): plain
