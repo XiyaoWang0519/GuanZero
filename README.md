@@ -63,3 +63,16 @@ python -m pytest -q tests oracle    # Python suites and oracle cross-checks
 ```
 
 The rules are specified in [docs/RULES.md](docs/RULES.md). Training entry points and readiness are in [docs/TRAINING.md](docs/TRAINING.md).
+
+## Play against a checkpoint
+
+```sh
+./scripts/play.sh path/to/checkpoint.pt     # opens http://127.0.0.1:8765/
+```
+
+You take the bottom seat; the checkpoint plays the other three, your partner
+included, greedily and without search. The page shows only what a player at
+the table knows (your hand, public plays, card counts, a tracker of the cards
+not yet seen) plus, on your turn, the model's top three moves for your hand.
+The server is `eval/play_vs_model.py` (one process, two torch threads by
+default; `--threads`, `--port`).
