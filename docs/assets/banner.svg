@@ -12,7 +12,7 @@
 <text class="wm cjk" x="40" y="330" font-size="300" letter-spacing="-10">掼蛋</text>
 <text class="ink serif" x="72" y="150" font-size="76" letter-spacing="1">GuanZero</text>
 <line class="rule" x1="76" x2="132" y1="180" y2="180"/>
-<text class="ink2 serif" x="74" y="222" font-size="25" font-style="italic">Learning Guandan from nothing, by playing itself.</text>
+<text class="ink2 serif" x="74" y="222" font-size="25" font-style="italic">On the way to SGI: Super Guandan Intelligence.</text>
 <text class="mute sans" x="76" y="268" font-size="14" letter-spacing="2.2">C++ ENGINE  ·  TRANSFORMER  ·  SELF-PLAY  ·  SEARCH</text>
 <g transform="rotate(-25 965 560)">
 <rect class="card" x="906.0" y="190" width="118" height="168" rx="10"/>

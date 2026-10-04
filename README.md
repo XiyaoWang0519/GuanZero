@@ -23,15 +23,14 @@ For an AI it combines three hard problems at once:
 ## Where it stands
 
 <p align="center">
-  <img src="docs/assets/progress-vs-danlm.svg" alt="Net levels per round against DanLM, rising from −2.05 at 172M self-play decisions to −1.56 at 989M, and −1.34 with test-time search" width="100%">
+  <img src="docs/assets/progress.svg" alt="Net levels per round against the strongest published Guandan agent, rising from −2.05 at 172M self-play decisions to −1.56 at 989M, and −1.34 with test-time search" width="100%">
 </p>
 
-The yardstick is [DanLM](https://github.com/dashidhy/DanLM), the strongest published
-Guandan agent, played on duplicate deals: every deal is replayed with the teams
+The yardstick is the strongest published Guandan agent, played on duplicate deals: every deal is replayed with the teams
 swapped, which cancels most of the luck of the cards.
 
-- Over about 1B self-play decisions the gap to DanLM shrank from **−2.05** to **−1.56** levels per round, and to **−1.34** with test-time search.
-- DanLM is still clearly stronger. The curve has not flattened yet in the measured range.
+- Over about 1B self-play decisions the gap to it shrank from **−2.05** to **−1.56** levels per round, and to **−1.34** with test-time search.
+- That agent is still clearly stronger. The curve has not flattened yet in the measured range.
 - On the public [Botzone](https://www.botzone.org.cn/) Guandan ladder, the plain policy without search reached **rank 40** (1,018 points) on October 3, 2026.
 - Everything so far ran on one rented GPU at a time, for about US$106 in total.
 
@@ -56,7 +55,7 @@ The experiments so far raised three questions this project is now built to study
 
 - **An independent rules oracle.** `oracle/gd_reference.py` was written separately from the engine. They agree on 100,000 `interpret` cases, all 37,636 `beats` pairs and 10,000 move-generation hands, with 0 mismatches.
 - **Fuzzing.** 10,000,008 rounds and 735,492,869 decisions with every invariant checked; 100,002 rounds clean under UBSan.
-- **Rules parity with DanLM.** 70 rounds with zero tribute, finish-order or reward mismatches against DanLM's own engine.
+- **Rules parity with an external engine.** 70 rounds with zero tribute, finish-order or reward mismatches against the reference agent's own engine.
 - **Measured claims.** Strength claims come with confidence intervals on duplicate deals, A/B tests are paired, and results that showed no effect are kept. There is one report per experiment in [`docs/reports/`](docs/reports/).
 
 <details>
@@ -100,7 +99,7 @@ faster component is never claimed to make a better player.
 | `python/gd/` | pybind11 package (`gd._gd_core`) |
 | `oracle/` | independent Python rules oracle, used only in tests |
 | `train/` | PPO trainer, history Transformer, KV caches, CUDA Graphs, Triton kernel, actor ranks |
-| `eval/` | duplicate-deal arenas, DanLM bridge, test-time search, Botzone bot |
+| `eval/` | duplicate-deal arenas, external-agent bridges, test-time search, Botzone bot |
 | `bench/` | throughput benchmarks |
 | `docs/` | rules, design, training guide and one report per experiment |
 
@@ -117,7 +116,3 @@ python -m pytest -q tests oracle    # Python suites and oracle cross-checks
 The rules are specified in [docs/RULES.md](docs/RULES.md), the system design in
 [docs/DESIGN.md](docs/DESIGN.md), and training entry points in
 [docs/TRAINING.md](docs/TRAINING.md).
-
-<br>
-
-<p align="center"><sub>DanLM is used for evaluation only and is not included in this repository.</sub></p>

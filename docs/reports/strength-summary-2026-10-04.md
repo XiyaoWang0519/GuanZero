@@ -1,7 +1,7 @@
 # Strength against DanLM, summary (October 4, 2026)
 
 This collects the DanLM numbers behind the README chart
-(`docs/assets/progress-vs-danlm.svg`) in one place. Nothing here is new
+(`docs/assets/progress.svg`) in one place. Nothing here is new
 measurement; every row comes from an evaluation file listed below.
 
 Yardstick: DanLM (`dansformer_v1_best_eval.pt`), duplicate deals through

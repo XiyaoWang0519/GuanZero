@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 420" width="880" height="420" role="img" aria-labelledby="t d">
-<title id="t">GuanZero vs DanLM over training</title><desc id="d">Net levels per round against DanLM on 4,000 duplicate deals, rising from -2.05 at 172M self-play decisions to -1.56 at 989M; with test-time search -1.34 on 300 deals. 0 would be parity.</desc>
+<title id="t">GuanZero against the strongest published Guandan agent</title><desc id="d">Net levels per round against the strongest published Guandan agent on 4,000 duplicate deals, rising from -2.05 at 172M self-play decisions to -1.56 at 989M; with test-time search -1.34 on 300 deals. 0 would be parity.</desc>
 <style>
 .bg{fill:#fbf8f3}.ink{fill:#1d1a16}.ink2{fill:#5b5650}.mute{fill:#8a847b}
 .grid{stroke:#e7e1d7;stroke-width:1}.axis{stroke:#bdb5a8;stroke-width:1}
@@ -11,8 +11,8 @@ text{font-family:ui-sans-serif,-apple-system,"Segoe UI",Helvetica,Arial,sans-ser
 .serif{font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif}
 </style>
 <rect class="bg" width="880" height="420" rx="14"/>
-<text class="ink serif" x="76" y="34" font-size="19">Closing the gap to DanLM</text>
-<text class="ink2" x="76" y="54" font-size="12.5">Net levels per round against DanLM · 4,000 duplicate deals per point · 0 = equal strength</text>
+<text class="ink serif" x="76" y="34" font-size="19">Closing the gap to the strongest published agent</text>
+<text class="ink2" x="76" y="54" font-size="12.5">Net levels per round · 4,000 duplicate deals per point · 0 = equal strength</text>
 <line class="grid" x1="76" x2="820" y1="312.2" y2="312.2"/>
 <text class="mute" x="66" y="316.2" font-size="11.5" text-anchor="end">−2.0</text>
 <line class="grid" x1="76" x2="820" y1="253.8" y2="253.8"/>
@@ -32,7 +32,7 @@ text{font-family:ui-sans-serif,-apple-system,"Segoe UI",Helvetica,Arial,sans-ser
 <text class="ink2" x="820" y="398" font-size="12" text-anchor="end">self-play decisions</text>
 <line class="ref" x1="76" x2="820" y1="321.8" y2="321.8"/>
 <text class="ink2" x="454.8" y="339.8" font-size="11.5">our strongest earlier MLP agent  −2.03</text>
-<text class="mute" x="820" y="62" font-size="11.5" text-anchor="end">DanLM itself sits at 0, above the frame ↑</text>
+<text class="mute" x="820" y="62" font-size="11.5" text-anchor="end">equal strength is 0, above the frame ↑</text>
 <line class="ci" x1="192.3" x2="192.3" y1="334.7" y2="315.7"/>
 <line class="ci" x1="213.4" x2="213.4" y1="324.5" y2="305.2"/>
 <line class="ci" x1="232.6" x2="232.6" y1="323.0" y2="304.6"/>
