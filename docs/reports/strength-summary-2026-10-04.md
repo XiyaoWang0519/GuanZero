@@ -58,10 +58,6 @@ and head to head against B11 +0.076 [-0.009, +0.162] on 1,000 duplicate deals
 ([history-ablation-2026-09-29](history-ablation-2026-09-29.md)). At 654.6M
 decisions u9989 beats B11 by +0.668 [+0.504, +0.824] on 256 deals.
 
-This compares two of our own agents trained by the same pipeline. It is not a
-claim about the reference agent's sample efficiency: its training volume is
-reported in transitions, which need not equal our decisions.
-
 The search gain of +0.30 is converted to training volume with the overall slope
 of the curve above, +0.066 levels per round per 100M decisions (about 450M).
 
@@ -80,9 +76,6 @@ GuanZero u15094: 1,357,953 policy parameters (the exported Botzone actor;
 [botzone-bot-2026-10-03](botzone-bot-2026-10-03.md)), 989,200,384 decisions and
 13,134,820 rounds (`metrics.jsonl` of the aux-full segment).
 
-These are resource comparisons only. GuanZero is weaker (-1.56 levels per
-round), and the reference agent's own curve flattens early, so no sample
-efficiency advantage over it is claimed.
 
 ## Test-time search on u9989
 
