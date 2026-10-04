@@ -5,14 +5,13 @@
 <p align="center"><i>A Guandan agent that starts from random weights and learns only by playing against itself.<br>
 No human games, no imitation, no hand-written play strategy.</i></p>
 
-<br>
+<p align="center">
+  <img src="docs/assets/stats.svg" alt="6x fewer self-play decisions than our MLP needed to reach the same strength; +0.30 levels per round from test-time search; a third of the parameters of the strongest published Guandan agent; US$106 total compute on one rented GPU" width="100%">
+</p>
 
 ## The game
 
-Guandan (掼蛋) is a four-player team card game played with two decks. Partners sit
-across from each other, each holding 27 of the 108 cards, and race to empty their
-hands. The winning team climbs levels from 2 to A over a match of many rounds, and
-losers pay tribute cards to the winners before the next round starts.
+Guandan (掼蛋) is a four-player team card game played with two decks. Partners sit across from each other, each holding 27 of the 108 cards, and race to empty their hands. The winning team climbs levels from 2 to A over a match of many rounds, and losers pay tribute cards to the winners before the next round starts.
 
 For an AI it combines three hard problems at once:
 
@@ -26,27 +25,24 @@ For an AI it combines three hard problems at once:
   <img src="docs/assets/progress.svg" alt="Net levels per round against the strongest published Guandan agent, rising from −2.05 at 172M self-play decisions to −1.56 at 989M, and −1.34 with test-time search" width="100%">
 </p>
 
-The yardstick is the strongest published Guandan agent, played on duplicate deals: every
-deal is replayed with the teams swapped, which cancels most of the luck of the cards.
-
-- **Sample-efficient.** The Transformer matched our strongest MLP agent after only **172M** self-play decisions; the MLP had needed about **1.0B**, roughly 6x more. By 655M decisions it beat that MLP head to head by +0.67 levels per round.
-- **Still climbing.** Over about 1B decisions the gap to the reference agent shrank from **−2.05** to **−1.56** levels per round, about +0.07 per 100M decisions.
-- **Search adds more.** Test-time search adds +0.30 levels per round (**−1.34**) with no extra training, about what 450M more self-play decisions would buy on the current curve.
-- **Lean.** A third of the reference agent's parameters (1.36M vs 4.00M), 40% of its self-play rounds (13.1M vs 33.3M), one rented GPU, about US$106 in total.
-- On the public [Botzone](https://www.botzone.org.cn/) Guandan ladder, the plain policy without search reached **rank 40** (1,018 points) on October 3, 2026.
+Measured against the strongest published Guandan agent on duplicate deals, where every deal is replayed with the teams swapped. The gap has shrunk from **−2.05** to **−1.56** levels per round over about 1B self-play decisions, and test-time search takes it to **−1.34**. The Transformer matched our strongest MLP after only 172M decisions and now beats it head to head by +0.67 levels per round.
 
 <p align="center">
   <img src="docs/assets/resources.svg" alt="GuanZero uses 1.36M policy parameters versus 4.00M for the strongest published agent (34%), and 13.1M self-play rounds versus 33.3M (39%)" width="100%">
 </p>
 
-Every number links back to its evaluation in [strength-summary-2026-10-04](docs/reports/strength-summary-2026-10-04.md).
+On the public [Botzone](https://www.botzone.org.cn/) Guandan ladder the plain policy, without search, reached rank 40 on October 3, 2026. Sources: [strength summary](docs/reports/strength-summary-2026-10-04.md).
 
 ## How it learns
 
-1. **Rules engine.** A C++20 engine, `gd_core`, generates every legal move. It is specified line by line in [RULES.md](docs/RULES.md).
-2. **Self-play.** Four seats are played by the current network and its own past snapshots. PPO updates the policy from those games; no human data enters training. The only scripted part is a fixed tribute heuristic between rounds.
-3. **A model that reads the whole match.** A Transformer reads the full public history of the match as a token stream, together with the current hand. The policy has 1.36M parameters. Auxiliary heads predict the next move, the hidden hands and the round outcome.
-4. **Search at play time.** When someone is close to going out, or the policy is unsure, the agent samples possible hidden hands and compares its best few moves by rollouts.
+<p align="center">
+  <img src="docs/assets/loop.svg" alt="The self-play loop: four seats play on the C++20 rules engine; game records feed a PPO update of the policy and auxiliary heads; new versions join the snapshot pool of opponents; test-time search uses the same policy at play time" width="100%">
+</p>
+
+- **Engine.** `gd_core`, a C++20 rules engine specified line by line in [RULES.md](docs/RULES.md).
+- **Model.** A 1.36M-parameter Transformer that reads the whole match as a token stream, with auxiliary heads for the next move, the hidden hands and the round outcome.
+- **Training.** PPO against the current network and its own past snapshots. The only scripted part is a fixed tribute rule between rounds.
+- **Search.** When someone is close to going out or the policy is unsure, the agent samples hidden hands and compares its best moves by rollouts.
 
 ## Open questions
 
@@ -68,9 +64,7 @@ The experiments so far raised three questions this project is now built to study
 
 <br>
 
-Rollout collection is bound by the Python host thread, not by the GPU, so most of
-the speed work cuts host work per decision. Every optimization is checked for
-bitwise-identical results against the original path.
+Rollout collection is bound by the Python host thread, not by the GPU, so most of the speed work cuts host work per decision. Every optimization is checked for bitwise-identical results against the original path.
 
 | Change | Result | Hardware | Report |
 |---|---|---|---|
@@ -80,19 +74,9 @@ bitwise-identical results against the original path.
 | Learner length groups + page-padded rollout attention + paged KV cache (opt-in) | **1.71x** per training update; learner 2.4x | Apple M4 Pro CPU | [training-stack-refactor-2026-09-29](docs/reports/training-stack-refactor-2026-09-29.md) |
 | C++ rules engine, random play, canonical move generation | **190,533** decisions/s on one core; **1,839,581** on 12 threads | Apple silicon, 14 cores | [M0](docs/reports/M0.md) |
 
-**A rejected idea.** torch.profiler showed about 300 kernel launches per rollout
-step. A two-stage in-process pipeline made collection 1.4–2.2x *slower*, because
-splitting each batch doubled the per-decision host cost
-([perf-pipeline-2026-09-25](docs/reports/perf-pipeline-2026-09-25.md)). That led to
-the two changes that did work: CUDA Graphs, which cut launches per step, and
-separate actor processes.
+**A rejected idea.** torch.profiler showed about 300 kernel launches per rollout step. A two-stage in-process pipeline made collection 1.4–2.2x *slower*, because splitting each batch doubled the per-decision host cost ([perf-pipeline-2026-09-25](docs/reports/perf-pipeline-2026-09-25.md)). That led to the two changes that did work: CUDA Graphs, which cut launches per step, and separate actor processes.
 
-**How changes are measured.** Same-host A/B trials in interleaved orders (for
-example `ABDEEDBA`) with warmup discarded; replay digests compared for bitwise
-parity, with deterministic CUDA algorithms on (a CUDA `index_add_` was shown to be
-nondeterministic); torch.profiler, cProfile and nvidia-smi for profiling.
-Throughput, numerical parity and playing strength are reported separately: a
-faster component is never claimed to make a better player.
+**How changes are measured.** Same-host A/B trials in interleaved orders (for example `ABDEEDBA`) with warmup discarded; replay digests compared for bitwise parity, with deterministic CUDA algorithms on (a CUDA `index_add_` was shown to be nondeterministic); torch.profiler, cProfile and nvidia-smi for profiling. Throughput, numerical parity and playing strength are reported separately: a faster component is never claimed to make a better player.
 
 </details>
 
@@ -118,6 +102,4 @@ cmake --build build -j
 python -m pytest -q tests oracle    # Python suites and oracle cross-checks
 ```
 
-The rules are specified in [docs/RULES.md](docs/RULES.md), the system design in
-[docs/DESIGN.md](docs/DESIGN.md), and training entry points in
-[docs/TRAINING.md](docs/TRAINING.md).
+The rules are specified in [docs/RULES.md](docs/RULES.md), the system design in [docs/DESIGN.md](docs/DESIGN.md), and training entry points in [docs/TRAINING.md](docs/TRAINING.md).
