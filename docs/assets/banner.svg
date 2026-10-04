@@ -9,7 +9,7 @@
 .sans{font-family:ui-sans-serif,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif}
 </style>
 <rect class="bg" width="1200" height="380" rx="18"/>
-<text class="wm cjk" x="40" y="330" font-size="300" letter-spacing="-10">掼蛋</text>
+<text class="wm serif" x="34" y="350" font-size="176" font-style="italic" letter-spacing="-3">Guandan</text>
 <text class="ink serif" x="72" y="150" font-size="76" letter-spacing="1">GuanZero</text>
 <line class="rule" x1="76" x2="132" y1="180" y2="180"/>
 <text class="ink2 serif" x="74" y="222" font-size="25" font-style="italic">On the way to SGI: Super Guandan Intelligence.</text>

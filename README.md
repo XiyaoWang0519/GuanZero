@@ -11,7 +11,7 @@ No human games, no imitation, no hand-written play strategy.</i></p>
 
 ## The game
 
-Guandan (掼蛋) is a four-player team card game played with two decks. Partners sit across from each other, each holding 27 of the 108 cards, and race to empty their hands. The winning team climbs levels from 2 to A over a match of many rounds, and losers pay tribute cards to the winners before the next round starts.
+Guandan is a four-player team card game played with two decks. Partners sit across from each other, each holding 27 of the 108 cards, and race to empty their hands. The winning team climbs levels from 2 to A over a match of many rounds, and losers pay tribute cards to the winners before the next round starts.
 
 For an AI it combines three hard problems at once:
 

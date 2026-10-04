@@ -12,8 +12,8 @@ text{font-family:ui-sans-serif,-apple-system,"Segoe UI",Helvetica,Arial,sans-ser
 </style>
 <rect class="bg" width="880" height="390" rx="14"/>
 <ellipse class="ring" cx="400" cy="200" rx="250" ry="128"/>
-<text class="ink cjk" x="400" y="206" font-size="40" text-anchor="middle" fill-opacity=".85">自博弈</text>
-<text class="mute" x="400" y="230" font-size="12" text-anchor="middle">self-play loop</text>
+<text class="ink serif" x="400" y="204" font-size="34" font-style="italic" text-anchor="middle" fill-opacity=".85">self-play</text>
+<text class="mute" x="400" y="228" font-size="12" text-anchor="middle">from random weights, no human games</text>
 <path class="arc" d="M539.8,93.9 A250,128 0 0 1 631.8,152.1" marker-end="url(#a)"/>
 <path class="arc" d="M631.8,247.9 A250,128 0 0 1 539.8,306.1" marker-end="url(#a)"/>
 <path class="arc" d="M260.2,306.1 A250,128 0 0 1 168.2,247.9" marker-end="url(#a)"/>
