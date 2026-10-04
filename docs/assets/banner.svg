@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 380" width="1200" height="380" role="img" aria-labelledby="t">
+<title id="t">GuanZero: learning Guandan by self-play</title>
+<style>
+.bg{fill:#fbf8f3}.ink{fill:#1d1a16}.ink2{fill:#5b5650}.mute{fill:#9a9389}.wm{fill:#1d1a16;fill-opacity:.045}
+.card{fill:#fffdf9;stroke:#2a2520;stroke-width:1.6}.inner{fill:none;stroke:#c0392b;stroke-opacity:.35;stroke-width:1}
+.red{fill:#c0392b}.blk{fill:#1d1a16}.rule{stroke:#c0392b;stroke-width:2}
+.serif{font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif}
+.cjk{font-family:"Songti SC","STSong","Noto Serif CJK SC","Source Han Serif SC","SimSun",serif}
+.sans{font-family:ui-sans-serif,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif}
+</style>
+<rect class="bg" width="1200" height="380" rx="18"/>
+<text class="wm cjk" x="40" y="330" font-size="300" letter-spacing="-10">掼蛋</text>
+<text class="ink serif" x="72" y="150" font-size="76" letter-spacing="1">GuanZero</text>
+<line class="rule" x1="76" x2="132" y1="180" y2="180"/>
+<text class="ink2 serif" x="74" y="222" font-size="25" font-style="italic">Learning Guandan from nothing, by playing itself.</text>
+<text class="mute sans" x="76" y="268" font-size="14" letter-spacing="2.2">C++ ENGINE  ·  TRANSFORMER  ·  SELF-PLAY  ·  SEARCH</text>
+<g transform="rotate(-25 965 560)">
+<rect class="card" x="906.0" y="190" width="118" height="168" rx="10"/>
+<rect class="inner" x="913.0" y="197" width="104" height="154" rx="6"/>
+<text class="red serif" x="923.0" y="222" font-size="22" text-anchor="middle" font-weight="600">10</text>
+<text class="red serif" x="923.0" y="242" font-size="18" text-anchor="middle">♥</text>
+<text class="red serif" x="971.0" y="296.0" font-size="60" text-anchor="middle">♥</text>
+</g>
+<g transform="rotate(-15 965 560)">
+<rect class="card" x="906.0" y="190" width="118" height="168" rx="10"/>
+<rect class="inner" x="913.0" y="197" width="104" height="154" rx="6"/>
+<text class="red serif" x="923.0" y="222" font-size="22" text-anchor="middle" font-weight="600">J</text>
+<text class="red serif" x="923.0" y="242" font-size="18" text-anchor="middle">♥</text>
+<text class="red serif" x="971.0" y="296.0" font-size="60" text-anchor="middle">♥</text>
+</g>
+<g transform="rotate(-5 965 560)">
+<rect class="card" x="906.0" y="190" width="118" height="168" rx="10"/>
+<rect class="inner" x="913.0" y="197" width="104" height="154" rx="6"/>
+<text class="red serif" x="923.0" y="222" font-size="22" text-anchor="middle" font-weight="600">Q</text>
+<text class="red serif" x="923.0" y="242" font-size="18" text-anchor="middle">♥</text>
+<text class="red serif" x="971.0" y="296.0" font-size="60" text-anchor="middle">♥</text>
+</g>
+<g transform="rotate(5 965 560)">
+<rect class="card" x="906.0" y="190" width="118" height="168" rx="10"/>
+<rect class="inner" x="913.0" y="197" width="104" height="154" rx="6"/>
+<text class="red serif" x="923.0" y="222" font-size="22" text-anchor="middle" font-weight="600">K</text>
+<text class="red serif" x="923.0" y="242" font-size="18" text-anchor="middle">♥</text>
+<text class="red serif" x="971.0" y="296.0" font-size="60" text-anchor="middle">♥</text>
+</g>
+<g transform="rotate(15 965 560)">
+<rect class="card" x="906.0" y="190" width="118" height="168" rx="10"/>
+<rect class="inner" x="913.0" y="197" width="104" height="154" rx="6"/>
+<text class="red serif" x="923.0" y="222" font-size="22" text-anchor="middle" font-weight="600">A</text>
+<text class="red serif" x="923.0" y="242" font-size="18" text-anchor="middle">♥</text>
+<text class="red serif" x="971.0" y="296.0" font-size="60" text-anchor="middle">♥</text>
+</g>
+<g transform="rotate(25 965 560)">
+<rect class="card" x="906.0" y="190" width="118" height="168" rx="10"/>
+<rect class="inner" x="913.0" y="197" width="104" height="154" rx="6"/>
+<text class="red serif" x="922.0" y="218" font-size="15" text-anchor="middle" font-weight="600">J</text>
+<text class="red serif" x="922.0" y="235" font-size="15" text-anchor="middle" font-weight="600">O</text>
+<text class="red serif" x="922.0" y="252" font-size="15" text-anchor="middle" font-weight="600">K</text>
+<text class="red serif" x="922.0" y="269" font-size="15" text-anchor="middle" font-weight="600">E</text>
+<text class="red serif" x="922.0" y="286" font-size="15" text-anchor="middle" font-weight="600">R</text>
+<text class="red serif" x="973.0" y="294.0" font-size="56" text-anchor="middle">★</text>
+</g>
+</svg>
