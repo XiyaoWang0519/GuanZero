@@ -48,6 +48,23 @@ hidden-hand worlds, 10 s budget, rollouts by the policy itself in all seats.
 12,003 searches over 300 deals, 1,397 overrides, about 123 s per deal on an
 Apple M4 Pro.
 
+## Sample efficiency against our own MLP
+
+B11, the strongest MLP agent, sits at the end of a lineage of about 1.02B
+self-play decisions (M1 71M, B6 +102M, B8 +684M, B11 +about 165M estimated from
+B8's decisions per update). The Transformer reached the same level after 172M
+decisions: u2623 scores -2.045 against the reference agent versus B11's -2.033,
+and head to head against B11 +0.076 [-0.009, +0.162] on 1,000 duplicate deals
+([history-ablation-2026-09-29](history-ablation-2026-09-29.md)). At 654.6M
+decisions u9989 beats B11 by +0.668 [+0.504, +0.824] on 256 deals.
+
+This compares two of our own agents trained by the same pipeline. It is not a
+claim about the reference agent's sample efficiency: its training volume is
+reported in transitions, which need not equal our decisions.
+
+The search gain of +0.30 is converted to training volume with the overall slope
+of the curve above, +0.066 levels per round per 100M decisions (about 450M).
+
 ## Test-time search on u9989
 
 Same configuration and the same 300 deals, on u9989 (654.6M decisions): plain

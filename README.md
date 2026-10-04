@@ -26,13 +26,14 @@ For an AI it combines three hard problems at once:
   <img src="docs/assets/progress.svg" alt="Net levels per round against the strongest published Guandan agent, rising from −2.05 at 172M self-play decisions to −1.56 at 989M, and −1.34 with test-time search" width="100%">
 </p>
 
-The yardstick is the strongest published Guandan agent, played on duplicate deals: every deal is replayed with the teams
-swapped, which cancels most of the luck of the cards.
+The yardstick is the strongest published Guandan agent, played on duplicate deals: every
+deal is replayed with the teams swapped, which cancels most of the luck of the cards.
 
-- Over about 1B self-play decisions the gap to it shrank from **−2.05** to **−1.56** levels per round, and to **−1.34** with test-time search.
-- That agent is still clearly stronger. The curve has not flattened yet in the measured range.
+- **Sample-efficient.** The Transformer matched our strongest MLP agent after only **172M** self-play decisions; the MLP had needed about **1.0B**, roughly 6x more. By 655M decisions it beat that MLP head to head by +0.67 levels per round.
+- **Still climbing.** Over about 1B decisions the gap to the reference agent shrank from **−2.05** to **−1.56** levels per round, about +0.07 per 100M decisions and no plateau in the measured range.
+- **Search adds more.** Test-time search adds +0.30 levels per round (**−1.34**) with no extra training, about what 450M more self-play decisions would buy on the current curve.
+- **Cheap.** Everything so far ran on one rented GPU at a time, for about US$106 in total. The reference agent is still clearly stronger.
 - On the public [Botzone](https://www.botzone.org.cn/) Guandan ladder, the plain policy without search reached **rank 40** (1,018 points) on October 3, 2026.
-- Everything so far ran on one rented GPU at a time, for about US$106 in total.
 
 Every number links back to its evaluation in [strength-summary-2026-10-04](docs/reports/strength-summary-2026-10-04.md).
 
