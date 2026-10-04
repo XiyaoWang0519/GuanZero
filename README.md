@@ -1,12 +1,12 @@
 <p align="center">
-  <img src="docs/assets/banner.svg?v=2" alt="GuanZero: learning Guandan by self-play" width="100%">
+  <img src="docs/assets/banner-guanzero.svg" alt="GuanZero: learning Guandan by self-play" width="100%">
 </p>
 
 <p align="center"><i>A Guandan agent that starts from random weights and learns only by playing against itself.<br>
 No human games, no imitation, no hand-written play strategy.</i></p>
 
 <p align="center">
-  <img src="docs/assets/stats.svg?v=2" alt="6x fewer self-play decisions than our MLP needed to reach the same strength; +0.30 levels per round from test-time search; a third of the parameters of the strongest published Guandan agent; US$106 total compute on one rented GPU" width="100%">
+  <img src="docs/assets/stats.svg" alt="6x fewer self-play decisions than our MLP needed to reach the same strength; +0.30 levels per round from test-time search; a third of the parameters of the strongest published Guandan agent; US$106 total compute on one rented GPU" width="100%">
 </p>
 
 ## The game
@@ -22,13 +22,13 @@ For an AI it combines three hard problems at once:
 ## Where it stands
 
 <p align="center">
-  <img src="docs/assets/progress.svg?v=2" alt="Net levels per round against the strongest published Guandan agent, rising from −2.05 at 172M self-play decisions to −1.56 at 989M, and −1.34 with test-time search" width="100%">
+  <img src="docs/assets/progress.svg" alt="Net levels per round against the strongest published Guandan agent, rising from −2.05 at 172M self-play decisions to −1.56 at 989M, and −1.34 with test-time search" width="100%">
 </p>
 
 Measured against the strongest published Guandan agent on duplicate deals, where every deal is replayed with the teams swapped. The gap has shrunk from **−2.05** to **−1.56** levels per round over about 1B self-play decisions, and test-time search takes it to **−1.34**. The Transformer matched our strongest MLP after only 172M decisions and now beats it head to head by +0.67 levels per round.
 
 <p align="center">
-  <img src="docs/assets/resources.svg?v=2" alt="GuanZero uses 1.36M policy parameters versus 4.00M for the strongest published agent (34%), and 13.1M self-play rounds versus 33.3M (39%)" width="100%">
+  <img src="docs/assets/resources.svg" alt="GuanZero uses 1.36M policy parameters versus 4.00M for the strongest published agent (34%), and 13.1M self-play rounds versus 33.3M (39%)" width="100%">
 </p>
 
 On the public [Botzone](https://www.botzone.org.cn/) Guandan ladder the plain policy, without search, reached rank 40 on October 3, 2026. Sources: [strength summary](docs/reports/strength-summary-2026-10-04.md).
@@ -36,7 +36,7 @@ On the public [Botzone](https://www.botzone.org.cn/) Guandan ladder the plain po
 ## How it learns
 
 <p align="center">
-  <img src="docs/assets/loop.svg?v=2" alt="The self-play loop: four seats play on the C++20 rules engine; game records feed a PPO update of the policy and auxiliary heads; new versions join the snapshot pool of opponents; test-time search uses the same policy at play time" width="100%">
+  <img src="docs/assets/selfplay-loop.svg" alt="The self-play loop: four seats play on the C++20 rules engine; game records feed a PPO update of the policy and auxiliary heads; new versions join the snapshot pool of opponents; test-time search uses the same policy at play time" width="100%">
 </p>
 
 - **Engine.** `gd_core`, a C++20 rules engine specified line by line in [RULES.md](docs/RULES.md).
