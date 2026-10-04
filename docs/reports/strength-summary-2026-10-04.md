@@ -1,7 +1,7 @@
-# Strength against DanLM, summary (October 4, 2026)
+# Strength against DanLM, summary (October 4, 2026, updated with u20264)
 
 This collects the DanLM numbers behind the README chart
-(`docs/assets/progress.svg`) in one place. Nothing here is new
+(`docs/assets/progress-u20264.svg`) in one place. Nothing here is new
 measurement; every row comes from an evaluation file listed below.
 
 Yardstick: DanLM (`dansformer_v1_best_eval.pt`), duplicate deals through
@@ -22,13 +22,16 @@ net levels per round from our side; 0 would be equal strength. Intervals are 95%
 | u6572 | ≈431M | -1.905 | [-1.939, -1.870] |
 | u8060 | ≈528M | -1.791 | [-1.827, -1.756] |
 | u9989 | 654.6M | -1.729 | [-1.765, -1.694] |
-| u15094 (auxiliary heads, main lineage) | 989.2M | -1.558 | [-1.594, -1.521] |
+| u15094 (auxiliary heads) | 989.2M | -1.558 | [-1.594, -1.521] |
+| u20264 (main lineage) | 1,328.0M | -1.356 | [-1.393, -1.317] |
 
 Decision counts marked ≈ are interpolated at the measured 65.6k decisions per
 update between the recorded endpoints (u2623, u4902, u9989). u15094 is the
 "full" arm of [aux-heads-2026-10-02](aux-heads-2026-10-02.md), forked from
 u9989; its two sibling arms scored -1.635 (no heads) and -1.649 (next-token
-head only).
+head only). u20264 is the constant-rate arm of
+[lr-decay-weight-avg-2026-10-04](lr-decay-weight-avg-2026-10-04.md), one night
+on from u15094; its learning-rate-decay sibling scored -1.357.
 
 Reference: B11, the strongest MLP agent, -2.033 [-2.065, -2.000]. DanZero V1T,
 DanLM's own reproduction of the earlier DanZero MLP agent, scores -0.483 on
@@ -47,6 +50,15 @@ policy's top move has probability below 0.6; top 8 moves, 32 uniformly sampled
 hidden-hand worlds, 10 s budget, rollouts by the policy itself in all seats.
 12,003 searches over 300 deals, 1,397 overrides, about 123 s per deal on an
 Apple M4 Pro.
+
+## On top of u20264
+
+| Variant | Deals | vs DanLM | Note |
+|---|---|---|---|
+| Learning-rate decay arm (u20314) | 4,000 | -1.357 [-1.392, -1.320] | +0.052 [+0.000, +0.109] vs u20264 head to head |
+| Uniform average of the last 4 checkpoints | 4,000 | -1.345 [-1.382, -1.311] | +0.037 [-0.015, +0.091] vs u20264 head to head |
+
+Test-time search has not been run on u20264.
 
 ## Sample efficiency against our own MLP
 
@@ -74,7 +86,9 @@ our 75.3 decisions per round, so an episode is taken to be one round.
 
 GuanZero u15094: 1,357,953 policy parameters (the exported Botzone actor;
 [botzone-bot-2026-10-03](botzone-bot-2026-10-03.md)), 989,200,384 decisions and
-13,134,820 rounds (`metrics.jsonl` of the aux-full segment).
+13,134,820 rounds (`metrics.jsonl` of the aux-full segment). u20264, same
+architecture: 1,328,021,504 decisions and 17,557,927 rounds (`metrics.jsonl` of
+the lr-main segment), 53% of the reference agent's rounds.
 
 
 ## Test-time search on u9989
@@ -93,3 +107,4 @@ point and the u15094 search row above.
   `search-danlm-2026-10-02/run1/summary.json`
 - Weight average: `weight-avg-2026-10-03/avg4-vs-danlm.json`,
   `weight-avg-2026-10-03/avg4-vs-u15094.json`
+- u20264 and its variants: `lr-decay-2026-10-03/eval/*.json`

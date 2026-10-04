@@ -198,9 +198,21 @@ configuration match commit `fabcb71`). CPU cost at the production architecture:
 learn +4 to +6 percent, collect unchanged. Readiness: CUDA-gated and run
 (Oct 3 2026): from u9989, one night, control -1.635 / next -1.649 / all three
 heads **-1.558** against DanLM (±0.035; report). The heads are a production
-option; a resume with `--resume-set aux_heads=...` is the launch path. **The main
-lineage continues from the full arm's endpoint u15094 (decision of Oct 3 2026),
-`.work/aux-heads-2026-10-02/kits/full/download/results/segments/aux-full/latest.pt`.**
+option; a resume with `--resume-set aux_heads=...` is the launch path. The lineage
+continued from the full arm's endpoint u15094 (decision of Oct 3 2026).
+
+## Learning-rate decay (October 4)
+
+`--resume-set lr_final=3e-05 --resume-set lr_decay_start=U --resume-set
+lr_decay_updates=N` scales both optimizers' rates linearly from `lr` to
+`lr_final` between absolute updates U and U+N, then holds; `lr_scale` is
+logged per update; off by default (`e2b8862`). Run once (Oct 3/4, from u15094,
+[report](reports/lr-decay-weight-avg-2026-10-04.md)): decay vs constant-rate
+control +0.052 [+0.000, +0.109] head to head, indistinguishable against DanLM
+(-1.357 vs -1.356). Kept for release models, not routine nights. **The main
+lineage continues from the constant-rate arm's endpoint u20264 (1,328.0M
+decisions, -1.356 against DanLM),
+`.work/lr-decay-2026-10-03/kits/main/download/results/segments/lr-main/latest.pt`.**
 
 ## Planted-habit diagnostic (September 30)
 
@@ -403,7 +415,7 @@ batched MPS, about 7 minutes; identical checkpoints score exactly 0); and B11 on
 256 deals as a one-line sanity check only. `scripts/eval_night.sh SEGMENT NAME
 BASELINE.pt` runs all three plus a checkpoint curve against the baseline
 (`scripts/eval_night_summary.py` prints it). First use: u15094 vs u9989 +0.198
-[0.141, 0.259] on 2,000 deals.
+[0.141, 0.259] on 2,000 deals; then u20264 vs u15094 +0.243 [0.184, 0.298].
 
 **Engine digest, version 2 (October 3, 2026).** `infra.history_artifacts.engine_digest`
 covers the game-dynamics sources only (`cpp/include/gd/*.h`, `cpp/src/*.cpp`

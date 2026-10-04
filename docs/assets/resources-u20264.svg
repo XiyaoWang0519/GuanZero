@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 280" width="880" height="280" role="img" aria-labelledby="t d">
 <title id="t">GuanZero resources compared with the strongest published Guandan agent</title>
-<desc id="d">Policy parameters: 1.36M for GuanZero versus 4.00M for the reference agent (34%). Self-play rounds: 13.1M versus 33.3M (39%).</desc>
+<desc id="d">Policy parameters: 1.36M for GuanZero versus 4.00M for the reference agent (34%). Self-play rounds: 17.6M versus 33.3M (53%).</desc>
 <style>
 .bg{fill:#fbf8f3}.ink{fill:#1d1a16}.ink2{fill:#5b5650}.mute{fill:#8a847b}
 .ref{fill:#d8d1c5}.ours{fill:#c0392b}.axis{stroke:#bdb5a8;stroke-width:1}
@@ -20,6 +20,6 @@ text{font-family:ui-sans-serif,-apple-system,"Segoe UI",Helvetica,Arial,sans-ser
 <text class="ink" x="76" y="222" font-size="14" font-weight="600">Self-play rounds</text>
 <rect class="ref" x="230" y="200" width="550.0" height="16" rx="4"/>
 <text class="ink2" x="788" y="213" font-size="12.5">33.3M</text>
-<rect class="ours" x="230" y="220" width="216.4" height="16" rx="4"/>
-<text class="ink" x="454.4" y="233" font-size="12.5" font-weight="600">13.1M  ·  39%</text>
+<rect class="ours" x="230" y="220" width="290.7" height="16" rx="4"/>
+<text class="ink" x="528.7" y="233" font-size="12.5" font-weight="600">17.6M  ·  53%</text>
 </svg>
