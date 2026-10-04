@@ -152,6 +152,12 @@ class HistoryPPOConfig:
     # learner
     lr: float = 3e-4
     critic_lr: float | None = None       # None: same as lr
+    # Linear learning-rate decay: from update lr_decay_start (absolute, so restarts
+    # land on the same schedule) over lr_decay_updates updates, both rates scale
+    # to lr_final / lr and then stay there. lr_decay_updates 0: constant rates.
+    lr_final: float = 0.0
+    lr_decay_start: int = 0
+    lr_decay_updates: int = 0
     clip: float = 0.2
     entropy: float = 0.01
     value_coef: float = 1.0
@@ -231,6 +237,9 @@ class HistoryPPOConfig:
             raise ValueError("gamma must be in (0, 1] and gae_lambda in [0, 1]")
         if self.lr <= 0 or self.clip <= 0 or self.entropy < 0:
             raise ValueError("lr and clip must be positive; entropy must not be negative")
+        if self.lr_decay_updates < 0 or self.lr_decay_start < 0 or (
+                self.lr_decay_updates and not 0 < self.lr_final <= self.lr):
+            raise ValueError("lr decay needs non-negative counts and 0 < lr_final <= lr")
         if (not 0 < self.rollout_temperature < math.inf or not 0 <= self.rollout_epsilon <= 1
                 or not 0 < self.behaviour_weight_cap < math.inf):
             raise ValueError("rollout_temperature and behaviour_weight_cap must be positive "
@@ -376,7 +385,8 @@ RESUME_OVERRIDES = frozenset({"num_envs", "num_threads", "minibatch_matches", "t
                               "rollout_page_span", "rollout_prefill_learner_cache",
                               "profile_learn",
                               "aux_heads", "aux_coef", "aux_warmup_updates",
-                              "rollout_private_graphs"})
+                              "rollout_private_graphs",
+                              "lr_final", "lr_decay_start", "lr_decay_updates"})
 
 
 def parse_resume_overrides(items: list[str] | None) -> dict[str, Any]:
@@ -1123,6 +1133,26 @@ class HistoryTrainer:
         self.progress["samples"] += samples
         return stats
 
+    def lr_scale(self, update: int) -> float:
+        """Factor on the configured rates at ``update`` (linear decay, then flat)."""
+        config = self.config
+        if config.lr_decay_updates <= 0:
+            return 1.0
+        frac = min(max((update - config.lr_decay_start) / config.lr_decay_updates, 0.0), 1.0)
+        return 1.0 + (config.lr_final / config.lr - 1.0) * frac
+
+    def apply_lr_schedule(self) -> float:
+        """Set both optimizers' rates for the coming learn; returns the factor."""
+        scale = self.lr_scale(int(self.progress["updates"]))
+        if self.config.lr_decay_updates > 0:
+            critic_lr = (self.config.critic_lr if self.config.critic_lr is not None
+                         else self.config.lr)
+            for group in self.actor_optimizer.param_groups:
+                group["lr"] = self.config.lr * scale
+            for group in self.critic_optimizer.param_groups:
+                group["lr"] = critic_lr * scale
+        return scale
+
     def update(self) -> dict[str, Any]:
         """Collect, learn, log one metrics line and advance the counters."""
         if self.device.type == "cuda":
@@ -1155,6 +1185,7 @@ class HistoryTrainer:
         if trim:
             self.trim_cuda_cache("after_collect", trims)
         t1_learn = time.perf_counter()
+        lr_scale = self.apply_lr_schedule()
         with self.torch_profile("learn"):
             stats = self.learn()
         if self.device.type == "cuda":
@@ -1183,6 +1214,7 @@ class HistoryTrainer:
             "step_decisions": collected.decisions, "step_learner_rows": collected.learner_rows,
             "step_rounds": collected.rounds, "step_matches": collected.matches,
             "round_gain": collected.gain / collected.rounds if collected.rounds else None,
+            "lr_scale": lr_scale,
             "decisions_per_sec": collected.decisions / max(t1 - t0, 1e-9),
             "collect_seconds": t1 - t0, "learn_seconds": t2 - t1_learn,
             "learn_decisions_per_sec": stats["update_samples"] / max(t2 - t1_learn, 1e-9),
