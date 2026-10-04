@@ -48,10 +48,19 @@ hidden-hand worlds, 10 s budget, rollouts by the policy itself in all seats.
 12,003 searches over 300 deals, 1,397 overrides, about 123 s per deal on an
 Apple M4 Pro.
 
+## Test-time search on u9989
+
+Same configuration and the same 300 deals, on u9989 (654.6M decisions): plain
+-1.717 [-1.848, -1.585], search -1.403 [-1.533, -1.273], paired gain +0.313
+[+0.173, +0.455], 224 deals changed. Source:
+`search-danlm-2026-10-02/run1/summary.json`. The chart's search line joins this
+point and the u15094 search row above.
+
 ## Sources (local, under `.work/`, not committed)
 
 - Curve: `overnight-eval-2026-10-02/danlm/*.json`,
   `longrun-u2623-danlm-2026-10-01/{u2623,u4902,b11}.json`
-- Search: `search-danlm-2026-10-03/run1/summary.json`
+- Search: `search-danlm-2026-10-03/run1/summary.json`,
+  `search-danlm-2026-10-02/run1/summary.json`
 - Weight average: `weight-avg-2026-10-03/avg4-vs-danlm.json`,
   `weight-avg-2026-10-03/avg4-vs-u15094.json`
