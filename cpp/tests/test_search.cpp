@@ -1,6 +1,7 @@
 #include "test_util.h"
 
 #include <array>
+#include <stdexcept>
 #include <vector>
 
 #include "gd/bots.h"
