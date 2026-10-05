@@ -6,7 +6,7 @@
 No human games, no imitation, no hand-written play strategy.</i></p>
 
 <p align="center">
-  <img src="docs/assets/stats-u20264.svg" alt="6x fewer self-play decisions than our MLP needed to reach the same strength; +0.30 levels per round from test-time search; a third of the parameters of the strongest published Guandan agent; US$114 total compute on one rented GPU" width="100%">
+  <img src="docs/assets/stats-u20264-s6.svg" alt="6x fewer self-play decisions than our MLP needed to reach the same strength; +0.32 levels per round from test-time search; a third of the parameters of the strongest published Guandan agent; US$114 total compute on one rented GPU" width="100%">
 </p>
 
 ## The game
@@ -22,10 +22,10 @@ For an AI it combines three hard problems at once:
 ## Where it stands
 
 <p align="center">
-  <img src="docs/assets/progress-u20264.svg" alt="Net levels per round against the strongest published Guandan agent, rising from −2.05 at 172M self-play decisions to −1.56 at 989M and −1.36 at 1.33B; with test-time search −1.34 at 989M" width="100%">
+  <img src="docs/assets/progress-u20264-s6.svg" alt="Net levels per round against the strongest published Guandan agent, rising from −2.05 at 172M self-play decisions to −1.56 at 989M and −1.36 at 1.33B; with test-time search −1.71 at 172M and −1.33 at 989M" width="100%">
 </p>
 
-Measured against the strongest published Guandan agent on duplicate deals, where every deal is replayed with the teams swapped. The gap has shrunk from **−2.05** to **−1.36** levels per round over 1.33B self-play decisions, and the curve is still rising: the latest night alone gained +0.20. Test-time search added +0.30 at 989M decisions (**−1.34**) and has not yet been run on the newest checkpoint. The Transformer matched our strongest MLP after only 172M decisions and now beats it head to head by +0.67 levels per round.
+Measured against the strongest published Guandan agent on duplicate deals, where every deal is replayed with the teams swapped. The gap has shrunk from **−2.05** to **−1.36** levels per round over 1.33B self-play decisions, and the curve is still rising: the latest night alone gained +0.20. Test-time search adds +0.32 levels per round at every checkpoint measured from 172M to 989M decisions (**−1.33** at 989M); it has not yet been run on the newest checkpoint. The Transformer matched our strongest MLP after only 172M decisions and now beats it head to head by +0.67 levels per round.
 
 <p align="center">
   <img src="docs/assets/resources-u20264.svg" alt="GuanZero uses 1.36M policy parameters versus 4.00M for the strongest published agent (34%), and 17.6M self-play rounds versus 33.3M (53%)" width="100%">
@@ -49,7 +49,7 @@ On the public [Botzone](https://www.botzone.org.cn/) Guandan ladder the plain po
 The experiments so far raised three questions this project is now built to study.
 
 1. **Can an agent learn its opponents' habits within a match?** The model can see the whole match, but [an ablation](docs/reports/history-ablation-2026-09-29.md) shows it hardly uses earlier rounds. Self-play opponents may have no habits worth learning; a population of opponents with distinct styles might change that ([plan](docs/reports/opponent-diversity-plan-2026-10-03.md)).
-2. **How should search and learning fit together in a hidden-information team game?** Search helps (+0.30 levels per round), but sampling hidden hands from the learned belief head is not yet better than sampling uniformly.
+2. **How should search and learning fit together in a hidden-information team game?** Search helps (+0.32 levels per round), but sampling hidden hands from the learned belief head is not yet better than sampling uniformly.
 3. **Can variance reduction make each decision of training count for more?** In a four-player game most of the noise in the learning signal comes from sampled actions rather than critic error ([design](docs/reports/vrpo-design-2026-10-04.md)).
 
 ## Built to be trusted

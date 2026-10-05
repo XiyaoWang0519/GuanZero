@@ -1,8 +1,8 @@
-# Strength against DanLM, summary (October 4, 2026, updated with u20264)
+# Strength against DanLM, summary (October 4, 2026, updated with u20264 and the October 5 search curve)
 
 This collects the DanLM numbers behind the README chart
-(`docs/assets/progress-u20264.svg`) in one place. Nothing here is new
-measurement; every row comes from an evaluation file listed below.
+(`docs/assets/progress-u20264-s6.svg`) in one place. Every row comes from an
+evaluation file listed below.
 
 Yardstick: DanLM (`dansformer_v1_best_eval.pt`), duplicate deals through
 `eval.danlm.arena`, seed 20260929, house rules, tribute fraction 0.5. Score is
@@ -42,7 +42,7 @@ DanLM's own reproduction of the earlier DanZero MLP agent, scores -0.483 on
 | Variant | Deals | vs DanLM | Note |
 |---|---|---|---|
 | Plain policy | 300 | -1.640 [-1.772, -1.505] | same 300 deals as the search row |
-| Test-time search | 300 | -1.342 [-1.483, -1.200] | paired gain +0.298 [+0.163, +0.443], 209 deals changed |
+| Test-time search | 300 | -1.342 [-1.483, -1.200] | paired gain +0.298 [+0.163, +0.443], 209 deals changed; superseded by the October 5 rerun below (-1.333) |
 | Uniform average of the last 4 checkpoints | 4,000 | -1.505 [-1.542, -1.467] | no extra training; +0.098 [+0.043, +0.154] vs u15094 head to head, 2,000 paired deals |
 
 Search configuration: triggered when any seat holds 10 or fewer cards or the
@@ -70,8 +70,9 @@ and head to head against B11 +0.076 [-0.009, +0.162] on 1,000 duplicate deals
 ([history-ablation-2026-09-29](history-ablation-2026-09-29.md)). At 654.6M
 decisions u9989 beats B11 by +0.668 [+0.504, +0.824] on 256 deals.
 
-The search gain of +0.30 is converted to training volume with the overall slope
-of the curve above, +0.066 levels per round per 100M decisions (about 450M).
+The search gain of +0.32 (pooled, October 5 curve) is converted to training
+volume with the overall slope of the curve above, +0.066 levels per round per
+100M decisions (about 480M).
 
 ## Resources compared with the reference agent
 
@@ -96,14 +97,40 @@ the lr-main segment), 53% of the reference agent's rounds.
 Same configuration and the same 300 deals, on u9989 (654.6M decisions): plain
 -1.717 [-1.848, -1.585], search -1.403 [-1.533, -1.273], paired gain +0.313
 [+0.173, +0.455], 224 deals changed. Source:
-`search-danlm-2026-10-02/run1/summary.json`. The chart's search line joins this
-point and the u15094 search row above.
+`search-danlm-2026-10-02/run1/summary.json`. Superseded by the October 5 rerun
+below (search -1.397, gain +0.320).
+
+## Test-time search across the curve (October 5, 2026)
+
+Same search configuration, seed and deals as above, rerun on six checkpoints
+with KV-forked rollouts on CPU (`rollout_kv_cache`, commit ef484a5). This path
+gives the same search decisions as the earlier full re-encode, about 7x faster;
+the earlier runs hit the 10 s budget in about 6% of searches (157 on u15094,
+178 on u9989), the rerun in none. The chart's search line is this table.
+
+| Checkpoint | Decisions | Deals | Plain | Search | Paired gain |
+|---|---|---|---|---|---|
+| u2623 | 171.9M | 199 | -2.123 [-2.261, -1.982] | -1.711 [-1.864, -1.555] | +0.412 [+0.261, +0.568] |
+| u4902 | 321.3M | 200 | -1.845 [-2.000, -1.677] | -1.640 [-1.792, -1.482] | +0.205 [+0.018, +0.390] |
+| u6572 | 430.7M | 200 | -1.920 [-2.070, -1.770] | -1.577 [-1.738, -1.410] | +0.343 [+0.160, +0.530] |
+| u8060 | 528.2M | 200 | -1.765 [-1.928, -1.595] | -1.492 [-1.658, -1.323] | +0.273 [+0.090, +0.463] |
+| u9989 | 654.6M | 300 | -1.717 [-1.852, -1.577] | -1.397 [-1.533, -1.258] | +0.320 [+0.178, +0.467] |
+| u15094 | 989.2M | 300 | -1.640 [-1.775, -1.513] | -1.333 [-1.475, -1.190] | +0.307 [+0.167, +0.452] |
+
+Deal 174 is excluded on u2623: its plain arm failed the mirror check, as in
+the earlier run. Pooled over the six checkpoints (inverse-variance weights) the
+gain is +0.317 ± 0.066. Its change from 172M to 989M decisions is -0.05 ± 0.19
+(weighted linear fit; chi-squared 3.2 on 5 degrees of freedom against a
+constant), so this data cannot tell whether the gain grows, shrinks or stays
+flat with model strength. About 46 s per deal per worker, ten CPU workers on
+an Apple M4 Pro.
 
 ## Sources (local, under `.work/`, not committed)
 
 - Curve: `overnight-eval-2026-10-02/danlm/*.json`,
   `longrun-u2623-danlm-2026-10-01/{u2623,u4902,b11}.json`
-- Search: `search-danlm-2026-10-03/run1/summary.json`,
+- Search: `search-curve-kv-2026-10-05/<checkpoint>/summary.json` (chart);
+  earlier `search-danlm-2026-10-03/run1/summary.json`,
   `search-danlm-2026-10-02/run1/summary.json`
 - Weight average: `weight-avg-2026-10-03/avg4-vs-danlm.json`,
   `weight-avg-2026-10-03/avg4-vs-u15094.json`
