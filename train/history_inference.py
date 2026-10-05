@@ -302,3 +302,125 @@ class BatchedHistoryCache:
             entry.memory[entry.length:entry.length+count].copy_(state[i, :count])
             entry.length += count
         self.encoded_tokens += sum(counts)
+
+
+class ForkedHistoryCache:
+    """Public KV cache for search branches that all extend one encoded root.
+
+    The rows share one zero-padded ``[rows, heads, capacity, depth]`` store per
+    layer (and one ``[rows, capacity, width]`` memory), so a step's append is one
+    batched write per layer instead of per-row copies. Row ``i`` belongs to
+    ``streams[i]``; each stream must begin with the root's encoded events. The
+    attention inputs match ``BatchedHistoryCache`` exactly: positions past a
+    row's length are zero and masked, and shapes use the same buckets.
+    """
+
+    def __init__(self, root: BatchedHistoryCache, root_key: tuple[int, int],
+                 streams: list[PublicStream]) -> None:
+        source = root.entries[root_key]
+        events = source.length - 1
+        if events < 0:
+            raise ValueError("the root entry must hold at least BOS")
+        for stream in streams:
+            if (stream.prefix < events
+                    or not np.array_equal(stream.tokens[:events], source.stream.tokens[:events])
+                    or not np.array_equal(stream.rounds[:events], source.stream.rounds[:events])
+                    or not np.array_equal(stream.phases[:events], source.stream.phases[:events])):
+                raise ValueError("a forked stream must extend the root's encoded events")
+        self.root = root
+        self.streams = list(streams)
+        self.lengths = np.full(len(streams), source.length, dtype=np.int64)
+        self.capacity = 0
+        self.keys: list[Tensor] = []
+        self.values: list[Tensor] = []
+        self.memory: Tensor | None = None
+        self._grow(bucket(max(s.prefix + 1 for s in streams)), source)
+
+    def _grow(self, capacity: int, source: Entry | None = None) -> None:
+        cfg, prototype = self.root.actor.config, self.root.actor.bos
+        rows, depth = len(self.streams), cfg.width // cfg.heads
+        keys = [prototype.new_zeros(rows, cfg.heads, capacity, depth) for _ in range(cfg.layers)]
+        values = [prototype.new_zeros(rows, cfg.heads, capacity, depth) for _ in range(cfg.layers)]
+        memory = prototype.new_zeros(rows, capacity, cfg.width)
+        if source is not None:
+            n = source.length
+            for target, part in zip(keys + values, source.keys + source.values):
+                target[:, :, :n].copy_(part[:, :n].unsqueeze(0).expand(rows, -1, -1, -1))
+            memory[:, :n].copy_(source.memory[:n].unsqueeze(0).expand(rows, -1, -1))
+        else:
+            n = self.capacity
+            for target, part in zip(keys + values, self.keys + self.values):
+                target[:, :, :n].copy_(part)
+            memory[:, :n].copy_(self.memory)
+        self.capacity, self.keys, self.values, self.memory = capacity, keys, values, memory
+
+    @torch.no_grad()
+    def encode(self, rows: list[int]) -> tuple[StreamBatch, Tensor]:
+        """``(metadata, memory)`` for ``rows`` in order, as ``BatchedHistoryCache.encode``."""
+        self.root.refresh_weights()
+        targets = np.asarray([self.streams[i].prefix + 1 for i in rows], dtype=np.int64)
+        longest = int(targets.max())
+        if longest > self.capacity:
+            self._grow(bucket(longest))
+        index = np.asarray(rows, dtype=np.int64)
+        while True:
+            pending = self.lengths[index] < targets
+            if not pending.any():
+                break
+            chosen = index[pending]
+            counts = np.minimum(self.root.chunk_size, targets[pending] - self.lengths[chosen])
+            self._append(chosen, counts)
+            self.root.appends += 1
+        device = self.memory.device
+        selected = torch.as_tensor(index, device=device)
+        memory = self.memory.index_select(0, selected)[:, :bucket(longest)]
+        metadata = StreamBatch(torch.empty(len(rows), 0, TOKEN_DIM, dtype=torch.uint8, device=device),
+                               torch.empty(len(rows), 0, dtype=torch.long, device=device),
+                               torch.empty(len(rows), 0, dtype=torch.long, device=device),
+                               torch.as_tensor(targets - 1, device=device))
+        return metadata, memory
+
+    def _append(self, rows: np.ndarray, counts: np.ndarray) -> None:
+        actor, cfg = self.root.actor, self.root.actor.config
+        device, dtype = actor.bos.device, actor.bos.dtype
+        batch, width = len(rows), int(counts.max())
+        starts = self.lengths[rows]
+        ends = starts + counts
+        capacity = bucket(int(ends.max()))
+        tokens = np.zeros((batch, width, TOKEN_DIM), np.uint8)
+        rounds, phases = np.zeros((batch, width), np.int64), np.zeros((batch, width), np.int64)
+        for i, (row, start, count) in enumerate(zip(rows, starts, counts)):
+            stream, begin = self.streams[row], start - 1   # BOS is already encoded
+            tokens[i, :count] = stream.tokens[begin:begin + count]
+            rounds[i, :count] = stream.rounds[begin:begin + count]
+            phases[i, :count] = stream.phases[begin:begin + count]
+        valid = np.arange(width)[None] < counts[:, None]
+        write_rows = np.broadcast_to(rows[:, None], valid.shape)[valid]
+        write_positions = (starts[:, None] + np.arange(width)[None])[valid]
+        t, r, p, start_positions, end_positions, row_index, write_row, write_position, flat = \
+            upload_arrays((tokens, rounds, phases, starts, ends, rows, write_rows,
+                           write_positions, np.flatnonzero(valid)), device,
+                          packed=torch.device(device).type != "cpu")
+        state = (actor.public(t.to(dtype)) + actor.round_embedding(r.clamp(0, cfg.max_rounds-1))
+                 + actor.phase_embedding(p.clamp(0, 3)))
+        position_table, key_positions = self.root._position_buffers(capacity)
+        positions = start_positions[:, None] + key_positions[:width]
+        state = state + position_table[positions.clamp(max=capacity-1)]
+        allowed = ((key_positions[None, None] <= positions[:, :, None])
+                   & (key_positions[None, None] < end_positions[:, None, None]))
+        for layer_index, layer in enumerate(actor.stream.layers):
+            q, new_k, new_v = project(layer, state)
+            for store, new in ((self.keys[layer_index], new_k), (self.values[layer_index], new_v)):
+                store[write_row, :, write_position] = new.transpose(1, 2).reshape(
+                    batch * width, cfg.heads, -1).index_select(0, flat)
+            packed_k = self.keys[layer_index].index_select(0, row_index)[:, :, :capacity]
+            packed_v = self.values[layer_index].index_select(0, row_index)[:, :, :capacity]
+            attended = F.scaled_dot_product_attention(q, packed_k, packed_v,
+                                                      attn_mask=allowed[:, None], dropout_p=0.0)
+            state = finish(layer, state, attended)
+        if actor.stream.norm is not None:
+            state = actor.stream.norm(state)
+        state = actor.stream_norm(state)
+        self.memory[write_row, write_position] = state.reshape(batch * width, -1).index_select(0, flat)
+        self.lengths[rows] = ends
+        self.root.encoded_tokens += int(counts.sum())

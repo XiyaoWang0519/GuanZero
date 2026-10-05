@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import time
+from contextlib import contextmanager
 
 import gd
 import numpy as np
@@ -25,7 +26,8 @@ def rollout_values(search, engine, sample, actions, candidates, seat, deadline, 
     values = [None] * len(branches)
     steps = [0] * len(branches)
     active = list(range(len(branches)))
-    with explicit_passes(engine, policies):
+    cache = _branch_cache(search, base, policies) if search.config.rollout_kv_cache else None
+    with explicit_passes(engine, policies), _frozen(cache):
         for i, candidate in enumerate(candidates):
             apply_and_observe(engine, branches[i], actions[candidate], [policies[i]])
         while active and time.perf_counter() < deadline:
@@ -69,10 +71,14 @@ def rollout_values(search, engine, sample, actions, candidates, seat, deadline, 
                 encoded_actions.extend(cand)
                 offsets.append(offsets[-1] + len(legal))
             if rows:
+                metadata = memory = None
+                if cache is not None:
+                    metadata, memory = cache.encode(rows)
                 inputs = base.batch_inputs(streams, np.arange(len(rows)), np.asarray(seats),
-                    np.stack(observations), np.asarray(encoded_actions, dtype=np.float32), np.asarray(offsets))
+                    np.stack(observations), np.asarray(encoded_actions, dtype=np.float32), np.asarray(offsets),
+                    stream_batch=metadata)
                 inputs.one_decision_per_stream = True
-                choices = base.act(inputs)
+                choices = base.act(inputs, encoded=memory)
                 if time.perf_counter() >= deadline:
                     break
                 for key, choice in zip(keys, choices):
@@ -87,11 +93,38 @@ def rollout_values(search, engine, sample, actions, candidates, seat, deadline, 
                     # Variable sequence/candidate shapes otherwise retain large
                     # transient Metal allocations over a long evaluation.
                     import torch
-                    del inputs
+                    del inputs, metadata, memory
                     if torch.mps.driver_allocated_memory() > 4 * 1024**3:
                         torch.mps.empty_cache()
             active = pending
     return values
+
+
+ROOT_KEY = (0, 0)
+
+
+def _branch_cache(search, base, policies):
+    """Branch KV forked from the root public stream. The root entry lives on the
+    search and is encoded incrementally across calls."""
+    from train.history_inference import BatchedHistoryCache, ForkedHistoryCache
+
+    root = getattr(search, "_rollout_cache", None)
+    if root is None or root.actor is not base.actor:
+        root = BatchedHistoryCache(base.actor)
+        search._rollout_cache = root
+    root.prefill([ROOT_KEY], [base.stream])
+    root.prune({ROOT_KEY})
+    return ForkedHistoryCache(root, ROOT_KEY, [policy.stream for policy in policies])
+
+
+@contextmanager
+def _frozen(cache):
+    """The actor's weights must not change during a rollout."""
+    if cache is None:
+        yield
+    else:
+        with cache.root.frozen_weights():
+            yield
 
 
 def batched_world_values(search, engine, state, actions, candidates, seat, rng, deadline):

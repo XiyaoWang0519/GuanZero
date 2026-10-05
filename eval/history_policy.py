@@ -213,6 +213,8 @@ class HistoryPolicy:
                 raise RuntimeError(f"{self.name}: seat {seat} holds {actual} cards but its last "
                                    f"observed play left {recorded}; a public event was not "
                                    "delivered, or this state is not the match start_match() opened")
+            if len(seen) == 4:
+                break  # every earlier token belongs to a seat already checked
 
     # -- decisions ------------------------------------------------------------
 

@@ -209,6 +209,73 @@ def test_all_actions_batched_search_matches_scalar(batch_size):
     assert results[0] == results[1]
 
 
+@pytest.mark.parametrize('batch_size', [5, 64])
+def test_kv_cached_rollouts_match_full_reencode(batch_size):
+    import numpy as np
+    import torch
+    from eval.history_policy import HistoryPolicy, apply_and_observe, resolve_forced_passes
+    from train.history_model import HistoryPolicyConfig, fresh_player
+    torch.set_num_threads(1)
+    actor, _ = fresh_player(HistoryPolicyConfig(width=16, layers=2, heads=2,
+        action_width=16, fusion_width=16, critic_width=16, critic_layers=1), seed=5)
+    base = HistoryPolicy(actor)
+    base.start_match()
+    engine, state = gd.Engine(), gd.MatchState()
+    engine.auto_pass = False
+    engine.new_match(state, 33)
+    for _ in range(300):
+        resolve_forced_passes(engine, state, [base])
+        actions = engine.legal_actions(state)
+        unseen = 108-len(state.hand(state.to_move))-sum(len(state.played(s)) for s in range(4))
+        if unseen <= 12 and len(actions) > 4:
+            break
+        apply_and_observe(engine, state, actions[engine.greedy(state)], [base])
+    else:
+        raise AssertionError('no wide late root')
+    original = [a.copy() for a in base.stream.arrays()]
+    results = []
+    for kv in (False, True):
+        policy = SearchPolicy(base, SearchConfig(max_actions=0, max_worlds=4, min_worlds=4,
+            max_rollout_steps=0, time_ms=60000, selection='mean', rollout_batch_size=batch_size,
+            rollout_kv_cache=kv))
+        chosen = policy.select(engine, state, actions, random.Random(71))
+        record = policy.decisions[0]
+        assert record['worlds'] == 4
+        results.append((chosen, record['means']))
+        for old, current in zip(original, base.stream.arrays()):
+            np.testing.assert_array_equal(old, current)
+        if kv:
+            # Only the root entry outlives the call.
+            assert list(policy._rollout_cache.entries) == [(0, 0)]
+            assert policy._rollout_cache.appends > 0
+    assert results[0][0] == results[1][0]
+    np.testing.assert_allclose(results[0][1], results[1][1], atol=1e-9)
+
+
+def test_kv_rollouts_need_batched_rollouts_and_forks_must_extend_the_root():
+    import numpy as np
+    from train.history_inference import BatchedHistoryCache, ForkedHistoryCache
+    from train.history_model import HistoryPolicyConfig, PublicStream, fresh_player
+    from train.logs import TOKEN_DIM
+
+    with pytest.raises(ValueError, match="invalid search configuration"):
+        SearchConfig(rollout_kv_cache=True)
+    actor, _ = fresh_player(HistoryPolicyConfig(width=16, layers=1, heads=2, action_width=16,
+                                                fusion_width=16, critic_width=16,
+                                                critic_layers=1), seed=3)
+    token = np.zeros(TOKEN_DIM, dtype=np.uint8)
+    token[0] = token[158] = 1
+    root = PublicStream()
+    root.append_token(token, 0, 2)
+    cache = BatchedHistoryCache(actor)
+    cache.prefill([(0, 0)], [root])
+    other = PublicStream()
+    token[0], token[1] = 0, 1
+    other.append_token(token, 0, 2)
+    with pytest.raises(ValueError, match="extend"):
+        ForkedHistoryCache(cache, (0, 0), [root, other])
+
+
 def _tiny_belief_actor(seed=3):
     from train.history_model import HistoryPolicyConfig, fresh_player
     return fresh_player(HistoryPolicyConfig(width=16, layers=1, heads=2, action_width=16,

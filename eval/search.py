@@ -30,6 +30,10 @@ class SearchConfig:
     kl_temperature: float = 1.0
     value_margin: float = 0.5
     rollout_batch_size: int = 0  # 0 retains the scalar reference
+    # Batched rollouts only: encode the root public stream once and fork its KV
+    # cache per branch, so each step encodes only new events. Same function;
+    # FP32 reduction order differs from the full re-encode.
+    rollout_kv_cache: bool = False
     selection: str = "prior"    # "mean" ranks sampled returns without the artificial prior
     # When to search. "unseen": the other three hands hold <= unseen_threshold cards
     # in total. "hand": some seat (the actor included) holds <= hand_threshold cards,
@@ -60,6 +64,7 @@ class SearchConfig:
                 and math.isfinite(self.kl_temperature) and self.kl_temperature > 0
                 and math.isfinite(self.value_margin) and self.value_margin >= 0
                 and self.rollout_batch_size >= 0 and self.selection in ("prior", "mean")
+                and (not self.rollout_kv_cache or self.rollout_batch_size > 0)
                 and self.trigger in ("unseen", "hand", "unsure", "hand_or_unsure")
                 and 0 <= self.hand_threshold <= 27 and 0 < self.confidence_threshold <= 1
                 and (self.top_actions == 0 or self.top_actions >= 2)
@@ -295,6 +300,8 @@ def main() -> None:
     parser.add_argument("--min-worlds", type=int, default=2)
     parser.add_argument("--max-rollout-steps", type=int, default=120)
     parser.add_argument("--rollout-batch-size", type=int, default=0)
+    parser.add_argument("--rollout-kv-cache", action="store_true",
+                        help="fork the root's public KV cache per branch (batched rollouts)")
     parser.add_argument("--selection", choices=("prior", "mean"), default="prior")
     parser.add_argument("--value-margin", type=float, default=0.5)
     parser.add_argument("--threads", type=int, default=2)
@@ -308,7 +315,8 @@ def main() -> None:
     config = SearchConfig(unseen_threshold=args.unseen_threshold, time_ms=args.time_ms,
                           max_actions=args.max_actions, max_worlds=args.max_worlds,
                           min_worlds=args.min_worlds, max_rollout_steps=args.max_rollout_steps,
-                          rollout_batch_size=args.rollout_batch_size, selection=args.selection,
+                          rollout_batch_size=args.rollout_batch_size,
+                          rollout_kv_cache=args.rollout_kv_cache, selection=args.selection,
                           value_margin=args.value_margin)
     blueprint = load_policy(args.checkpoint, device=args.device)
     policy = SearchPolicy(blueprint, config)
