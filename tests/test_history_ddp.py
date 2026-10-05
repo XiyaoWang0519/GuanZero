@@ -282,3 +282,14 @@ def test_launcher_continues_single_process_lineage_with_global_counters(tmp_path
     assert payload["lineage"] == base.lineage
     assert payload["config"]["num_envs"] == 2 and payload["config"]["ddp_global_minibatch"]
     assert payload["config_changes"][0]["changes"]["num_envs"] == [4, 2]
+
+
+def test_spread_gpus_assigns_ranks_round_robin_and_keeps_explicit_index():
+    from train.history_ddp import rank_cuda_index
+    assert [rank_cuda_index("cuda", r, True, 2) for r in range(4)] == [0, 1, 0, 1]
+    assert [rank_cuda_index("cuda", r, True, 1) for r in range(3)] == [0, 0, 0]
+    assert [rank_cuda_index("cuda", r, False, 2) for r in range(2)] == [None, None]
+    assert [rank_cuda_index("cuda:1", r, True, 2) for r in range(2)] == [1, 1]
+    assert [rank_cuda_index("cpu", r, True, 2) for r in range(2)] == [None, None]
+    from train.history_ddp import build_parser
+    assert build_parser().parse_args(["--output", "x", "--spread-gpus"]).spread_gpus is True
