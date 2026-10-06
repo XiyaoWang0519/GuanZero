@@ -1,7 +1,7 @@
-# Strength against DanLM, summary (October 4, 2026, updated with u20264 and the October 5 search curve)
+# Strength against DanLM, summary (October 4, 2026, updated with u20264, the October 5 search curve, m1 and m2 on October 6)
 
 This collects the DanLM numbers behind the README chart
-(`docs/assets/progress-u20264-s6.svg`) in one place. Every row comes from an
+(`docs/assets/progress-m2.svg`) in one place. Every row comes from an
 evaluation file listed below.
 
 Yardstick: DanLM (`dansformer_v1_best_eval.pt`), duplicate deals through
@@ -24,6 +24,8 @@ net levels per round from our side; 0 would be equal strength. Intervals are 95%
 | u9989 | 654.6M | -1.729 | [-1.765, -1.694] |
 | u15094 (auxiliary heads) | 989.2M | -1.558 | [-1.594, -1.521] |
 | u20264 (main lineage) | 1,328.0M | -1.356 | [-1.393, -1.317] |
+| u27900 (m1, same lineage) | 1,828.5M | -1.151 | [-1.189, -1.113] |
+| u35588 (m2, same lineage) | 2,332.3M | -0.869 | [-0.905, -0.831] |
 
 Decision counts marked ≈ are interpolated at the measured 65.6k decisions per
 update between the recorded endpoints (u2623, u4902, u9989). u15094 is the
@@ -58,7 +60,7 @@ Apple M4 Pro.
 | Learning-rate decay arm (u20314) | 4,000 | -1.357 [-1.392, -1.320] | +0.052 [+0.000, +0.109] vs u20264 head to head |
 | Uniform average of the last 4 checkpoints | 4,000 | -1.345 [-1.382, -1.311] | +0.037 [-0.015, +0.091] vs u20264 head to head |
 
-Test-time search has not been run on u20264.
+Test-time search has not been run on u20264; it was run on m1 (u27900), see below.
 
 ## Sample efficiency against our own MLP
 
@@ -124,6 +126,48 @@ gain is +0.317 ± 0.066. Its change from 172M to 989M decisions is -0.05 ± 0.19
 constant), so this data cannot tell whether the gain grows, shrinks or stays
 flat with model strength. About 46 s per deal per worker, ten CPU workers on
 an Apple M4 Pro.
+
+### m1 (u27900), October 6, 2026
+
+m1 is the first 500M-decision milestone of the Max-Velocity run, continued
+from u20264 (`.work/velocity-milestones/m1-u27900.pt`). 4,000 deals, same
+yardstick and seed: -1.151 [-1.189, -1.113] (3,998 scored, 2 excluded for
+mirror failure), round win rate 27.7% against about 24.1% for u20264. Search
+on the first 200 deals with the same configuration as the curve above
+(32 worlds, 10 s budget, KV-forked rollouts, CPU):
+
+| Checkpoint | Decisions | Deals | Plain | Search | Paired gain |
+|---|---|---|---|---|---|
+| m1 (u27900) | 1,828.5M | 200 | -1.345 [-1.500, -1.190] | -1.0225 [-1.195, -0.855] | +0.3225 [+0.138, +0.500] |
+
+The 200-deal plain score differs from the 4,000-deal score above because the
+subset is small; the chart plots the 200-deal search value as it does for the
+other search points. A 128-world, 40 s variant on the same deals gave a gain of
++0.2975 [+0.155, +0.438], no better than 32 worlds. Search overrode 784 of
+17,489 calls at 32 worlds and 404 at 128. Sources:
+`velocity-milestones/m1-vs-danlm.json`,
+`search-m1-2026-10-06/{w32,w128}/summary.json`.
+
+### m2 (u35588), October 6, 2026
+
+m2 is the second 500M-decision milestone of the same run
+(`.work/velocity-milestones/m2-u35588.pt`, 2,332.3M decisions). 4,000 deals,
+same yardstick and seed: -0.869 [-0.905, -0.831] (3,997 scored, 3 excluded
+for mirror failure), round win rate 32.8%; +0.28 over m1. Search, same
+configuration (32 worlds), first 200 deals:
+
+| Checkpoint | Decisions | Deals | Plain | Search | Paired gain |
+|---|---|---|---|---|---|
+| m2 (u35588) | 2,332.3M | 200 | -0.9525 [-1.105, -0.7925] | -0.770 [-0.945, -0.5975] | +0.1825 [+0.0125, +0.3525] |
+
+760 overrides in 17,293 calls, no budget exhaustion, about 40 s per deal.
+Pooled over all eight checkpoints (the six above, m1 and m2; inverse-variance
+weights) the search gain is +0.301 ± 0.059. Its slope with training volume is
+-0.05 ± 0.08 per 1B decisions (chi-squared 5.3 on 7 degrees of freedom
+against a constant): m2's lower point cannot be distinguished from a constant
+gain. Sources: `velocity-milestones/m2-vs-danlm.json`,
+`search-m2-2026-10-06/w32/summary.json`; chart redrawn by
+`velocity-milestones/make_progress_svg.py`.
 
 ## Sources (local, under `.work/`, not committed)
 
