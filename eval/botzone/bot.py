@@ -4,7 +4,8 @@ One turn: rebuild the round from every request so far (``mirror``), then
 answer. Tribute and back-tribute use the engine's tribute heuristic on our
 own hand, exactly as every evaluation of the history player does; plays are
 the greedy argmax of the NumPy actor (``numpy_actor``) over the canonical
-candidates Botzone can express. A failure anywhere falls back to a safe legal
+candidates Botzone can express. ``--search`` adds deadline-bounded root
+search using the same actor for rollouts. A failure anywhere falls back to a safe legal
 answer and says so in ``debug``.
 
 Modes, as on Botzone: by default one JSON line in (``{"requests", "responses"}``),
@@ -44,6 +45,10 @@ WEIGHTS_NAME = "gz_actor.npz"
 
 def find_weights(explicit: Optional[str] = None):
     """A weights path, an open file object from inside our zip, or None."""
+    if explicit:
+        if not os.path.isfile(explicit):
+            raise FileNotFoundError("explicit weights not found: " + explicit)
+        return explicit
     here = os.path.dirname(os.path.abspath(__file__))
     for candidate in (explicit, os.environ.get("GZ_BOTZONE_WEIGHTS"),
                       os.path.join("data", WEIGHTS_NAME), os.path.join(here, WEIGHTS_NAME)):
@@ -62,15 +67,19 @@ def find_weights(explicit: Optional[str] = None):
 
 
 class Bot(object):
-    def __init__(self, weights) -> None:
+    def __init__(self, weights, search_seconds=0.0) -> None:
         from .numpy_actor import NumpyHistoryActor
 
         self.actor = NumpyHistoryActor.load(weights) if weights is not None else None
+        self.search_seconds = float(search_seconds)
+        self.search_stats = {}
         self.notes = []          # type: List[str]
         self.last_choice = None
 
     def respond(self, log: RoundLog) -> object:
         self.notes = []
+        self.search_stats = {}
+        self.deadline = time.perf_counter() + self.search_seconds
         self.last_choice = None
         if log.stage == "deal":
             return []
@@ -113,6 +122,13 @@ class Bot(object):
             choice = int(np.argmax(masked))
             if choice != int(np.argmax(logits)):
                 self.notes.append("inexpressible_top")
+            if self.search_seconds > 0:
+                from .search import select
+                try:
+                    choice, self.search_stats = select(
+                        self.actor, log, built, actions, masked, choice, self.deadline)
+                except Exception as error:
+                    self.notes.append("search_fallback: " + str(error)[:150])
         action = actions[choice]
         self.last_choice = {"type": action.type_name, "key": action.key, "cards": action.cards}
         if action.is_pass:
@@ -177,6 +193,10 @@ def answer(bot: Bot, requests: list, responses: list) -> dict:
     response = bot.respond(log)
     debug = {"ms": round(1000 * (time.time() - started), 1)}
     debug.update(memory_mb())
+    if bot.actor is not None:
+        debug["checkpoint"] = bot.actor.config.get("checkpoint_id", "unknown")[:12]
+    if bot.search_stats:
+        debug["search"] = bot.search_stats
     if bot.notes:
         debug["notes"] = bot.notes
     return {"response": response, "debug": json.dumps(debug)[:1000]}
@@ -186,6 +206,11 @@ def main(argv: Optional[List[str]] = None) -> None:
     argv = list(sys.argv[1:] if argv is None else argv)
     keep_running = "--keep-running" in argv
     explicit = argv[argv.index("--weights") + 1] if "--weights" in argv else None
+    # Traditional Python limit is 6 s. Include interpreter/import/load CPU time
+    # and keep 0.4 s for serialization and platform variance.
+    search = "--search" in argv
+    if search and keep_running:
+        raise ValueError("search package requires traditional mode")
     bot = Bot(find_weights(explicit))
     line = sys.stdin.readline()
     if not line:
@@ -194,6 +219,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     requests = list(data.get("requests", [data])) if isinstance(data, dict) else []
     responses = list(data.get("responses", [])) if isinstance(data, dict) else []
     while True:
+        if search:
+            bot.search_seconds = max(0.0, 5.6 - time.process_time())
         out = answer(bot, requests, responses)
         sys.stdout.write(json.dumps(out) + "\n")
         if not keep_running:

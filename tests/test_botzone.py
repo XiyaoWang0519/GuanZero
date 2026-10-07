@@ -255,3 +255,68 @@ def test_packed_zip_runs_without_gd_or_torch(player, tmp_path):
             os.environ["PYTHONPATH"] = old
     assert report["illegal"] == [], report
     assert not any(key.startswith("note_") for key in report["counts"]), report
+
+
+def test_incremental_search_stream_matches_full_and_isolated(player):
+    from eval.botzone.numpy_actor import IncrementalStream
+    actor = NumpyHistoryActor.load(player[2])
+    rng = np.random.RandomState(19)
+    tokens = rng.randint(0, 2, (31, 186)).astype(np.uint8)
+    rounds = np.arange(31) % 3
+    phases = np.arange(31) % 4
+    cache = IncrementalStream(actor)
+    for i in range(len(tokens)):
+        cache.append_token(tokens[i], int(rounds[i]), int(phases[i]))
+        expected = actor.encode_stream(tokens[:i+1], rounds[:i+1], phases[:i+1])
+        np.testing.assert_allclose(cache.encoded, expected, atol=2e-5, rtol=2e-5)
+    before = cache.encoded.copy()
+    branch = cache.fork()
+    branch.append_token(tokens[0], 0, 3)
+    np.testing.assert_array_equal(cache.encoded, before)
+    assert len(branch.encoded) == len(cache.encoded) + 1
+
+
+def test_search_discards_partial_world_and_preserves_root(player, monkeypatch):
+    import time
+    from eval.botzone import search
+    actor = NumpyHistoryActor.load(player[2])
+    log = RoundLog.from_turns([
+        {"stage": "deal", "deliver": list(range(27)), "your_id": 0,
+         "global": {"level": "2", "tribute": 0, "first": -1, "last": -1}},
+        {"stage": "play", "history": [[], [], [], []], "done": [],
+         "pass_on": -1, "global": {"level": "2"}}], [[]])
+    built = mirror.rebuild(log)
+    actions = built.state.legal_actions()
+    before = [list(h) for h in built.state.hands]
+    values = iter([0.0, 1.0, 3.0, None])
+    monkeypatch.setattr(search, "rollout", lambda *args: next(values))
+    choice, stats = search.select(actor, log, built, actions, np.zeros(len(actions)),
+                                  0, time.perf_counter()+10, top_actions=2,
+                                  min_worlds=1, max_worlds=2)
+    assert choice == 1 and stats["worlds"] == 1 and stats["means"] == [0.0, 1.0]
+    assert built.state.hands == before
+    choice, stats = search.select(actor, log, built, actions, np.zeros(len(actions)),
+                                  0, time.perf_counter()-1)
+    assert choice == 0 and stats["worlds"] == 0
+
+
+def test_single_file_package_uses_versioned_weights(player, tmp_path):
+    import shutil
+    import subprocess
+    import sys
+    from eval.botzone.pack import pack_single
+    data = tmp_path / 'data'
+    data.mkdir()
+    shutil.copy(player[2], data / 'versioned.npz')
+    script = tmp_path / 'bot.py'
+    pack_single(script, 'versioned.npz', search=True)
+    request = {'requests': [{'stage': 'deal', 'deliver': list(range(27)), 'your_id': 0,
+                            'global': {'level': '2', 'tribute': 0, 'first': -1, 'last': -1}}],
+               'responses': []}
+    result = subprocess.run([sys.executable, str(script)], cwd=tmp_path,
+                            input=json.dumps(request)+'\n', text=True, capture_output=True,
+                            check=True, timeout=10)
+    out = json.loads(result.stdout)
+    assert out['response'] == []
+    expected = NumpyHistoryActor.load(player[2]).config['checkpoint_id'][:12]
+    assert json.loads(out['debug'])['checkpoint'] == expected

@@ -1,22 +1,36 @@
 # Performance backlog: Transformer self-play
 
-Updated September 25, 2026. The active workload is the randomly initialized
-history Transformer in [DESIGN.md](DESIGN.md), with an optional looped decision
-module. Old frozen-reference MLP optimizations are not the next training plan.
-No Transformer performance estimate below is reported as a measurement.
+Status reconciliation: October 6, 2026. Baseline workload: the history
+Transformer in [DESIGN.md](DESIGN.md). See [STATUS.md](STATUS.md) for direction
+and [TRAINING.md](TRAINING.md) for operations. Old frozen-reference MLP
+optimizations are historical, not the current training route.
 
-## Current work
+## Implemented paths and measured scope
 
-| Priority | Work | Evidence required | Dependency |
-|---|---|---|---|
-| 1 | Profile standard history actor end to end | Actual remote GPU collect/learn split, CPU quota/load, history lengths, candidates, memory | T1--T4 |
-| 2 | Batch public-prefix encoding and private queries | Full-prefix action/log-probability parity and no private/future leakage | T2 |
-| 3 | Versioned batched KV cache for all active snapshots | Rebuild after weight changes, per-model memory, match isolation and warm/cold timings | T2 |
-| 4 | Reuse shared match-prefix work inside PPO epochs | Correct gradients and prefix masks; no stale detached encoder substitution | T2 |
-| 5 | Loop-depth cost curve | Latency, decisions/s, activation memory, training sample rate and strength at supported depths | T6 |
-| 6 | Tune environment count, rollout chunks and candidate batching | Declared learning/staleness changes separated from exact implementation optimizations | T4 |
-| 7 | History-aware batched evaluation | Scalar reference parity, explicit stochastic semantics and match resets | T3 |
-| 8 | Actor parallelism after a measured bottleneck | Alternating same-host trials, CPU-steal/load and total GPU-hours; population/cache correctness | stable T4 |
+Reviewed October 6, 2026 against the reports below. Implementation is not a
+claim that every option is enabled by default or beneficial on every device.
+
+| Work | Recorded evidence | Remaining limit / follow-up |
+|---|---|---|
+| Batched public-prefix inference and versioned KV caches | [History stack](reports/history-stack-2026-09-26.md), [CUDA comparison](reports/history-stack-cuda-2026-09-26.md) | Preserve raw-history learner recomputation, weight invalidation and snapshot isolation; verify production workload |
+| CUDA Graphs and Triton rollout cache | [CUDA throughput](reports/history-cuda-throughput-2026-09-28.md) | Frozen-replay parity and collection throughput do not establish full-PPO or strength gains |
+| Multi-process actors and snapshot batching | [Actor ranks](reports/history-actor-ranks-2026-09-28.md), [snapshot batching](reports/history-snapshot-batching-2026-09-28.md) | Check effective batch, population and allocator behavior before changing rank count |
+| Learner groups, page cache and attention layout | [Refactor](reports/training-stack-refactor-2026-09-29.md), [learner CUDA](reports/history-learner-cuda-2026-09-30.md) | Learner/component gains do not establish meaningful complete-PPO improvement |
+| Host-side training work | [October 1 training stack](reports/training-stack-2026-10-01.md), [deep dive](reports/speed-deep-dive-2026-10-01.md) | Host changes alone do not prove remote end-to-end speedup |
+| History-aware batched frozen evaluation | [Operator/evidence record](TRAINING_EVIDENCE.md#verified-bounded-t4-workload) | Recorded MPS parity is fixture-specific; validate a new backend/policy combination |
+
+## Follow-up queue
+
+These are verification targets, not an authorization or fixed experiment order.
+Inspect code and recent receipts first to avoid repeating completed work.
+
+| Work | Evidence required |
+|---|---|
+| Production end-to-end profile after new changes | Same-host collect/learn split, CPU quota/load, prefix/candidate distribution, snapshot count and memory |
+| Long-match cache and learner sharing | Correct gradients, full-prefix parity and masks, no stale detached encodings; cache lifetime under updated weights |
+| Environment/chunk/rank tuning | Effective batch and staleness recorded; paired throughput at equal hardware shares and learning-quality comparison where semantics change |
+| Looped decision-module cost curve (T6) | Separate implementation/readiness receipt, latency/FLOPs, memory and strength at supported depths; not established by the standard Transformer |
+| Search cost reduction | [Fused-search proposal](reports/fused-search-design-2026-10-05.md), then matched search quality/latency evidence before claiming a gain |
 
 Do not retain a frozen MLP forward just because an old optimization shares it
 between pruning and opponents. The new trainer has neither use. Do not silently

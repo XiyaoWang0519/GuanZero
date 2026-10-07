@@ -139,3 +139,59 @@ class NumpyHistoryActor(object):
         """One logit per candidate; the greedy policy takes the argmax."""
         encoded = self.encode_stream(tokens, rounds, phases)
         return self.candidate_logits(self.decision_state(encoded, obs, seat), cand)
+
+
+class IncrementalStream(object):
+    """Branch-local causal KV cache; frozen actor weights are shared."""
+
+    def __init__(self, actor):
+        self.actor = actor
+        self.cache = [None] * actor.layers
+        self.encoded = np.zeros((0, actor.width), dtype=np.float32)
+        self.positions = sinusoidal(1024, actor.width)
+        self._append(actor.w["bos"].reshape(1, actor.width))
+
+    def fork(self):
+        child = object.__new__(IncrementalStream)
+        child.actor = self.actor
+        child.cache = list(self.cache)
+        child.encoded = self.encoded
+        child.positions = self.positions
+        return child
+
+    def _append(self, embedded):
+        a, w = self.actor, self.actor.w
+        pos = len(self.encoded)
+        if pos >= len(self.positions):
+            self.positions = sinusoidal(pos + 1024, a.width)
+        x = embedded + self.positions[pos:pos+1]
+        depth = a.width // a.heads
+        for i in range(a.layers):
+            p = "stream.layers.%d" % i
+            h = _layer_norm(x, w[p + ".norm1.weight"], w[p + ".norm1.bias"])
+            qkv = h.dot(w[p + ".self_attn.in_proj_weight"].T) + w[p + ".self_attn.in_proj_bias"]
+            q, k, v = [qkv[:, j*a.width:(j+1)*a.width].reshape(1, a.heads, depth)
+                       .transpose(1, 0, 2) for j in range(3)]
+            if self.cache[i] is not None:
+                pk, pv = self.cache[i]
+                k, v = np.concatenate([pk, k], 1), np.concatenate([pv, v], 1)
+            self.cache[i] = (k, v)
+            scores = np.matmul(q, k.transpose(0, 2, 1)) / np.float32(math.sqrt(depth))
+            out = np.matmul(_softmax(scores), v).transpose(1, 0, 2).reshape(1, a.width)
+            x = x + a._linear(out, p + ".self_attn.out_proj")
+            h = _layer_norm(x, w[p + ".norm2.weight"], w[p + ".norm2.bias"])
+            x = x + a._linear(_relu(a._linear(h, p + ".linear1")), p + ".linear2")
+        x = _layer_norm(x, w["stream_norm.weight"], w["stream_norm.bias"])
+        self.encoded = np.concatenate([self.encoded, x], 0)
+
+    def append_token(self, token, round_index, phase):
+        a = self.actor
+        self._append(a._linear(np.asarray(token, dtype=np.float32)[None], "public")
+                     + a.w["round_embedding.weight"][min(max(round_index, 0), a.max_rounds-1)]
+                     + a.w["phase_embedding.weight"][min(max(phase, 0), 3)])
+
+    def append(self, event):
+        from .mirror import TokenStream
+        stream = TokenStream()
+        stream.append(event)
+        self.append_token(stream.tokens[0], stream.rounds[0], stream.phases[0])

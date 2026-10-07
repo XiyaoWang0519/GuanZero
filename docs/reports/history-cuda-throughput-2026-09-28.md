@@ -199,6 +199,6 @@ V/A 原始整轮约 **1.95×**；扣除已计量诊断区间后约 **2.04×**。
 
 - 回传 **800 个文件、34,201,098 字节**，逐文件 SHA256 与大小均匹配，0 个错误；清单 SHA256 为 `52e7b01f43f28329be4636d012befb8686667afb5140dcc443434b82e42d86b7`。
 - 本地校验回执：`.work/vast-throughput-2026-09-28/artifact-verification.json`；远程清单：`download/artifact-final-manifest.json`。失败尝试、测试 XML、原始日志及源码包一并保留。
-- 2026-09-28 **03:56:25 UTC**，Vast 返回销毁成功，随后 API 显示 `instances: 0`、`owned: null`；刷新控制台显示 **Instances (0), No instances found**。见 [销毁截图](../../.work/vast-throughput-2026-09-28/teardown.png)。
+- 2026-09-28 **03:56:25 UTC**，Vast 返回销毁成功，随后 API 显示 `instances: 0`、`owned: null`；刷新控制台显示 **Instances (0), No instances found**。销毁截图原路径：`.work/vast-throughput-2026-09-28/teardown.png`（2026-10-06 文档检查时，该本地文件不存在）。
 - 从创建至确认不存在共 **7,017.46 秒（1 小时 56 分 57 秒）**。按观察到的单价估算计算与磁盘费 **$1.5266**，未单独核实流量费。控制台最终余额 **$8.47**，相对充值后的 $10 约减少 **$1.53**。
 - 生命周期与费用回执：`.work/vast-throughput-2026-09-28/teardown-summary.json`、`status-after-destroy.json`、`lifecycle.jsonl`。源码修改保留在当前 worktree，未提交；主仓库未改动。

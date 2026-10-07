@@ -1,5 +1,9 @@
 # History trainer refactor and speed options — September 29, 2026
 
+Historical development log; entries end September 26, 2026. For current
+orientation use [docs/STATUS.md](docs/STATUS.md) and the
+[report index](docs/reports/README.md).
+
 - Refactored the history trainer on top of the production branch: contiguous
   public streams, one PPO loop for base and DDP trainers, one packed upload
   and one host sync per minibatch, the collector step split into phases.

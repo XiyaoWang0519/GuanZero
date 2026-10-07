@@ -92,6 +92,11 @@ Rollout collection is bound by the Python host thread, not by the GPU, so most o
 | `bench/` | throughput benchmarks |
 | `docs/` | rules, design, training guide and one report per experiment |
 
+Agent development: Codex reads [AGENTS.md](AGENTS.md); Claude Code imports the
+same instructions through [CLAUDE.md](CLAUDE.md). Start with the dated
+[project status](docs/STATUS.md), [documentation map](docs/README.md) and
+[report index](docs/reports/README.md).
+
 ## Build and test
 
 ```sh
