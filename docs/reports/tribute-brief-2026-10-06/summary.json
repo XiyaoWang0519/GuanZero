@@ -1,0 +1,360 @@
+{
+ "source": "danlm-games-2026-10-06 (seed 20260929 DanLM set, deals 0-299, 4 checkpoints, both legs)",
+ "tribute_to_partner": {
+  "pairs": 46,
+  "agree": {
+   "n": 46,
+   "rate": 0.826
+  }
+ },
+ "tribute_to_opponent": {
+  "pairs": 139,
+  "agree": {
+   "n": 139,
+   "rate": 0.914
+  }
+ },
+ "back_to_partner": {
+  "pairs": 38,
+  "agree": {
+   "n": 38,
+   "rate": 0.237
+  },
+  "heuristic": {
+   "receiver_gets_pair_or_better": {
+    "n": 38,
+    "rate": 0.868
+   },
+   "receiver_gets_new_bomb": {
+    "n": 38,
+    "rate": 0.421
+   },
+   "receiver_natural_sf_completed": {
+    "n": 38,
+    "rate": 0.105
+   },
+   "receiver_sf_within_wilds": {
+    "n": 38,
+    "rate": 0.079
+   },
+   "giver_breaks_pair_or_more": {
+    "n": 38,
+    "rate": 0.184
+   },
+   "giver_breaks_bomb": {
+    "n": 38,
+    "rate": 0.0
+   },
+   "giver_breaks_natural_sf": {
+    "n": 38,
+    "rate": 0.026
+   }
+  },
+  "danlm": {
+   "receiver_gets_pair_or_better": {
+    "n": 38,
+    "rate": 0.921
+   },
+   "receiver_gets_new_bomb": {
+    "n": 38,
+    "rate": 0.342
+   },
+   "receiver_natural_sf_completed": {
+    "n": 38,
+    "rate": 0.053
+   },
+   "receiver_sf_within_wilds": {
+    "n": 38,
+    "rate": 0.079
+   },
+   "giver_breaks_pair_or_more": {
+    "n": 38,
+    "rate": 0.316
+   },
+   "giver_breaks_bomb": {
+    "n": 38,
+    "rate": 0.0
+   },
+   "giver_breaks_natural_sf": {
+    "n": 38,
+    "rate": 0.158
+   }
+  }
+ },
+ "back_to_opponent": {
+  "pairs": 127,
+  "agree": {
+   "n": 127,
+   "rate": 0.417
+  },
+  "heuristic": {
+   "receiver_gets_pair_or_better": {
+    "n": 127,
+    "rate": 0.969
+   },
+   "receiver_gets_new_bomb": {
+    "n": 127,
+    "rate": 0.457
+   },
+   "receiver_natural_sf_completed": {
+    "n": 127,
+    "rate": 0.016
+   },
+   "receiver_sf_within_wilds": {
+    "n": 127,
+    "rate": 0.102
+   },
+   "giver_breaks_pair_or_more": {
+    "n": 127,
+    "rate": 0.181
+   },
+   "giver_breaks_bomb": {
+    "n": 127,
+    "rate": 0.0
+   },
+   "giver_breaks_natural_sf": {
+    "n": 127,
+    "rate": 0.0
+   }
+  },
+  "danlm": {
+   "receiver_gets_pair_or_better": {
+    "n": 127,
+    "rate": 0.961
+   },
+   "receiver_gets_new_bomb": {
+    "n": 127,
+    "rate": 0.362
+   },
+   "receiver_natural_sf_completed": {
+    "n": 127,
+    "rate": 0.039
+   },
+   "receiver_sf_within_wilds": {
+    "n": 127,
+    "rate": 0.134
+   },
+   "giver_breaks_pair_or_more": {
+    "n": 127,
+    "rate": 0.315
+   },
+   "giver_breaks_bomb": {
+    "n": 127,
+    "rate": 0.0
+   },
+   "giver_breaks_natural_sf": {
+    "n": 127,
+    "rate": 0.047
+   }
+  }
+ },
+ "levels_per_round_vs_danlm": {
+  "u20264": {
+   "all_rounds": {
+    "n": 600,
+    "mean": -1.378,
+    "ci95": [
+     -1.548,
+     -1.215
+    ]
+   },
+   "no_tribute_deals_paired": {
+    "n": 151,
+    "mean": -1.368,
+    "ci95": [
+     -1.546,
+     -1.182
+    ]
+   },
+   "tribute_deals_paired": {
+    "n": 149,
+    "mean": -1.389,
+    "ci95": [
+     -1.581,
+     -1.211
+    ]
+   },
+   "rounds_we_pay_tribute": {
+    "n": 140,
+    "mean": -1.55,
+    "ci95": [
+     -1.893,
+     -1.207
+    ]
+   },
+   "rounds_we_receive_tribute": {
+    "n": 140,
+    "mean": -1.264,
+    "ci95": [
+     -1.607,
+     -0.914
+    ]
+   },
+   "anti_tribute_rounds": {
+    "n": 18,
+    "mean": -1.111,
+    "ci95": [
+     -2.167,
+     0.056
+    ]
+   }
+  },
+  "u43276": {
+   "all_rounds": {
+    "n": 600,
+    "mean": -0.605,
+    "ci95": [
+     -0.783,
+     -0.423
+    ]
+   },
+   "no_tribute_deals_paired": {
+    "n": 151,
+    "mean": -0.57,
+    "ci95": [
+     -0.765,
+     -0.364
+    ]
+   },
+   "tribute_deals_paired": {
+    "n": 149,
+    "mean": -0.641,
+    "ci95": [
+     -0.832,
+     -0.443
+    ]
+   },
+   "rounds_we_pay_tribute": {
+    "n": 140,
+    "mean": -0.914,
+    "ci95": [
+     -1.264,
+     -0.543
+    ]
+   },
+   "rounds_we_receive_tribute": {
+    "n": 140,
+    "mean": -0.393,
+    "ci95": [
+     -0.786,
+     0.0
+    ]
+   },
+   "anti_tribute_rounds": {
+    "n": 18,
+    "mean": -0.444,
+    "ci95": [
+     -1.333,
+     0.5
+    ]
+   }
+  },
+  "u675": {
+   "all_rounds": {
+    "n": 600,
+    "mean": -2.125,
+    "ci95": [
+     -2.253,
+     -1.998
+    ]
+   },
+   "no_tribute_deals_paired": {
+    "n": 151,
+    "mean": -2.096,
+    "ci95": [
+     -2.272,
+     -1.93
+    ]
+   },
+   "tribute_deals_paired": {
+    "n": 149,
+    "mean": -2.154,
+    "ci95": [
+     -2.305,
+     -1.983
+    ]
+   },
+   "rounds_we_pay_tribute": {
+    "n": 140,
+    "mean": -2.264,
+    "ci95": [
+     -2.493,
+     -2.007
+    ]
+   },
+   "rounds_we_receive_tribute": {
+    "n": 140,
+    "mean": -2.021,
+    "ci95": [
+     -2.286,
+     -1.743
+    ]
+   },
+   "anti_tribute_rounds": {
+    "n": 18,
+    "mean": -2.333,
+    "ci95": [
+     -2.944,
+     -1.5
+    ]
+   }
+  },
+  "u9989": {
+   "all_rounds": {
+    "n": 600,
+    "mean": -1.717,
+    "ci95": [
+     -1.873,
+     -1.567
+    ]
+   },
+   "no_tribute_deals_paired": {
+    "n": 151,
+    "mean": -1.685,
+    "ci95": [
+     -1.874,
+     -1.483
+    ]
+   },
+   "tribute_deals_paired": {
+    "n": 149,
+    "mean": -1.748,
+    "ci95": [
+     -1.923,
+     -1.564
+    ]
+   },
+   "rounds_we_pay_tribute": {
+    "n": 140,
+    "mean": -2.014,
+    "ci95": [
+     -2.264,
+     -1.736
+    ]
+   },
+   "rounds_we_receive_tribute": {
+    "n": 140,
+    "mean": -1.479,
+    "ci95": [
+     -1.8,
+     -1.129
+    ]
+   },
+   "anti_tribute_rounds": {
+    "n": 18,
+    "mean": -1.778,
+    "ci95": [
+     -2.5,
+     -0.889
+    ]
+   }
+  }
+ },
+ "notes": [
+  "In every tribute deal the previous finishing order is set by the eval generator (tribute fraction 0.5), not by a played previous round.",
+  "Our tribute/back-tribute choices come from the fixed C++ tribute_bot heuristic for every checkpoint; only play differs between checkpoints.",
+  "Paired rows: identical hand and incoming tribute card in the two duplicate legs; one leg ours (heuristic), one DanLM.",
+  "Receiver/giver structure flags use the full hands from the record, which the giver cannot see; they describe consequences, not information available at decision time.",
+  "Straight-flush flags count natural cards only; sf_within_wilds_after allows the receiver's own heart level cards."
+ ]
+}
