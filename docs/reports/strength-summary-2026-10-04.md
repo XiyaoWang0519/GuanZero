@@ -1,7 +1,7 @@
-# Strength against DanLM, summary (October 4, 2026, updated with u20264, the October 5 search curve, m1 and m2 on October 6)
+# Strength against DanLM, summary (October 4, 2026, updated with u20264, the October 5 search curve, m1 and m2 on October 6, m3 and m4 on October 8)
 
 This collects the DanLM numbers behind the README chart
-(`docs/assets/progress-m2.svg`) in one place. Every row comes from an
+(`docs/assets/progress-m4.svg`) in one place. Every row comes from an
 evaluation file listed below.
 
 Yardstick: DanLM (`dansformer_v1_best_eval.pt`), duplicate deals through
@@ -26,6 +26,8 @@ net levels per round from our side; 0 would be equal strength. Intervals are 95%
 | u20264 (main lineage) | 1,328.0M | -1.356 | [-1.393, -1.317] |
 | u27900 (m1, same lineage) | 1,828.5M | -1.151 | [-1.189, -1.113] |
 | u35588 (m2, same lineage) | 2,332.3M | -0.869 | [-0.905, -0.831] |
+| u43276 (m3, same lineage) | 2,836.1M | -0.665 | [-0.703, -0.628] |
+| u50840 (m4, same lineage) | 3,331.8M | -0.546 | [-0.582, -0.509] |
 
 Decision counts marked ≈ are interpolated at the measured 65.6k decisions per
 update between the recorded endpoints (u2623, u4902, u9989). u15094 is the
@@ -92,6 +94,12 @@ GuanZero u15094: 1,357,953 policy parameters (the exported Botzone actor;
 13,134,820 rounds (`metrics.jsonl` of the aux-full segment). u20264, same
 architecture: 1,328,021,504 decisions and 17,557,927 rounds (`metrics.jsonl` of
 the lr-main segment), 53% of the reference agent's rounds.
+
+Correction, October 8, 2026: the round comparison above holds only at u20264.
+The same lineage has kept training; at about 75 decisions per round m4
+(3,331.8M decisions) corresponds to roughly 44M rounds, more than the reference
+agent's 33.3M (estimate from decisions, not read from `metrics.jsonl`). The README
+resource chart (`docs/assets/resources-params.svg`) therefore shows parameters only.
 
 
 ## Test-time search on u9989
@@ -168,6 +176,41 @@ against a constant): m2's lower point cannot be distinguished from a constant
 gain. Sources: `velocity-milestones/m2-vs-danlm.json`,
 `search-m2-2026-10-06/w32/summary.json`; chart redrawn by
 `velocity-milestones/make_progress_svg.py`.
+
+### m3 (u43276) and m4 (u50840), October 8, 2026
+
+m3 and m4 are the third and fourth 500M-decision milestones of the same run
+(`.work/velocity-milestones/m3-u43276.pt`, `m4-u50840.pt`). 4,000 deals, same
+yardstick and seed:
+
+| Checkpoint | Decisions | vs DanLM | Scored deals | Round win rate | Step from previous milestone |
+|---|---|---|---|---|---|
+| m3 (u43276) | 2,836.1M | -0.665 [-0.703, -0.628] | 3,998 | 37.6% | +0.20 |
+| m4 (u50840) | 3,331.8M | -0.546 [-0.582, -0.509] | 3,993 | 39.6% | +0.12 |
+
+Steps per milestone so far: m1 +0.21, m2 +0.28, m3 +0.20, m4 +0.12. Every step
+is positive and larger than the intervals; m4's step is the smallest.
+
+Search on m3, same configuration (32 worlds, 10 s budget, KV-forked rollouts,
+CPU). The first 200 deals were run first, then a separate 800-deal set
+(`generate_deals(800)` is not an extension of the 200-deal set):
+
+| Checkpoint | Decisions | Deals | Plain | Search | Paired gain |
+|---|---|---|---|---|---|
+| m3 (u43276) | 2,836.1M | 200 | -0.640 [-0.815, -0.465] | -0.505 [-0.673, -0.340] | +0.135 [-0.025, +0.298] |
+| m3 (u43276) | 2,836.1M | 799 | -0.641 [-0.723, -0.554] | -0.509 [-0.592, -0.424] | +0.132 [+0.050, +0.215] |
+
+The 800-deal run: 2,721 overrides in 31,786 searches, 3 budget exhaustions,
+about 51 s per deal. The chart plots the 800-deal search value for m3. Pooled
+over nine checkpoints (the eight above and the 800-deal m3 run, which shares no
+deals with the 200-deal m3 run; inverse-variance weights) the gain is
++0.245 ± 0.048. Its slope with training volume is -0.078 ± 0.044 per 1B
+decisions, and a constant gain no longer fits (chi-squared 16.1 on 8 degrees
+of freedom; 4.2 for the linear fit): the search gain shrinks as the policy gets
+stronger. Search has not been run on m4. Sources:
+`velocity-milestones/{m3,m4}-vs-danlm.json`,
+`search-m3-2026-10-06/{w32,w32-800}/summary.json`; chart redrawn by
+`velocity-milestones/make_progress_svg_m4.py`.
 
 ## Sources (local, under `.work/`, not committed)
 

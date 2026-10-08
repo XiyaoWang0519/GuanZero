@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 180" width="880" height="180" role="img" aria-labelledby="t d">
+<title id="t">GuanZero policy size compared with the strongest published Guandan agent</title>
+<desc id="d">Policy parameters: 1.36M for GuanZero versus 4.00M for the reference agent (34%).</desc>
+<style>
+.bg{fill:#fbf8f3}.ink{fill:#1d1a16}.ink2{fill:#5b5650}.mute{fill:#8a847b}
+.ref{fill:#d8d1c5}.ours{fill:#c0392b}.axis{stroke:#bdb5a8;stroke-width:1}
+text{font-family:ui-sans-serif,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif}
+.serif{font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif}
+</style>
+<rect class="bg" width="880" height="180" rx="14"/>
+<text class="ink serif" x="76" y="34" font-size="19">A third of the parameters</text>
+<text class="ink2" x="76" y="54" font-size="12.5">GuanZero compared with the strongest published Guandan agent</text>
+<rect class="ours" x="76" y="74" width="14" height="10" rx="2"/><text class="ink2" x="96" y="83" font-size="12">GuanZero</text>
+<rect class="ref" x="176" y="74" width="14" height="10" rx="2"/><text class="ink2" x="196" y="83" font-size="12">strongest published agent</text>
+<text class="ink" x="76" y="140" font-size="14" font-weight="600">Policy parameters</text>
+<rect class="ref" x="230" y="118" width="550.0" height="16" rx="4"/>
+<text class="ink2" x="788" y="131" font-size="12.5">4.00M</text>
+<rect class="ours" x="230" y="138" width="187.0" height="16" rx="4"/>
+<text class="ink" x="425.0" y="151" font-size="12.5" font-weight="600">1.36M  ·  34%</text>
+</svg>

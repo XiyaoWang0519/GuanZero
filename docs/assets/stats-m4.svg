@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 170" width="880" height="170" role="img" aria-labelledby="t">
+<title id="t">6x fewer self-play decisions than our MLP to reach its strength; +0.13 to +0.41 levels per round from test-time search, depending on the checkpoint; a third of the parameters of the strongest published agent; US$114 paid compute, later training on a free university cluster</title>
+<style>
+.bg{fill:#fbf8f3}.ink{fill:#1d1a16}.ink2{fill:#5b5650}.red{fill:#c0392b}.sep{stroke:#e2dbcf;stroke-width:1}
+text{font-family:ui-sans-serif,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif}
+.serif{font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif}
+</style>
+<rect class="bg" width="880" height="170" rx="14"/>
+<text class="red serif" x="110" y="76" font-size="46" text-anchor="middle">6×</text>
+<text class="ink2" x="110" y="108" font-size="12.5" text-anchor="middle">fewer self-play decisions</text>
+<text class="ink2" x="110" y="125" font-size="12.5" text-anchor="middle">than our MLP needed to reach</text>
+<text class="ink2" x="110" y="142" font-size="12.5" text-anchor="middle">the same strength</text>
+<line class="sep" x1="220" x2="220" y1="30" y2="140"/>
+<text class="red serif" x="330" y="74" font-size="34" text-anchor="middle">+0.13–0.41</text>
+<text class="ink2" x="330" y="108" font-size="12.5" text-anchor="middle">levels per round from</text>
+<text class="ink2" x="330" y="125" font-size="12.5" text-anchor="middle">test-time search,</text>
+<text class="ink2" x="330" y="142" font-size="12.5" text-anchor="middle">no extra training</text>
+<line class="sep" x1="440" x2="440" y1="30" y2="140"/>
+<text class="red serif" x="550" y="76" font-size="46" text-anchor="middle">⅓</text>
+<text class="ink2" x="550" y="108" font-size="12.5" text-anchor="middle">the parameters of the</text>
+<text class="ink2" x="550" y="125" font-size="12.5" text-anchor="middle">strongest published</text>
+<text class="ink2" x="550" y="142" font-size="12.5" text-anchor="middle">Guandan agent</text>
+<line class="sep" x1="660" x2="660" y1="30" y2="140"/>
+<text class="red serif" x="770" y="76" font-size="46" text-anchor="middle">$114</text>
+<text class="ink2" x="770" y="108" font-size="12.5" text-anchor="middle">paid compute; later</text>
+<text class="ink2" x="770" y="125" font-size="12.5" text-anchor="middle">training on a free</text>
+<text class="ink2" x="770" y="142" font-size="12.5" text-anchor="middle">university cluster</text>
+</svg>

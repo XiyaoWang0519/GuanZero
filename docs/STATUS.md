@@ -15,7 +15,8 @@ code, checkpoint identity and external state for the task at hand.
   T0--T8 in [STAGE_C_TODO.md](STAGE_C_TODO.md) are original milestone IDs.
 - The [strength summary](reports/strength-summary-2026-10-04.md) includes the
   u20264 curve, October 5 search measurements and the October 6 m1/m2
-  milestones (m2 u35588: -0.869 plain, -0.77 with search). It is a dated summary, not
+  milestones (m2 u35588: -0.869 plain, -0.77 with search), and on October 8 m3
+  u43276 (-0.665; search gain +0.13 on 800 deals) and m4 u50840 (-0.546). It is a dated summary, not
   a statement of today's latest checkpoint. The October 6
   [distillation plan](reports/search-distillation-plan-2026-10-06.md) also
   references m1/u27900; verify its artifacts before selecting that model.

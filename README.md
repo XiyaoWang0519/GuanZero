@@ -6,7 +6,7 @@
 No human games, no imitation, no hand-written play strategy.</i></p>
 
 <p align="center">
-  <img src="docs/assets/stats-m2.svg" alt="6x fewer self-play decisions than our MLP needed to reach the same strength; +0.30 levels per round from test-time search; a third of the parameters of the strongest published Guandan agent; US$114 of paid compute, later training on a free university GPU cluster" width="100%">
+  <img src="docs/assets/stats-m4.svg" alt="6x fewer self-play decisions than our MLP needed to reach the same strength; +0.13 to +0.41 levels per round from test-time search, depending on the checkpoint; a third of the parameters of the strongest published Guandan agent; US$114 of paid compute, later training on a free university GPU cluster" width="100%">
 </p>
 
 ## The game
@@ -22,16 +22,16 @@ For an AI it combines three hard problems at once:
 ## Where it stands
 
 <p align="center">
-  <img src="docs/assets/progress-m2.svg" alt="Net levels per round against the strongest published Guandan agent, rising from −2.05 at 172M self-play decisions to −1.56 at 989M, −1.36 at 1.33B, −1.15 at 1.83B and −0.87 at 2.33B; with test-time search −1.71 at 172M, −1.33 at 989M and −0.77 at 2.33B" width="100%">
+  <img src="docs/assets/progress-m4.svg" alt="Net levels per round against the strongest published Guandan agent, rising from −2.05 at 172M self-play decisions to −1.56 at 989M, −1.36 at 1.33B, −0.87 at 2.33B, −0.67 at 2.84B and −0.55 at 3.33B; with test-time search −1.71 at 172M, −1.33 at 989M and −0.51 at 2.84B" width="100%">
 </p>
 
-Measured against the strongest published Guandan agent on duplicate deals, where every deal is replayed with the teams swapped. The gap has shrunk from **−2.05** to **−0.87** levels per round over 2.33B self-play decisions, and the curve is still rising: the latest 500M decisions gained +0.28, the largest step so far. Test-time search adds +0.30 levels per round, pooled over eight checkpoints from 172M to 2.33B decisions (**−0.77** at 2.33B). The Transformer matched our strongest MLP after only 172M decisions and beat it head to head by +0.67 levels per round at 655M.
+Measured against the strongest published Guandan agent on duplicate deals, where every deal is replayed with the teams swapped. The gap has shrunk from **−2.05** to **−0.55** levels per round over 3.33B self-play decisions, and every 500M-decision milestone so far has gained: +0.21, +0.28, +0.20 and +0.12. Test-time search adds about +0.3 levels per round on checkpoints up to 1.83B decisions and +0.13 at 2.84B (**−0.51**): the stronger the policy, the less search adds. The Transformer matched our strongest MLP after only 172M decisions and beat it head to head by +0.67 levels per round at 655M.
 
 <p align="center">
-  <img src="docs/assets/resources-u20264.svg" alt="GuanZero uses 1.36M policy parameters versus 4.00M for the strongest published agent (34%), and 17.6M self-play rounds versus 33.3M (53%)" width="100%">
+  <img src="docs/assets/resources-params.svg" alt="GuanZero uses 1.36M policy parameters versus 4.00M for the strongest published agent (34%)" width="100%">
 </p>
 
-On the public [Botzone](https://www.botzone.org.cn/) Guandan ladder the plain policy, without search, reached rank 40 on October 3, 2026. Sources: [strength summary](docs/reports/strength-summary-2026-10-04.md).
+On the public [Botzone](https://www.botzone.org.cn/) Guandan ladder the current bot, the 2.33B-decision checkpoint with search, ranks 33rd with a score of 1077 on October 8, 2026, climbing from a fresh 1000 since October 6. Sources: [strength summary](docs/reports/strength-summary-2026-10-04.md).
 
 ## How it learns
 
@@ -49,7 +49,7 @@ On the public [Botzone](https://www.botzone.org.cn/) Guandan ladder the plain po
 The experiments so far raised three questions this project is now built to study.
 
 1. **Can an agent learn its opponents' habits within a match?** The model can see the whole match, but [an ablation](docs/reports/history-ablation-2026-09-29.md) shows it hardly uses earlier rounds. Self-play opponents may have no habits worth learning; a population of opponents with distinct styles might change that ([plan](docs/reports/opponent-diversity-plan-2026-10-03.md)).
-2. **How should search and learning fit together in a hidden-information team game?** Search helps (+0.30 levels per round), but sampling hidden hands from the learned belief head is not yet better than sampling uniformly.
+2. **How should search and learning fit together in a hidden-information team game?** Search helps, but its gain shrinks as the policy improves (+0.32 early, +0.13 at 2.84B decisions), and sampling hidden hands from the learned belief head is not yet better than sampling uniformly ([distillation plan](docs/reports/search-distillation-plan-2026-10-06.md)).
 3. **Can variance reduction make each decision of training count for more?** In a four-player game most of the noise in the learning signal comes from sampled actions rather than critic error ([design](docs/reports/vrpo-design-2026-10-04.md)).
 
 ## Built to be trusted
