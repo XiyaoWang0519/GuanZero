@@ -154,7 +154,14 @@ class HistoryPopulation:
         self.decisions = Counter(state["decisions"])
 
     def metrics(self) -> dict:
+        # The full per-identity counters grow with every snapshot ever taken
+        # (740 KB per line at u53810); they stay in state_dict. Per-update
+        # metrics carry the learner, resident snapshots and the totals.
+        resident = {0, *self.models}
         return dict(resident_snapshots=len(self.models),
                     eligible_snapshots=sorted(self.models)[-self.recent:],
                     archive=[self.metadata[i]["update"] for i in self.archive],
-                    seat_matches=dict(self.seat_matches), decisions=dict(self.decisions))
+                    seat_matches={i: self.seat_matches[i] for i in sorted(resident)},
+                    decisions={i: self.decisions[i] for i in sorted(resident)},
+                    snapshot_seat_matches=sum(self.seat_matches.values()) - self.seat_matches[0],
+                    snapshot_decisions=sum(self.decisions.values()) - self.decisions[0])
