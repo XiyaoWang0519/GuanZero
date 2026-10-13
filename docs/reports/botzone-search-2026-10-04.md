@@ -65,3 +65,11 @@ Score reached **1049.80, rank 34**. The 20 latest rated games (the platform's ma
 - Submitted as **GuanZero v6** by file upload (Python 3.6.5), "Successfully created"; bot description updated. Score at switch **1036.89**. No ladder exit/re-entry.
 - Score reset (user request, October 6): the 20 latest rated games (all v5; 2026-10-6 14:45 to 2026-10-7 0:38 site time) were saved to `.work/botzone/v5_logs_oct6/` first. Then opted out of the ranklist and back in (star button; both steps use a native confirm dialog the user clicked). Now **v6, score 1000.00, on the ranklist**. Ratings from here reflect v6 games only.
 - October 8, 2026 (user-reported, from the Botzone bot page): v6 at **rank 33, score about 1077**, up from 1000.00 at the October 6 reset. The rating curve rose to about 1050 in the first half of the games and then moved between about 1048 and 1077. Only the rank and the rating curve were observed; there is no per-game audit and no search-on/off split, so this is not evidence of a search gain.
+
+## Upgrade to m7 u73780, October 13, 2026
+
+- Checkpoint: Velocity milestone m7, `.work/velocity-milestones/m7-u73780.pt` (4.835B decisions; −0.334 vs DanLM plain on 4,000 deals, −0.224 with search on 800 paired deals). Actor ID `cbbcad6692baa5a273dfe38a407201085e4bcf91a047f5786e2f4e17b702daf7`.
+- Export `.work/botzone/u73780.npz` (5,457,558 bytes), uploaded to Botzone storage as `data/gz_actor_u73780.npz` (listed size matches). Older weight files kept.
+- Parity judge (30 games vs greedy): 2,411 decisions, 1,030 comparable plays agree with PyTorch, 0 illegal, max 22 ms. `.work/botzone/judge-u73780-parity.json`.
+- Package: same search code and settings as v5/v6 (`pack --single-file --search --weights-name gz_actor_u73780.npz`) → `.work/botzone/dist/gz_bot_u73780_search.py` (39,094 bytes; identical to the v6 file apart from the weights name and checkpoint ID). Docker was not running, so no py3.6 container smoke this time; a local one-game search smoke (Python 3.12) ran 49 searches, max 5,301.5 ms per decision, no debug notes (`.work/botzone/search-smoke-u73780.json`).
+- Submitted as **GuanZero v7** by file upload (Python 3.6.5, traditional mode, JSON I/O), "创建成功"; bot description updated ("修改成功"). Score at switch **1125.17** (v6). No ladder exit/re-entry, so the score carries over from v6.
