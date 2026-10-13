@@ -16,7 +16,8 @@ code, checkpoint identity and external state for the task at hand.
 - The [strength summary](reports/strength-summary-2026-10-04.md) includes the
   u20264 curve, October 5 search measurements and the October 6 m1/m2
   milestones (m2 u35588: -0.869 plain, -0.77 with search), and on October 8 m3
-  u43276 (-0.665; search gain +0.13 on 800 deals) and m4 u50840 (-0.546). It is a dated summary, not
+  u43276 (-0.665; search gain +0.13 on 800 deals) and m4 u50840 (-0.546), and on October 12 m5 u58528 (-0.497), m6 u66092
+  (-0.425) and m7 u73780 (-0.334; -0.224 with search, gain +0.08 [-0.01, +0.17] on 800 deals). It is a dated summary, not
   a statement of today's latest checkpoint. The October 6
   [distillation plan](reports/search-distillation-plan-2026-10-06.md) also
   references m1/u27900; verify its artifacts before selecting that model.

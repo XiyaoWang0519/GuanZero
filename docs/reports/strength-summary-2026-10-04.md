@@ -1,7 +1,7 @@
-# Strength against DanLM, summary (October 4, 2026, updated with u20264, the October 5 search curve, m1 and m2 on October 6, m3 and m4 on October 8)
+# Strength against DanLM, summary (October 4, 2026, updated with u20264, the October 5 search curve, m1 and m2 on October 6, m3 and m4 on October 8, m5 to m7 on October 12)
 
 This collects the DanLM numbers behind the README chart
-(`docs/assets/progress-m4.svg`) in one place. Every row comes from an
+(`docs/assets/progress-m7.svg`) in one place. Every row comes from an
 evaluation file listed below.
 
 Yardstick: DanLM (`dansformer_v1_best_eval.pt`), duplicate deals through
@@ -28,6 +28,9 @@ net levels per round from our side; 0 would be equal strength. Intervals are 95%
 | u35588 (m2, same lineage) | 2,332.3M | -0.869 | [-0.905, -0.831] |
 | u43276 (m3, same lineage) | 2,836.1M | -0.665 | [-0.703, -0.628] |
 | u50840 (m4, same lineage) | 3,331.8M | -0.546 | [-0.582, -0.509] |
+| u58528 (m5, same lineage) | 3,835.7M | -0.497 | [-0.534, -0.459] |
+| u66092 (m6, same lineage) | 4,331.4M | -0.425 | [-0.465, -0.386] |
+| u73780 (m7, same lineage) | 4,835.2M | -0.334 | [-0.372, -0.297] |
 
 Decision counts marked ≈ are interpolated at the measured 65.6k decisions per
 update between the recorded endpoints (u2623, u4902, u9989). u15094 is the
@@ -211,6 +214,45 @@ stronger. Search has not been run on m4. Sources:
 `velocity-milestones/{m3,m4}-vs-danlm.json`,
 `search-m3-2026-10-06/{w32,w32-800}/summary.json`; chart redrawn by
 `velocity-milestones/make_progress_svg_m4.py`.
+
+### m5 (u58528), m6 (u66092) and m7 (u73780), October 12, 2026
+
+The fifth to seventh 500M-decision milestones of the same run
+(`.work/velocity-milestones/m5-u58528.pt`, `m6-u66092.pt`, `m7-u73780.pt`).
+4,000 deals, same yardstick and seed:
+
+| Checkpoint | Decisions | vs DanLM | Scored deals | Round win rate | Step from previous milestone |
+|---|---|---|---|---|---|
+| m5 (u58528) | 3,835.7M | -0.497 [-0.534, -0.459] | 3,997 | 40.5% | +0.05 |
+| m6 (u66092) | 4,331.4M | -0.425 [-0.465, -0.386] | 3,995 | 42.6% | +0.07 |
+| m7 (u73780) | 4,835.2M | -0.334 [-0.372, -0.297] | 3,992 | 43.6% | +0.09 |
+
+The steps after m4 are smaller than before (+0.05 to +0.09 against +0.12 to
++0.28), and m5's step alone is not larger than the intervals (m4 and m5
+overlap). Over two milestones each comparison is clear: m6 is above m4 and m7
+is above m5 with non-overlapping intervals. The server-side internal yardstick
+(lineage_eval, 2,000 deals against the previous milestone) read m5 +0.044
+[-0.013, +0.097] and m6 +0.025 [-0.027, +0.078], which looked flat, then m7
++0.211 [+0.163, +0.261]; the DanLM steps show m5 and m6 still gaining, so the
+flat internal readings were within that yardstick's noise (checkpoint-to-
+checkpoint jitter is about 0.04 beyond deal noise).
+
+Search on m7, same configuration as m3 (32 worlds, 10 s budget, KV-forked
+rollouts, CPU, 10 workers), 800 paired deals with the m3 800-deal seed:
+
+| Checkpoint | Decisions | Deals | Plain | Search | Paired gain |
+|---|---|---|---|---|---|
+| m7 (u73780) | 4,835.2M | 796 | -0.307 [-0.392, -0.222] | -0.224 [-0.307, -0.139] | +0.083 [-0.006, +0.173] |
+
+2,663 overrides in 32,831 searches, 0 budget exhaustions, 0 fallbacks, about
+54 s per deal (73 min); 510 deals changed. The gain is smaller than m3's +0.132
+[+0.050, +0.215] on the same deal set and its interval just includes zero, so at
+this size it cannot be distinguished from zero or from m3's gain; it continues
+the downward trend of the pooled fit above (not refitted). The m7 plain value on
+these 800 deals (-0.307) is close to its 4,000-deal value (-0.334). Search has
+not been run on m4 to m6. Sources: `velocity-milestones/{m5,m6,m7}-vs-danlm.json`,
+`search-m7-2026-10-12/w32-800/summary.json`; chart redrawn by
+`velocity-milestones/make_progress_svg_m7.py` (with the m7 search summary as argument).
 
 ## Sources (local, under `.work/`, not committed)
 
