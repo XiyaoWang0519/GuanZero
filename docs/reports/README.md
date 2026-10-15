@@ -150,3 +150,5 @@ raw result/provenance pointers and negative findings.
 - [Append 内部分项诊断（2026-10-14）](training-append-detail-2026-10-14.md)：7457 完成；attention 最大但无明确可操作优化证据，按用户要求停止。
 
 - [主线梯度爆炸事件与 m8 / u86800 评测（2026-10-15）](main-gradient-blowup-2026-10-15.md)：u74484–77584 actor 梯度范数爆炸（masked efficient SDPA 反向 bug），辅助头退化；10 月 15 日 math SDPA 等补丁上线后恢复；DanLM m8 −0.376、u86800 −0.312（最好点估计，与 m7 −0.334 区间重叠）。
+
+- [私有注意力归一化 A/B 计划（2026-10-15）](qknorm-ab-plan-2026-10-15.md)：计划，未执行。分支 `qknorm-ab-2026-10-15` 加入默认关闭的 `query_norm`（q_proj 前 LayerNorm）与 `qk_norm`（逐 head RMSNorm + 可学温度）；关闭时逐位一致，fixture 门槛三臂通过；插入时刻探针：query_norm 单独不解除饱和，两者同开把注意力变为近均匀且 q/k 梯度恢复；三臂从 u86800 续训 500M 的 Velocity kit 在 `.work/qknorm-ab-2026-10-15/`，未提交作业。
