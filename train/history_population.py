@@ -138,11 +138,23 @@ class HistoryPopulation:
             model = copy.deepcopy(self.actor).requires_grad_(False).train()
             # A snapshot saved before auxiliary heads were added lacks their
             # weights; snapshots only act, so those heads keep the copied values.
+            # One saved before a private-attention norm was inserted lacks the
+            # norm's parameters too: it keeps the freshly initialised ones, so
+            # its attention is reset exactly as the learner's was at insertion
+            # (every resident identity shares the learner's architecture).
             missing, unexpected = model.load_state_dict(record["model"], strict=False)
-            if unexpected or not set(missing) <= model.auxiliary_parameter_names():
+            if unexpected or not set(missing) <= (model.auxiliary_parameter_names()
+                                                  | model.private_norm_parameter_names()):
                 raise ValueError(f"population snapshot weights do not fit: missing {missing}, "
                                  f"extra {unexpected}")
-            self.models[identity], self.metadata[identity] = model, dict(meta)
+            meta = dict(meta)
+            inserted = sorted(set(missing) & model.private_norm_parameter_names())
+            if inserted:
+                # The norms act, so they are part of the snapshot's weights from
+                # now on: the digest covers them and the old one stays on record.
+                meta.update(sha256=weights_digest(snapshot_weights(model)),
+                            previous_sha256=meta["sha256"], norms_inserted=inserted)
+            self.models[identity], self.metadata[identity] = model, meta
         self.archive = [int(i) for i in state.get("archive", [])]
         if not set(self.archive) <= set(self.models):
             raise ValueError("archived snapshot missing from the checkpoint")

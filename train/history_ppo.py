@@ -95,6 +95,14 @@ class HistoryPPOConfig:
     aux_heads: str = ""
     aux_coef: float = 0.1
     aux_warmup_updates: int = 0
+    # Private-attention norms (history_model.HistoryPolicyConfig): a LayerNorm
+    # before the query projection and per-head q/k RMS normalisation with a
+    # learned temperature. A resume may insert them into a trained lineage
+    # (``--resume-set query_norm=true``): the inserted norm starts as the
+    # identity / at its initial temperature, which resets every head's
+    # attention landing while all other weights continue (see extend_actor).
+    query_norm: bool = False
+    qk_norm: bool = False
     # rollout
     num_envs: int = 16
     num_threads: int = 1
@@ -284,6 +292,7 @@ class HistoryPPOConfig:
                                    window=self.window, max_rounds=self.max_rounds,
                                    response_mode=self.response_mode,
                                    aux_heads=self.aux_heads,
+                                   query_norm=self.query_norm, qk_norm=self.qk_norm,
                                    style_input=bool(self.habit_pack)
                                    and self.habit_view == "oracle")
 
@@ -320,10 +329,14 @@ def habit_init_player(config: HistoryPPOConfig
 
 
 def load_extended_optimizers(trainer: "HistoryTrainer", payload: dict[str, Any], *,
-                             keep_lr: bool) -> None:
+                             keep_lr: bool, base_names: list[str] | None = None) -> None:
     """Adam moments of a checkpoint whose actor had fewer parameters: the extra
-    ones (a style embedding, auxiliary heads) are registered last and start
-    fresh. ``keep_lr`` keeps the configured learning rates instead of the saved."""
+    ones (a style embedding, auxiliary heads, private-attention norms) start
+    fresh. Without ``base_names`` the saved parameters must be a prefix of the
+    extended actor's (everything new registered last); with the saved actor's
+    parameter names, each saved moment is matched to the extended actor's
+    parameter of the same name, whatever the registration order. ``keep_lr``
+    keeps the configured learning rates instead of the saved."""
     for name, optimizer in (("actor", trainer.actor_optimizer),
                             ("critic", trainer.critic_optimizer)):
         saved = copy.deepcopy(payload["optimizer"][name])
@@ -332,6 +345,12 @@ def load_extended_optimizers(trainer: "HistoryTrainer", payload: dict[str, Any],
         if len(saved["param_groups"]) != 1 or len(known) > count or (
                 name == "critic" and len(known) != count):
             raise ValueError("saved optimizer state does not fit the extended actor")
+        if name == "actor" and base_names is not None:
+            if len(base_names) != len(known):
+                raise ValueError("saved optimizer state does not fit the saved actor")
+            position = {n: i for i, n in enumerate(n for n, _ in trainer.actor.named_parameters())}
+            index = [position[n] for n in base_names]
+            saved["state"] = {index[int(i)]: moments for i, moments in saved["state"].items()}
         saved["param_groups"][0]["params"] = list(range(count))
         lr = optimizer.param_groups[0]["lr"]
         optimizer.load_state_dict(saved)
@@ -385,6 +404,7 @@ RESUME_OVERRIDES = frozenset({"num_envs", "num_threads", "minibatch_matches", "t
                               "rollout_page_span", "rollout_prefill_learner_cache",
                               "profile_learn",
                               "aux_heads", "aux_coef", "aux_warmup_updates",
+                              "query_norm", "qk_norm",
                               "rollout_private_graphs",
                               "lr_final", "lr_decay_start", "lr_decay_updates"})
 
@@ -458,8 +478,10 @@ class HistoryTrainer:
             config = HistoryPPOConfig.from_payload(payload["config"], updates=config.updates,
                                                    **overrides)
             self.lineage = str(payload["lineage"])
+            base_names = [n for n, _ in actor.named_parameters()]
             if actor.config != config.policy_config():
-                # Only auxiliary heads may be added on resume (extend_actor checks).
+                # Only auxiliary heads and private-attention norms may be added on
+                # resume (extend_actor checks); their Adam moments start fresh.
                 actor = extend_actor(actor, config.policy_config())
                 # The critic's architecture does not depend on the heads; it keeps
                 # its weights and takes the shared config the checkpoint requires.
@@ -541,7 +563,7 @@ class HistoryTrainer:
             self.habit_init = payload.get("habit_init")
         if payload is not None:
             if extended:
-                load_extended_optimizers(self, payload, keep_lr=False)
+                load_extended_optimizers(self, payload, keep_lr=False, base_names=base_names)
             else:
                 self.actor_optimizer.load_state_dict(payload["optimizer"]["actor"])
                 self.critic_optimizer.load_state_dict(payload["optimizer"]["critic"])
@@ -1377,6 +1399,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--aux-warmup-updates", type=int, default=0,
                         help="ramp the auxiliary weight linearly over this many updates "
                              "from the heads' insertion (0: full weight at once)")
+    parser.add_argument("--query-norm", action="store_true",
+                        help="LayerNorm on the private query before q_proj (history_model)")
+    parser.add_argument("--qk-norm", action="store_true",
+                        help="per-head RMS-normalised q/k with a learned per-head temperature")
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--critic-lr", type=float, default=None)
     parser.add_argument("--clip", type=float, default=0.2)

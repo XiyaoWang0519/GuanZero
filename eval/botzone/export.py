@@ -30,6 +30,8 @@ def export(checkpoint: str | Path, out: str | Path) -> dict:
 
     policy = load_history_policy(checkpoint, device="cpu")
     actor = policy.actor
+    if actor.config.query_norm or actor.config.qk_norm:
+        raise ValueError("the Botzone numpy actor does not implement query_norm/qk_norm")
     config = dict(actor.config.__dict__)
     config.update(checkpoint=str(checkpoint), checkpoint_id=policy.checkpoint_id,
                   heuristic_tribute=policy.heuristic_tribute)

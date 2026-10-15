@@ -20,7 +20,12 @@ and every layer runs as one batched matrix multiply over the slots:
   ``sum_t a_t (W_v e_t + b_v) = W_v (sum_t a_t e_t) + b_v`` because the
   weights sum to one. The same function as the per-identity path in FP32,
   with a different floating-point reduction order; it never materializes the
-  ``[streams, T, 2 * width]`` key/value projection.
+  ``[streams, T, 2 * width]`` key/value projection. With ``qk_norm`` the key
+  fold is impossible (the per-head RMS normalisation is nonlinear in ``e``),
+  so each row's keys ``W_k e + b_k`` are materialised per head, normalised and
+  scored against the normalised, temperature-scaled query; the value fold
+  stays. ``query_norm`` is one more stacked layer norm before the query
+  projection.
 
 Acceptance tier 2 (same distribution, float-order noise), frozen snapshot
 seats only. Snapshot rows are never stored for training; the learner's call
@@ -43,7 +48,7 @@ import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
-from train.history_model import HistoryActor, segment_log_softmax
+from train.history_model import HistoryActor, rms_normalize, segment_log_softmax
 
 # Per-slot tensor names and the order of the uploaded layout fields.
 LAYOUT_FIELDS = ("obs", "seat", "prefix", "cand", "row_pad", "seat_pad", "stream",
@@ -67,6 +72,11 @@ def head_parameters(actor: HistoryActor) -> tuple[Tensor, ...]:
     a0, a1 = actor.action_tower[0], actor.action_tower[2]
     u0, u1, u2 = actor.fusion[0][0], actor.fusion[0][2], actor.fusion[1]
     f0, f1 = actor.feed_forward[0], actor.feed_forward[2]
+    norms = ()
+    if actor.config.query_norm:
+        norms += (actor.query_norm.weight, actor.query_norm.bias)
+    if actor.config.qk_norm:
+        norms += (actor.qk_temperature.log_temperature,)
     return (p0.weight, p0.bias, p1.weight, p1.bias, actor.seat.weight,
             actor.q_proj.weight, actor.q_proj.bias, actor.kv_proj.weight, actor.kv_proj.bias,
             actor.out_proj.weight, actor.out_proj.bias,
@@ -74,7 +84,7 @@ def head_parameters(actor: HistoryActor) -> tuple[Tensor, ...]:
             f0.weight, f0.bias, f1.weight, f1.bias,
             actor.output_norm.weight, actor.output_norm.bias,
             a0.weight, a0.bias, a1.weight, a1.bias,
-            u0.weight, u0.bias, u1.weight, u1.bias, u2.weight, u2.bias)
+            u0.weight, u0.bias, u1.weight, u1.bias, u2.weight, u2.bias, *norms)
 
 
 def head_signature(actor: HistoryActor) -> tuple:
@@ -101,9 +111,12 @@ def validate_actor(actor: HistoryActor) -> None:
             or not isinstance(feed[2], nn.Linear) or not isinstance(actor.fusion[1], nn.Linear)):
         raise ValueError("merged snapshot inference requires the standard history actor head")
     norms = (actor.attention_norm, actor.output_norm)
+    if config.query_norm:
+        norms += (actor.query_norm,)
     if any(not n.elementwise_affine or n.bias is None or n.normalized_shape != (config.width,)
-           for n in norms):
-        raise ValueError("merged snapshot inference requires affine width layer norms")
+           or n.eps != actor.attention_norm.eps for n in norms):
+        raise ValueError("merged snapshot inference requires affine width layer norms "
+                         "with one epsilon")
     if any(t.dtype != torch.float32 for t in head_parameters(actor)):
         raise ValueError("merged snapshot inference is FP32 only")
     for module in actor.modules():
@@ -125,9 +138,16 @@ def _head_values(actor: HistoryActor) -> dict[str, Tensor]:
     f0, f1 = actor.feed_forward[0], actor.feed_forward[2]
     kv_w, kv_b = actor.kv_proj.weight, actor.kv_proj.bias
     linear = lambda layer, name: {f"{name}_w": layer.weight.t(), f"{name}_b": layer.bias[None]}
+    norms = {}
+    if cfg.query_norm:
+        norms.update(n0_w=actor.query_norm.weight[None], n0_b=actor.query_norm.bias[None])
+    if cfg.qk_norm:
+        # materialised keys need the key bias per head; the temperature scales q
+        norms.update(k_b=kv_b[:width].reshape(heads, depth),
+                     qk_t=actor.qk_temperature())
     return {
         **linear(p0, "p0"), **linear(p1, "p1"), "seat": actor.seat.weight,
-        **linear(actor.q_proj, "q"),
+        **linear(actor.q_proj, "q"), **norms,
         # query-side key weights: (W_k^T q) per head, [heads, depth, width]
         "k_w": kv_w[:width].reshape(heads, depth, width),
         # value weights applied after attention, [heads, width, depth]
@@ -418,12 +438,23 @@ def merged_log_probs(heads: SnapshotHeads, layout: MergedLayout, fields: dict[st
     x = torch.relu(_linear(x, tensors, "p0", S))
     x = torch.relu(_linear(x, tensors, "p1", S))
     query = x + tensors["seat"][:S].reshape(S * 4, width)[fields["seat_pad"]].view(S, M, width)
-    q = _linear(query, tensors, "q", S).view(S, M, heads_n, depth).transpose(1, 2)
-    # Keys folded into the query: [S, heads, M, width], then one row per decision.
-    folded = torch.matmul(q, tensors["k_w"][:S]) * depth ** -0.5
-    folded = folded.transpose(1, 2).reshape(S * M, heads_n, width)[fields["row_pad"]]
+    q_in = _norm(query, tensors, "n0", S, heads.eps) if cfg.query_norm else query
+    q = _linear(q_in, tensors, "q", S).view(S, M, heads_n, depth).transpose(1, 2)
     own = memory if layout.identity_streams else memory[fields["stream"]]
-    scores = torch.bmm(folded, own.transpose(1, 2))                  # [rows, heads, T]
+    if cfg.qk_norm:
+        # Normalised query per head, then one row per decision: [rows, heads, depth].
+        q = rms_normalize(q) * tensors["qk_t"][:S][:, :, None, None]
+        q = q.transpose(1, 2).reshape(S * M, heads_n, depth)[fields["row_pad"]]
+        # Each row's keys from its own slot's weights: [rows, heads, T, depth].
+        slot = fields["row_pad"] // M
+        keys = torch.matmul(own[:, None], tensors["k_w"][slot].transpose(-1, -2))
+        keys = rms_normalize(keys + tensors["k_b"][slot][:, :, None])
+        scores = torch.matmul(keys, q[..., None])[..., 0] * depth ** -0.5   # [rows, heads, T]
+    else:
+        # Keys folded into the query: [S, heads, M, width], then one row per decision.
+        folded = torch.matmul(q, tensors["k_w"][:S]) * depth ** -0.5
+        folded = folded.transpose(1, 2).reshape(S * M, heads_n, width)[fields["row_pad"]]
+        scores = torch.bmm(folded, own.transpose(1, 2))              # [rows, heads, T]
     allowed = torch.arange(own.shape[1], device=own.device)[None] <= fields["prefix"][:, None]
     scores = scores.masked_fill(~allowed[:, None], float("-inf"))
     context = torch.bmm(torch.softmax(scores, dim=-1), own)           # [rows, heads, width]

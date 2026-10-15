@@ -97,7 +97,8 @@ def storage_signature(actor):
     parameters = tuple(_storage_identity(name, value) for name, value in actor.named_parameters())
     buffers = tuple(_storage_identity(name, value) for name, value in actor.named_buffers())
     private_methods = tuple((name, _callable_identity(getattr(actor, name))) for name in
-                            ("decision_states", "_attend", "_attend_independent", "_project_independent"))
+                            ("decision_states", "_attend", "_attend_independent", "_project_independent",
+                             "_query_heads", "_key_heads"))
     backend = (torch.get_float32_matmul_precision(), torch.backends.cuda.matmul.allow_tf32,
                torch.backends.cudnn.allow_tf32, torch.backends.cuda.flash_sdp_enabled(),
                torch.backends.cuda.mem_efficient_sdp_enabled(), torch.backends.cuda.math_sdp_enabled(),

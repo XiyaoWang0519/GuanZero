@@ -48,6 +48,15 @@ STAGE = "history_ppo"
 TOKEN_SCHEMA_VERSION = 1      # 186 public dims + round index + phase; no forced bit
 PLAY_PHASE = int(gd.Phase.Play)
 HIDDEN_DIM = 3 * 54
+# qk_norm: with q and k RMS-normalised per head, a logit is
+# temperature * sqrt(depth) * cos(q, k). The temperature starts at
+# ln(QK_NORM_REFERENCE_KEYS) / sqrt(depth), so a key with cosine 1 against
+# QK_NORM_REFERENCE_KEYS - 1 orthogonal keys gets half of the mass: selective,
+# but far from the saturated one-hot of the un-normalised heads, and with a
+# finite softmax gradient to q and k. 512 is the order of a visible prefix
+# in the Oct 14 fixture (median 321, longest 852 tokens).
+QK_NORM_REFERENCE_KEYS = 512
+QK_NORM_EPS = 1e-6
 
 
 @dataclass(frozen=True)
@@ -76,6 +85,16 @@ class HistoryPolicyConfig:
     # They read the encoder/decision state and never enter the scoring path.
     # Recorded in checkpoints only when non-empty (``config_record``).
     aux_heads: str = ""
+    # Private-attention normalisation (docs/reports/private-attention-diagnosis-2026-10-15.md:
+    # the raw private query is mean-dominated with norms in the thousands and every
+    # head is a hard one-hot whose landing does not depend on the decision).
+    # ``query_norm``: LayerNorm on the private query before ``q_proj`` only (the
+    # residual path keeps the raw query). ``qk_norm``: q and k RMS-normalised per
+    # head, logits scaled by a learned per-head temperature (``QK_NORM_REFERENCE_KEYS``
+    # fixes its initial value). Independent; both off reproduces every existing
+    # path bit for bit. Recorded in checkpoints only when on (``config_record``).
+    query_norm: bool = False
+    qk_norm: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "aux_heads", canonical_aux_heads(self.aux_heads))
@@ -97,14 +116,13 @@ class HistoryPolicyConfig:
 
 
 def config_record(config: HistoryPolicyConfig) -> dict[str, Any]:
-    """``asdict(config)`` without ``style_input`` when it is off and without
-    ``aux_heads`` when empty, so every other checkpoint keeps its exact
-    architecture record."""
+    """``asdict(config)`` without ``style_input`` when it is off, without
+    ``aux_heads`` when empty and without ``query_norm``/``qk_norm`` when off,
+    so every other checkpoint keeps its exact architecture record."""
     record = asdict(config)
-    if not record["style_input"]:
-        del record["style_input"]
-    if not record["aux_heads"]:
-        del record["aux_heads"]
+    for key in ("style_input", "aux_heads", "query_norm", "qk_norm"):
+        if not record[key]:
+            del record[key]
     return record
 
 
@@ -347,6 +365,11 @@ def sinusoidal(length: int, width: int, device, dtype) -> Tensor:
     return table
 
 
+def rms_normalize(x: Tensor) -> Tensor:
+    """``x / sqrt(mean(x^2) + eps)`` over the last dimension (``qk_norm``)."""
+    return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + QK_NORM_EPS)
+
+
 def segment_log_softmax(scores: Tensor, rows: Tensor, count: int) -> Tensor:
     """Log-softmax of ``scores`` within the segments named by ``rows``."""
     top = torch.full((count,), float("-inf"), device=scores.device, dtype=scores.dtype)
@@ -354,6 +377,19 @@ def segment_log_softmax(scores: Tensor, rows: Tensor, count: int) -> Tensor:
     shifted = (scores - top[rows]).exp()
     total = torch.zeros(count, device=scores.device, dtype=scores.dtype).index_add_(0, rows, shifted)
     return scores - top[rows] - total[rows].log()
+
+
+class HeadTemperature(nn.Module):
+    """``qk_norm``'s learned per-head temperature, kept in log space. A submodule
+    (not a bare parameter of the actor) so that it is registered after every
+    other parameter, including the auxiliary heads."""
+
+    def __init__(self, heads: int, initial: float) -> None:
+        super().__init__()
+        self.log_temperature = nn.Parameter(torch.full((heads,), math.log(initial)))
+
+    def forward(self) -> Tensor:
+        return self.log_temperature.exp()
 
 
 @dataclass
@@ -444,6 +480,17 @@ class HistoryActor(nn.Module):
                                                      nn.Linear(width, NUM_CARDS * HIDDEN_SEATS))
                 if "outcome" in heads:
                     self.outcome_head = nn.Sequential(mlp(width, width, 1), nn.Linear(width, 1))
+        # Private-attention norms are registered last (``extend_actor`` inserts
+        # them into trained actors) and initialised without an RNG draw: the
+        # LayerNorm starts as the identity (weight 1, bias 0) and the per-head
+        # log-temperature at its constant, so every earlier parameter and the
+        # critic created after this actor are initialised exactly as without.
+        if config.query_norm:
+            self.query_norm = nn.LayerNorm(width)
+        if config.qk_norm:
+            depth = width // config.heads
+            self.qk_temperature = HeadTemperature(config.heads,
+                                                  math.log(QK_NORM_REFERENCE_KEYS) / math.sqrt(depth))
 
     # -- auxiliary heads --------------------------------------------------------
 
@@ -455,6 +502,38 @@ class HistoryActor(nn.Module):
         """State-dict keys that belong to the auxiliary heads."""
         prefixes = tuple(f"{name}_head." for name in self.aux_head_names)
         return {key for key in self.state_dict() if key.startswith(prefixes)} if prefixes else set()
+
+    def private_norm_parameter_names(self) -> set[str]:
+        """State-dict keys of the private-attention norms (``query_norm``/``qk_norm``)."""
+        names = set()
+        if self.config.query_norm:
+            names |= {"query_norm.weight", "query_norm.bias"}
+        if self.config.qk_norm:
+            names.add("qk_temperature.log_temperature")
+        return names
+
+    def _query_heads(self, query: Tensor, project=None) -> Tensor:
+        """``[n, heads, depth]`` query heads of the private query ``[n, width]``.
+
+        With ``query_norm`` the query is layer-normalised before ``q_proj``; with
+        ``qk_norm`` each head is RMS-normalised and scaled by its temperature.
+        Both off: exactly ``q_proj(query).view(n, heads, depth)``. ``project``
+        replaces the plain ``q_proj`` call (``_attend_independent``).
+        """
+        heads = self.config.heads
+        depth = self.config.width // heads
+        if self.config.query_norm:
+            query = self.query_norm(query)
+        q = (self.q_proj(query) if project is None else project(self.q_proj, query))
+        q = q.view(-1, heads, depth)
+        if self.config.qk_norm:
+            q = rms_normalize(q) * self.qk_temperature()[None, :, None]
+        return q
+
+    def _key_heads(self, k: Tensor) -> Tensor:
+        """Keys viewed ``[..., heads, depth]``: RMS-normalised per head with
+        ``qk_norm``, otherwise returned as they are."""
+        return rms_normalize(k) if self.config.qk_norm else k
 
     def next_logits(self, encoded: Tensor) -> Tensor:
         """``[B, S, NEXT_LOGITS]`` next-token logits for encoded positions ``[B, S, width]``."""
@@ -526,8 +605,8 @@ class HistoryActor(nn.Module):
         """query [n, w]; keys/values [1, S, w] shared or [n, S, w] per row; allowed [n, S]."""
         width, heads = self.config.width, self.config.heads
         depth = width // heads
-        q = self.q_proj(query).view(-1, heads, depth)
-        k = keys.view(keys.shape[0], keys.shape[1], heads, depth)
+        q = self._query_heads(query)
+        k = self._key_heads(keys.view(keys.shape[0], keys.shape[1], heads, depth))
         v = values.view(values.shape[0], values.shape[1], heads, depth)
         if keys.shape[0] == 1:
             out = F.scaled_dot_product_attention(
@@ -567,9 +646,8 @@ class HistoryActor(nn.Module):
         depth = width // heads
         project = ((lambda layer, value: layer(value)) if self.wide_private_projection
                    else self._project_independent)
-        q = project(self.q_proj, query)
-        q = q.view(count, heads, depth)[:, :, None]
-        k = keys.view(count, keys.shape[1], heads, depth).transpose(1, 2)
+        q = self._query_heads(query, project)[:, :, None]
+        k = self._key_heads(keys.view(count, keys.shape[1], heads, depth)).transpose(1, 2)
         v = values.view(count, values.shape[1], heads, depth).transpose(1, 2)
         out = F.scaled_dot_product_attention(q, k, v, attn_mask=allowed[:, None, None])
         out = out[:, :, 0].reshape(count, width)
@@ -595,11 +673,11 @@ class HistoryActor(nn.Module):
             starts = torch.cumsum(per_match, 0) - per_match
             rank = torch.empty_like(match_index)
             rank[order] = torch.arange(count, device=query.device) - starts[match_index[order]]
-        q = self.q_proj(query).view(count, heads, depth)
+        q = self._query_heads(query)
         padded = q.new_zeros(matches, slots, heads, depth).index_put((match_index, rank), q)
         visible = prefix.new_zeros(matches, slots).index_put((match_index, rank), prefix)
         allowed = torch.arange(keys.shape[1], device=keys.device)[None, None] <= visible[..., None]
-        k = keys.view(matches, keys.shape[1], heads, depth).transpose(1, 2)
+        k = self._key_heads(keys.view(matches, keys.shape[1], heads, depth)).transpose(1, 2)
         v = values.view(matches, values.shape[1], heads, depth).transpose(1, 2)
         out = F.scaled_dot_product_attention(padded.transpose(1, 2), k, v,
                                              attn_mask=allowed[:, None])
@@ -904,18 +982,31 @@ def load_history_checkpoint(path: str | Path, device: str | torch.device = "cpu"
     return actor.to(device), critic.to(device), payload
 
 
+EXTENSIONS = ("aux_heads", "query_norm", "qk_norm")
+
+
 def extend_actor(base: HistoryActor, config: HistoryPolicyConfig) -> HistoryActor:
-    """The same actor with ``config``'s auxiliary heads added (freshly
-    initialised); every other parameter is copied, so the policy is unchanged.
-    Only ``aux_heads`` may differ between the two configurations, and heads
-    are never removed."""
-    if config_record(replace(base.config, aux_heads=config.aux_heads)) != config_record(config):
-        raise ValueError("extend_actor changes only the auxiliary heads")
+    """The same actor with ``config``'s auxiliary heads and private-attention
+    norms added (freshly initialised); every other parameter is copied. Added
+    heads leave the policy unchanged. An added norm does not: ``query_norm``
+    starts as the identity LayerNorm and ``qk_norm`` at its initial
+    temperature, which replaces the trained, saturated attention logits by
+    normalised ones, so the attention landing of every head is reset at the
+    insertion (the private MLP, keys/values and heads keep their weights).
+    Only ``EXTENSIONS`` may differ between the two configurations, and
+    nothing is ever removed."""
+    if config_record(replace(base.config, **{k: getattr(config, k) for k in EXTENSIONS})
+                     ) != config_record(config):
+        raise ValueError("extend_actor changes only the auxiliary heads and private-attention norms")
     if not set(base.aux_head_names) <= set(config.aux_head_names):
         raise ValueError("auxiliary heads cannot be removed from a trained actor")
+    if ((base.config.query_norm and not config.query_norm)
+            or (base.config.qk_norm and not config.qk_norm)):
+        raise ValueError("private-attention norms cannot be removed from a trained actor")
     actor = HistoryActor(config)
     missing, unexpected = actor.load_state_dict(base.state_dict(), strict=False)
-    added = actor.auxiliary_parameter_names() - base.auxiliary_parameter_names()
+    added = ((actor.auxiliary_parameter_names() - base.auxiliary_parameter_names())
+             | (actor.private_norm_parameter_names() - base.private_norm_parameter_names()))
     if unexpected or set(missing) != added:
         raise ValueError(f"extended actor weights do not fit: missing {missing}, extra {unexpected}")
     return actor.to(next(base.parameters()).device)
