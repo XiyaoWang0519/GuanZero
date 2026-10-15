@@ -79,6 +79,11 @@ Historical records stay at their existing paths to preserve references.
 
 ## Performance and compute
 
+- [非有限梯度与归约等待诊断（2026-10-13）](training-gradient-diagnosis-2026-10-13.md)
+- [Page-span 基线上的投影优化（2026-10-13，候选验证）](training-stack-next-2026-10-13.md)
+- [主线启动 ECC 故障与 page-span 隔离复测（2026-10-13）](training-startup-ecc-2026-10-13.md)
+- [Training stack：profile、learner rollout 投影与 page-span（2026-10-13，独立短测）](training-stack-ab-2026-10-13.md)
+- [256 宽 × 4 层：完整 PPO 更新吞吐与显存（2026-10-09）](capacity-throughput-2026-10-09.md)
 - [算力平台补充调研：CPU 隔离（2026-09-24）](compute-cpu-isolation-2026-09-24.md)
 - [算力选项调研（2026-09-22）](compute-options.md)
 - [Stage C 算力平台筛选：速度优先](compute-stage-c-2026-09-26.md)
@@ -133,3 +138,15 @@ Add each new report once under the appropriate topic. Keep the date in new
 filenames, label proposals and incomplete runs in the report, and update
 `../STATUS.md` only when the recorded direction/readiness changes. Preserve
 raw result/provenance pointers and negative findings.
+
+- [Rank 1 fixture 逐层反向定位（2026-10-14）](training-fixture-backward-2026-10-14.md)：7323/7324 定位 masked efficient SDPA backward 异常并通过 fixture 修复门槛；7325 三卡 8 ranks × 120 更新稳定性通过。
+
+- [修复基线上的公共历史缓存与归约对照（2026-10-14）](training-cache-reduce-2026-10-14.md)：7366 三卡完整 PPO 完成；等价性通过，缓存吞吐 +1.23%，归约 −1.02% 未证明收益，主线未改。
+
+- [公共历史编码与 rank 等待诊断（2026-10-14）](training-encode-wait-2026-10-14.md)：7392 三卡诊断完成，公共缓存分项与 rank 到达偏差已量化；保留缓存、不采用归约缓冲，诊断非测速。
+
+- [Rollout 缓存分项与调用内索引复用（2026-10-14）](training-cache-reuse-2026-10-14.md)：7452 完成，数值通过但索引复用吞吐 −0.435% 未证明收益；append 为下一诊断重点。
+
+- [Append 内部分项诊断（2026-10-14）](training-append-detail-2026-10-14.md)：7457 完成；attention 最大但无明确可操作优化证据，按用户要求停止。
+
+- [主线梯度爆炸事件与 m8 / u86800 评测（2026-10-15）](main-gradient-blowup-2026-10-15.md)：u74484–77584 actor 梯度范数爆炸（masked efficient SDPA 反向 bug），辅助头退化；10 月 15 日 math SDPA 等补丁上线后恢复；DanLM m8 −0.376、u86800 −0.312（最好点估计，与 m7 −0.334 区间重叠）。
