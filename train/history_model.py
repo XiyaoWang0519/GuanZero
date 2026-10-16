@@ -601,8 +601,16 @@ class HistoryActor(nn.Module):
         allowed = torch.arange(keys.shape[1], device=keys.device)[None, None] <= visible[..., None]
         k = keys.view(matches, keys.shape[1], heads, depth).transpose(1, 2)
         v = values.view(matches, values.shape[1], heads, depth).transpose(1, 2)
-        out = F.scaled_dot_product_attention(padded.transpose(1, 2), k, v,
-                                             attn_mask=allowed[:, None])
+        # Oct 15 2026: masked efficient SDPA backward amplified gradients on L40S / torch 2.11
+        # (training-fixture-backward report); grad-enabled CUDA calls use the math kernel.
+        from torch.nn.attention import SDPBackend, sdpa_kernel
+        if query.is_cuda and torch.is_grad_enabled():
+            with sdpa_kernel(SDPBackend.MATH):
+                out = F.scaled_dot_product_attention(padded.transpose(1, 2), k, v,
+                                                     attn_mask=allowed[:, None])
+        else:
+            out = F.scaled_dot_product_attention(padded.transpose(1, 2), k, v,
+                                                 attn_mask=allowed[:, None])
         out = out.transpose(1, 2)[match_index, rank].reshape(count, width)
         return self.out_proj(out)
 
