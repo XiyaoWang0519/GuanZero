@@ -150,3 +150,7 @@ raw result/provenance pointers and negative findings.
 - [Append 内部分项诊断（2026-10-14）](training-append-detail-2026-10-14.md)：7457 完成；attention 最大但无明确可操作优化证据，按用户要求停止。
 
 - [主线梯度爆炸事件与 m8 / u86800 评测（2026-10-15）](main-gradient-blowup-2026-10-15.md)：u74484–77584 actor 梯度范数爆炸（masked efficient SDPA 反向 bug），辅助头退化；10 月 15 日 math SDPA 等补丁上线后恢复；DanLM m8 −0.376、u86800 −0.312（最好点估计，与 m7 −0.334 区间重叠）。
+
+- [主线 SDPA 异常的触发调查（2026-10-15）](training-sdpa-trigger-2026-10-15.md)：窗口内 u74155 已有 norm >100，无同期部署/重启证据；同输入 CPU 对照发现 m6–m7 attention score 大幅增长，支持大 score 下 backward 概率重建不稳定的假设，CUDA 内部机制仍待证实。
+
+- [主线私有注意力诊断（2026-10-15）](private-attention-diagnosis-2026-10-15.md)：同一 fixture、m5–u86800 共 8 组权重的 CPU 对照；所有 head 都是分差极大的硬 one-hot（无 <1 ulp 平局），q 方向几乎不随决策变化，落点按比赛固定（u86800 有 7/8 head 落在常数 BOS）；扰动历史内容的策略 TV 中位数 ≤ 2e-3；m7 起 q/k 的 math 梯度精确为 0，u86800 部分 head 的 Adam √v 已衰减到次正规不动点。只对这一 fixture 成立，未宣布模块退化。
