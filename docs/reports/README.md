@@ -155,4 +155,4 @@ raw result/provenance pointers and negative findings.
 
 - [主线私有注意力诊断（2026-10-15）](private-attention-diagnosis-2026-10-15.md)：同一 fixture、m5–u86800 共 8 组权重的 CPU 对照；所有 head 都是分差极大的硬 one-hot（无 <1 ulp 平局），q 方向几乎不随决策变化，落点按比赛固定（u86800 有 7/8 head 落在常数 BOS）；扰动历史内容的策略 TV 中位数 ≤ 2e-3；m7 起 q/k 的 math 梯度精确为 0，u86800 部分 head 的 Adam √v 已衰减到次正规不动点。只对这一 fixture 成立，未宣布模块退化。
 
-- [私有注意力归一化 A/B 计划（2026-10-15）](qknorm-ab-plan-2026-10-15.md)：计划，未执行。分支 `qknorm-ab-2026-10-15` 加入默认关闭的 `query_norm`（q_proj 前 LayerNorm）与 `qk_norm`（逐 head RMSNorm + 可学温度）；关闭时逐位一致，fixture 门槛三臂通过；插入时刻探针：query_norm 单独不解除饱和，两者同开把注意力变为近均匀且 q/k 梯度恢复；三臂从 u86800 续训 500M 的 Velocity kit 在 `.work/qknorm-ab-2026-10-15/`，未提交作业。
+- [私有注意力归一化 A/B 计划（2026-10-15）](qknorm-ab-plan-2026-10-15.md)：10 月 15–16 日已执行（三臂训练完成，评测进行中）；以下为原计划摘要。分支 `qknorm-ab-2026-10-15` 加入默认关闭的 `query_norm`（q_proj 前 LayerNorm）与 `qk_norm`（逐 head RMSNorm + 可学温度）；关闭时逐位一致，fixture 门槛三臂通过；插入时刻探针：query_norm 单独不解除饱和，两者同开把注意力变为近均匀且 q/k 梯度恢复；三臂从 u86800 续训 500M 的 Velocity kit 在 `.work/qknorm-ab-2026-10-15/`，未提交作业。
