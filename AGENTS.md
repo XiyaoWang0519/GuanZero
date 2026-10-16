@@ -66,6 +66,7 @@ standard: if the engine and that document disagree, one of them has a bug.
 | `tests/` | pytest and hypothesis suites, including the oracle cross-checks |
 | `bench/` | throughput benchmarks |
 | `eval/ogd_adapter/` | OpenGuanDan client, trace logger and replay diff |
+| `play/` | browser table to play a full match against the model (`play/README.md`) |
 | `docs/reports/` | dated experiment evidence and plans; indexed in its README |
 
 ## Build and test

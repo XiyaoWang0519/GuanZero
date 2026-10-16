@@ -237,7 +237,7 @@ class PagedHistoryCache(BatchedHistoryCache):
             (self._page_table(entries, size), np.asarray([e.length for e in entries], np.int64)),
             self.pool.device)
         rows = self._rows(table, lengths, torch.arange(size, device=self.pool.device))
-        return self.pool.memory[rows.view(-1)].view(len(entries), size, self.pool.width)
+        return torch.index_select(self.pool.memory, 0, rows.view(-1)).view(len(entries), size, self.pool.width)
 
     def _append(self, entries: list[PagedEntry], counts: list[int]) -> None:
         actor, cfg, pool = self.actor, self.actor.config, self.pool
@@ -298,7 +298,7 @@ class PagedHistoryCache(BatchedHistoryCache):
             kv = pool.kv[layer_index]
             kv[write_rows_d] = qkv[write_batch_d, write_slot_d, 1:]
             # [batch * span, 2, heads, depth] -> keys/values [batch, heads, span, depth]
-            packed = kv[rows].view(batch, span, 2, heads, depth).permute(2, 0, 3, 1, 4)
+            packed = torch.index_select(kv, 0, rows).view(batch, span, 2, heads, depth).permute(2, 0, 3, 1, 4)
             attended = F.scaled_dot_product_attention(q, packed[0], packed[1],
                                                       attn_mask=allowed[:, None], dropout_p=0.0)
             state = finish(layer, state, attended)
@@ -435,7 +435,7 @@ def _merged_append(cache: PagedHistoryCache, entries: list[PagedEntry], counts: 
         kv = pool.kv[index]
         kv[write_rows_d] = qkv[write_pad_d, write_slot_d, 1:]
         q = qkv[pad_d][:, :, 0].transpose(1, 2)
-        packed = kv[rows].view(batch, span, 2, H, depth).permute(2, 0, 3, 1, 4)
+        packed = torch.index_select(kv, 0, rows).view(batch, span, 2, H, depth).permute(2, 0, 3, 1, 4)
         attended = F.scaled_dot_product_attention(q, packed[0], packed[1],
                                                   attn_mask=allowed[:, None], dropout_p=0.0)
         attended = state.new_zeros(R, width, W).index_copy_(

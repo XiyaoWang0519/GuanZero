@@ -257,12 +257,24 @@ def cuda_index(device: str) -> int | None:
     return parsed.index if parsed.type == "cuda" else None
 
 
+def rank_cuda_index(device: str, rank: int, spread_gpus: bool, gpu_count: int) -> int | None:
+    """The CUDA index a rank selects. With ``spread_gpus`` and a bare ``cuda`` device the
+    ranks take the visible GPUs in turn (rank r -> r % gpu_count); an explicit ``cuda:N``
+    is kept for every rank. The device itself stays bare ``cuda`` (the current device)
+    so the rollout/learner device comparisons in the trainer are unchanged."""
+    index = cuda_index(device)
+    if spread_gpus and index is None and torch.device(device).type == "cuda":
+        return rank % max(1, gpu_count)
+    return index
+
+
 def _rank_main(rank: int, world: int, port: int, argv: list[str]) -> None:
     args = build_parser().parse_args(argv)
     os.environ.update(MASTER_ADDR="127.0.0.1", MASTER_PORT=str(port))
     dist.init_process_group("gloo", rank=rank, world_size=world)
     try:
-        index = cuda_index(args.device)
+        index = rank_cuda_index(args.device, rank, args.spread_gpus,
+                                torch.cuda.device_count() if torch.cuda.is_available() else 0)
         if index is not None:
             torch.cuda.set_device(index)
         trainer = HistoryDDPTrainer(config_from_args(args), rank_output(args.output, rank),
@@ -286,6 +298,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.description = ("History PPO over --world-size local ranks. --num-envs, "
                           "--num-threads and --minibatch-matches are per rank.")
     parser.add_argument("--world-size", type=int, default=1)
+    parser.add_argument("--spread-gpus", action="store_true",
+                        help="with --device cuda, rank r uses visible GPU r %% device_count "
+                             "(collectives stay on host copies, so nothing else changes)")
     parser.add_argument("--ddp-global-minibatch", action="store_true",
                         help="normalize advantages and weight the loss over the union of "
                              "the ranks' minibatches, as one minibatch would be")
