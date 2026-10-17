@@ -31,6 +31,12 @@ Historical records stay at their existing paths to preserve references.
 
 ## History, opponent response and diagnostics
 
+- [GuanZero 跨局历史利用调查：完整技术报告（2026-10-17）](history-utilization-investigation-summary-2026-10-17.md)：汇总本次 QK-norm、短 PPO、两池完整比赛、公开预测、等长内容替换、融合和训练故障取证；区分信息、策略反应和胜率证据，含恢复点纠正与未完成问题，供外部技术审阅。
+- [历史训练经历、收益信号与故障期 checkpoint 审计（2026-10-17）](history-training-audit-2026-10-17.md)
+- [两端点不同融合方式的离线对照（2026-10-17）](qknorm-fusion-variants-2026-10-17.md)
+- [手牌融合与归一化分离验证（2026-10-16）](qknorm-fusion-isolation-2026-10-16.md)
+- [冻结历史编码、读取与出牌状态的分层诊断（2026-10-16）](qknorm-history-stages-2026-10-16.md)
+- [两端点等长跨局公开历史替换（2026-10-16）](qknorm-history-swap-2026-10-16.md)
 - [离线行为探针：管线检查与小规模诊断（2026-09-25）](behaviour-probe-2026-09-25.md)
 - [主线终点是否在用历史流：输入消融（2026-09-29）](history-ablation-2026-09-29.md)
 - [Batch-size recipe test: bounded RTX 4090 run, September 26, 2026 UTC](history-batch-2026-09-26.md)
@@ -154,3 +160,19 @@ raw result/provenance pointers and negative findings.
 - [主线 SDPA 异常的触发调查（2026-10-15）](training-sdpa-trigger-2026-10-15.md)：窗口内 u74155 已有 norm >100，无同期部署/重启证据；同输入 CPU 对照发现 m6–m7 attention score 大幅增长，支持大 score 下 backward 概率重建不稳定的假设，CUDA 内部机制仍待证实。
 
 - [主线私有注意力诊断（2026-10-15）](private-attention-diagnosis-2026-10-15.md)：同一 fixture、m5–u86800 共 8 组权重的 CPU 对照；所有 head 都是分差极大的硬 one-hot（无 <1 ulp 平局），q 方向几乎不随决策变化，落点按比赛固定（u86800 有 7/8 head 落在常数 BOS）；扰动历史内容的策略 TV 中位数 ≤ 2e-3；m7 起 q/k 的 math 梯度精确为 0，u86800 部分 head 的 Adam √v 已衰减到次正规不动点。只对这一 fixture 成立，未宣布模块退化。
+
+- [QK-norm 三臂 500M 产物核验与机制探针（2026-10-16）](qknorm-mechanism-2026-10-16.md)：同点 +503.84M decisions 与 SHA/源码核验通过；both 解除了极端饱和但 query 仍高度共线，均值替换策略变化小；未启动新训练。
+
+- [Q/K 范数调整的离线可塑性与 Adam 验证（2026-10-16）](qknorm-plasticity-2026-10-16.md)：四档缩放通过 CPU 前向门槛；方向信号保持、步幅提升，保守候选为逐 head 范数 16 配合 m/a、v/a² 且保留 step；清整块 K/V 状态会改变 V，未启动训练或写迁移 checkpoint。
+
+- [Q/K 范数 16 隔离 CUDA 与完整 actor loss 验证（2026-10-16）](qknorm-cuda-gate-2026-10-16.md)：CPU 与 L40S CUDA 全项通过；健康卡诊断 7937 验证完整 actor loss、梯度、主动裁剪、13 个快照与私有 CUDA graph；未启动训练或写迁移 checkpoint。
+
+- [范数 16 隔离短程完整 PPO A/B（2026-10-16）](qknorm-short-ppo-2026-10-16.md)：7939 完成，每臂 120 update / 983,040 decisions，全部有限；方向更新增大但历史均值替换 TV 未增强，不据此长训或采纳主线。
+
+- [两臂端点完整比赛 FULL／ROUND 历史消融（2026-10-16）](qknorm-match-ablation-2026-10-16.md)：完成 2,048 场；FULL−ROUND 为 control +3.32 pp [−1.56, +8.01]、norm16 +1.37 pp [−3.52, +6.25]（95% CI），均未确立跨局收益；不继续训练或改主线。
+
+- [前三局公开出牌的后续预测信息（2026-10-16）](public-history-predictability-2026-10-16.md)：1,024 场原 FULL 比赛精确复跑公开记录；独立 512 场检验和 256 道同牌开局题均未见固定统计预测器的历史增益；直接延续行为偏差反而变差，不能据此证明历史无信息；无神经网络训练或生产改动。
+
+- [更大打法差异的冻结旧模型：公开历史预测复查（2026-10-16）](public-history-diverse-2026-10-16.md)：独立筛选 u2623/u20264/u35588/u86800，正式题分歧率 54.82%（近邻池 6.40%）；1,024 场与 256 道同牌题复查发现小幅历史预测增益，辨认率 41.02%；未测记忆棋力收益，不训练或改主线。
+
+- [差异旧对手池：两端点完整比赛 FULL／ROUND 消融（2026-10-16）](qknorm-diverse-match-2026-10-16.md)：2,048 场完成，两端点全场公共路径均随历史视图变化；control 胜率 +3.91 pp，单项 95% CI [+0.20, +7.62]，双比较区间仍跨零；norm16 −1.17 pp，未见收益，不训练或改主线。
