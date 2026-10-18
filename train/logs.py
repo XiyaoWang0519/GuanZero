@@ -26,6 +26,35 @@ def public_token(event: object) -> np.ndarray:
     return token
 
 
+def public_tokens(seat: np.ndarray, encoded_action: np.ndarray,
+                  cards_left: np.ndarray) -> np.ndarray:
+    """``public_token`` of ``n`` events at once, uint8 ``[n, TOKEN_DIM]``.
+
+    The fields are ``VecEnv.drain_public_arrays()``'s; ``encoded_action``
+    ``[n, 154]`` is cast to uint8 by the same NumPy assignment as in
+    ``public_token``. Row ``i`` equals ``public_token`` of event ``i``. A
+    seat outside 0..3 or a cards-left count outside 0..27 raises
+    ``ValueError`` for the whole batch (``public_token`` would set a bit in a
+    neighbouring block or fail with ``IndexError``).
+    """
+    seat = np.asarray(seat)
+    cards = np.asarray(cards_left)
+    encoded = np.asarray(encoded_action)
+    n = len(seat)
+    if seat.shape != (n,) or cards.shape != (n,) or encoded.shape != (n, 154):
+        raise ValueError("public events need one seat, cards-left count and action row each")
+    if n and (seat.min() < 0 or seat.max() > 3
+              or cards.min() < 0 or cards.max() >= TOKEN_DIM - 158):
+        raise ValueError("public event seat or cards-left count outside its one-hot block")
+    tokens = np.zeros((n, TOKEN_DIM), dtype=np.uint8)
+    rows = np.arange(n)
+    tokens[rows, seat] = 1
+    tokens[:, 4:158] = encoded
+    tokens[:, 4 + 146:4 + 154] = 0     # tribute structure is private (as public_token)
+    tokens[rows, 158 + cards.astype(np.int64)] = 1
+    return tokens
+
+
 def token_meta(event: object) -> tuple[int, int, int]:
     """Per-token metadata for schema 3: (abstract id, forced flag, phase).
 

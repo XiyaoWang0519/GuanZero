@@ -50,27 +50,66 @@ def upload_arrays(arrays: Sequence[np.ndarray], device: str | torch.device, *,
     device = torch.device(device)
     if packed is None:
         packed = device.type == "cuda"
-    tensors = tuple(torch.from_numpy(np.asarray(array)) for array in arrays)
     if not packed:
-        return tuple(t.to(device) for t in tensors)
-    if not tensors:
+        return tuple(torch.from_numpy(np.asarray(array)).to(device) for array in arrays)
+    if not arrays:
         return ()
-    layout, total = [], 0
-    for tensor in tensors:
-        start = (total + 7) // 8 * 8
-        total = start + tensor.numel() * tensor.element_size()
-        layout.append((start, total))
     asynchronous = device.type == "cuda" and (_PINNED_CUDA_UPLOAD if pinned is None else pinned)
-    host = (torch.zeros(total, dtype=torch.uint8, pin_memory=True) if asynchronous
-            else torch.zeros(total, dtype=torch.uint8))
-    for tensor, (start, end) in zip(tensors, layout):
-        host[start:end].copy_(_byte_view(tensor))
+    host, layout, fields = pack_host(arrays, pinned=asynchronous)
     # The local staging tensor is never mutated after enqueue. PyTorch's pinned
     # allocator records the async copy's stream event before recycling storage,
     # so its Python reference can expire here without a custom host-buffer pool.
     uploaded = host.to(device, non_blocking=True) if asynchronous else host.to(device)
-    return tuple(uploaded[start:end].view(tensor.dtype).reshape(tensor.shape)
-                 for tensor, (start, end) in zip(tensors, layout))
+    return tuple(uploaded[start:end].view(dtype).reshape(shape)
+                 for (start, end), (dtype, shape) in zip(layout, fields))
+
+
+_TORCH_DTYPES: dict[np.dtype, torch.dtype] = {}
+
+
+def _torch_dtype(dtype: np.dtype) -> torch.dtype:
+    """``torch.from_numpy``'s dtype for ``dtype`` (raising as it does), memoized."""
+    result = _TORCH_DTYPES.get(dtype)
+    if result is None:
+        result = torch.from_numpy(np.empty(0, dtype)).dtype
+        _TORCH_DTYPES[dtype] = result
+    return result
+
+
+def pack_host(arrays: Sequence[np.ndarray], *, pinned: bool = False
+              ) -> tuple[torch.Tensor, list[tuple[int, int]], list[tuple[torch.dtype, tuple]]]:
+    """The host staging buffer of a packed ``upload_arrays`` call.
+
+    Every array's bytes start at an eight-byte boundary, in order, with zero
+    padding between: ``(host, [(start, end)], [(torch dtype, shape)])``. The
+    bytes are those of the former per-field torch staging (``_byte_view``
+    copies into ``torch.zeros``), padding included. The buffer is allocated
+    uninitialized and only the alignment gaps (at most seven bytes each) are
+    zeroed, since every other byte is overwritten; NumPy writes each field
+    with one typed copy into a view of the buffer instead of several torch
+    dispatches. ``pinned`` stages in page-locked memory (CUDA only).
+    """
+    arrays = [np.asarray(array) for array in arrays]
+    fields = [(_torch_dtype(array.dtype), array.shape) for array in arrays]
+    layout, total = [], 0
+    for array in arrays:
+        start = (total + 7) // 8 * 8
+        total = start + array.nbytes
+        layout.append((start, total))
+    if pinned:
+        host = torch.empty(total, dtype=torch.uint8, pin_memory=True)
+        staging = host.numpy()
+    else:
+        staging = np.empty(total, np.uint8)
+        host = torch.from_numpy(staging)
+    previous = 0
+    for array, (start, end) in zip(arrays, layout):
+        if start > previous:
+            staging[previous:start] = 0
+        if end > start:
+            staging[start:end].view(array.dtype).reshape(array.shape)[...] = array
+        previous = end
+    return host, layout, fields
 
 
 def download_tensors(tensors: Sequence[torch.Tensor], *, packed: bool = True

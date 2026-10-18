@@ -30,13 +30,16 @@ Three pieces sit between ``gd.VecEnv`` and the history learner:
   steps the environment.
 
 The store never reads an event's ``forced`` flag: ``PublicStream.append``
-consumes only seat, encoded action, cards left, round index and phase.
+consumes only seat, encoded action, cards left, round index and phase, and
+``VecEnv.drain_public_arrays`` (the collector's batched drain, ingested by
+``MatchEventStore.ingest_arrays`` into identical streams) carries only those
+fields plus the environment and match ids.
 """
 from __future__ import annotations
 
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterator, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence
 import time
 
 import gd
@@ -44,15 +47,54 @@ import numpy as np
 import torch
 
 from train.history_model import (HIDDEN_DIM, PLAY_PHASE, DecisionInputs, HistoryActor,
-                                 PublicStream, StreamBatch)
+                                 PublicStream, StreamBatch, public_token_error)
 from train.history_snapshot_batch import LAYOUT_FIELDS
 from train.history_transfers import download_tensors as _download_tensors, upload_arrays
+from train.logs import TOKEN_DIM, public_tokens
 
 LEARNER = 0     # policy identity of the collecting learner in a seat assignment
 NUM_SEATS = 4
 
 
 # ---- event store ---------------------------------------------------------------
+
+def _missing(key: Any) -> None:
+    return None
+
+
+def public_event_runs(events: Mapping[str, np.ndarray], by_round: bool
+                      ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[tuple[int, int, tuple]]]:
+    """A ``drain_public_arrays`` batch as tokens, int64 rounds and phases,
+    validated as a whole, and its runs ``(start, end, key)`` of consecutive
+    events sharing ``key = (env, match)``, plus ``round`` if ``by_round``.
+    The engine drains environment-major, so a run is one match's new events."""
+    env = np.asarray(events["env_id"])
+    match = np.asarray(events["match_id"])
+    n = len(env)
+    raw_rounds, raw_phases = np.asarray(events["round_index"]), np.asarray(events["phase"])
+    if not n:
+        empty = np.zeros(0, np.int64)
+        return np.zeros((0, TOKEN_DIM), np.uint8), empty, empty, []
+    if env.shape != (n,) or match.shape != (n,) or raw_rounds.shape != (n,) \
+            or raw_phases.shape != (n,):
+        raise ValueError("public event fields must have one entry per event")
+    tokens = public_tokens(events["seat"], events["encoded_action"], events["cards_left"])
+    error = public_token_error(tokens, raw_rounds, raw_phases)
+    if error is not None:
+        raise ValueError(error[1])
+    rounds, phases = raw_rounds.astype(np.int64), raw_phases.astype(np.int64)
+    change = (env[1:] != env[:-1]) | (match[1:] != match[:-1])
+    if by_round:
+        change |= rounds[1:] != rounds[:-1]
+    starts = np.flatnonzero(change) + 1
+    first = np.concatenate(([0], starts))
+    bounds = [0, *starts.tolist(), n]
+    fields = [env[first].tolist(), match[first].tolist()]
+    if by_round:
+        fields.append(rounds[first].tolist())
+    runs = [(start, end, key) for start, end, key in zip(bounds, bounds[1:], zip(*fields))]
+    return tokens, rounds, phases, runs
+
 
 class MatchEventStore:
     """Raw public token streams keyed by ``(env_id, match_id)``."""
@@ -80,6 +122,23 @@ class MatchEventStore:
         for event in events:
             self.stream(event.env_id, event.match_id).append(event)
         return len(events)
+
+    def ingest_arrays(self, events: Mapping[str, np.ndarray]) -> int:
+        """``ingest`` for ``VecEnv.drain_public_arrays()``: the same streams,
+        tokens, rounds, phases and capacities, and the same stream creation and
+        match-id checks in drain order. Tokens are built for the whole batch
+        (``train.logs.public_tokens``) and appended one slice per run of
+        consecutive events of one match. A malformed event raises the
+        per-event path's ``ValueError`` before anything of the batch is
+        appended (the per-event path appends the events before it)."""
+        tokens, rounds, phases, runs = public_event_runs(events, by_round=False)
+        lookup = self.streams.get if type(self).stream is MatchEventStore.stream else _missing
+        for start, end, key in runs:
+            stream = lookup(key)
+            if stream is None:
+                stream = self.stream(*key)
+            stream._extend(tokens[start:end], rounds[start:end], phases[start:end])
+        return len(rounds)
 
     def prefix(self, env_id: int, match_id: int) -> int:
         return self.stream(env_id, match_id).prefix
@@ -583,6 +642,7 @@ class _StepRows:
     prefix: np.ndarray            # public tokens each row may read
     identities: np.ndarray        # policy identity of each row's seat
     acting: np.ndarray | None = None   # learner play rows: stored for PPO
+    streams: list[PublicStream] | None = None   # each row's match stream, if looked up
 
 
 @dataclass
@@ -738,6 +798,7 @@ class HistoryCollector:
         self.caches = {}
         self._frozen_stack: ExitStack | None = None
         self._frozen_caches: set = set()
+        self._frozen_heads = None       # the SnapshotHeads whose frozen scope is entered
         self.policy_decisions: dict[int, int] = {}
         self.assignments: dict[tuple[int, int], np.ndarray] = {}
         self._assignments_changed = False
@@ -848,7 +909,8 @@ class HistoryCollector:
     def frozen_weights(self):
         """Trainer-owned scope: weights stay fixed until collection finishes.
 
-        Register caches lazily, including newly encountered snapshot identities.
+        Register caches lazily, including newly encountered snapshot identities,
+        and the merged path's stacked snapshot heads (``SnapshotHeads``).
         Retain exit checks for caches pruned or replaced during collection.
         Custom collectors need not enter this scope: their policy callbacks may
         still mutate weights between steps, with ordinary per-encode checks.
@@ -862,6 +924,16 @@ class HistoryCollector:
         finally:
             self._frozen_stack = None
             self._frozen_caches.clear()
+            self._frozen_heads = None
+
+    def _freeze_snapshot_heads(self) -> None:
+        """Inside ``frozen_weights``, the stacked snapshot heads skip their
+        per-step weight signature too: ``SnapshotHeads.frozen_weights`` signs
+        each identity once and re-checks at scope exit (raising on a change)."""
+        heads = self.snapshot_heads
+        if self._frozen_stack is not None and self._frozen_heads is not heads:
+            self._frozen_stack.enter_context(heads.frozen_weights())
+            self._frozen_heads = heads
 
     @torch.no_grad()
     def _prefill_learner(self, stats: CollectStats) -> None:
@@ -963,9 +1035,27 @@ class HistoryCollector:
 
     # -- one vector step, in phases ---------------------------------------------
 
+    def _array_drain(self) -> Callable[[], Mapping[str, np.ndarray]] | None:
+        """``env.drain_public_arrays`` when the store's ``ingest_arrays`` is at
+        least as specific as its ``ingest`` (a subclass overriding only
+        ``ingest`` keeps the per-event path, as do envs without the method)."""
+        drain = getattr(self.env, "drain_public_arrays", None)
+        if drain is None:
+            return None
+        for klass in type(self.store).__mro__:
+            own = vars(klass)
+            if "ingest" in own or "ingest_arrays" in own:
+                return drain if "ingest_arrays" in own else None
+        return None
+
     def _drain(self, stats: CollectStats) -> None:
-        """Contract order: public events, then ended rounds (before this batch's rows)."""
-        self.store.ingest(self.env.drain_public_actions())
+        """Contract order: public events, then ended rounds (before this batch's rows).
+        The array drain stores the same streams as the per-event path, bit for bit."""
+        drain = self._array_drain()
+        if drain is not None:
+            self.store.ingest_arrays(drain())
+        else:
+            self.store.ingest(self.env.drain_public_actions())
         results = self.env.drain_finished_rounds()
         self.buffer.finish_rounds(results)
         for r in results:
@@ -976,7 +1066,13 @@ class HistoryCollector:
             stats.gain += float(r.gain)
 
     def _read_rows(self, batch) -> _StepRows:
-        """The pending rows as host arrays, with each row's policy identity and prefix."""
+        """The pending rows as host arrays, with each row's policy identity and prefix.
+
+        ``obs``/``cand`` are cast to owned uint8 copies once, here: every
+        consumer (the step's uploads, ``SequenceRolloutBuffer.add_step``)
+        stores them as uint8, and the elementwise NumPy cast of the whole
+        batch equals the cast of any gathered rows, so the later gathers move
+        a quarter of the bytes and their casts are no-ops (bitwise)."""
         n = int(batch.rows)
         if not n:
             raise RuntimeError("environment produced no pending decisions")
@@ -985,24 +1081,52 @@ class HistoryCollector:
             env_id=np.asarray(batch.env_id, np.int64), match_id=np.asarray(batch.match_id, np.int64),
             round_index=np.asarray(batch.round_index, np.int64),
             seat=np.asarray(batch.seat, np.int64), phase=np.asarray(batch.phase, np.int64),
-            offsets=offsets, counts=offsets[1:] - offsets[:-1], obs=np.asarray(batch.obs),
-            cand=np.asarray(batch.cand), hidden=np.asarray(batch.hidden_counts),
+            offsets=offsets, counts=offsets[1:] - offsets[:-1],
+            obs=np.asarray(batch.obs).astype(np.uint8, copy=False),
+            cand=np.asarray(batch.cand).astype(np.uint8, copy=False),
+            hidden=np.asarray(batch.hidden_counts),
             choices=np.array(batch.greedy_choice, dtype=np.int32, copy=True),
             logp=np.zeros(n, np.float32), behaviour_logp=np.zeros(n, np.float32),
             prefix=np.zeros(n, np.int64), identities=np.zeros(n, np.int64))
-        for i in range(n):
-            seats = self.assignment(rows.env_id[i], rows.match_id[i])
-            rows.identities[i] = seats[rows.seat[i]]
-            if self.round_streams and rows.identities[i] == LEARNER:
-                rows.prefix[i] = self.store.round_stream(
-                    rows.env_id[i], rows.match_id[i], rows.round_index[i]).prefix
-            else:
-                rows.prefix[i] = self.store.stream(rows.env_id[i], rows.match_id[i]).prefix
+        if (not self.round_streams and type(self.store).stream is MatchEventStore.stream
+                and type(self).assignment is HistoryCollector.assignment):
+            self._match_rows(rows)
+        else:
+            for i in range(n):
+                seats = self.assignment(rows.env_id[i], rows.match_id[i])
+                rows.identities[i] = seats[rows.seat[i]]
+                if self.round_streams and rows.identities[i] == LEARNER:
+                    rows.prefix[i] = self.store.round_stream(
+                        rows.env_id[i], rows.match_id[i], rows.round_index[i]).prefix
+                else:
+                    rows.prefix[i] = self.store.stream(rows.env_id[i], rows.match_id[i]).prefix
         rows.acting = (rows.identities == LEARNER) & (rows.phase == PLAY_PHASE)
         if (self.kv_cache or self.snapshot_heads is not None) and self._assignments_changed:
             self._prune_caches()
             self._assignments_changed = False
         return rows
+
+    def _match_rows(self, rows: _StepRows) -> None:
+        """Each row's identity, prefix and match stream, with Python-int keys and
+        direct dict reads. Same calls in the same row order as the generic loop:
+        a new key still goes through ``assignment`` (seat policy, log) and then
+        ``store.stream`` (creation, match-id check) before the next row."""
+        assignments, lookup, store = self.assignments, self.store.streams, self.store
+        identities, prefix, streams = [], [], []
+        for key, seat in zip(zip(rows.env_id.tolist(), rows.match_id.tolist()),
+                             rows.seat.tolist()):
+            seats = assignments.get(key)
+            if seats is None:
+                seats = self.assignment(*key)
+            stream = lookup.get(key)
+            if stream is None:
+                stream = store.stream(*key)
+            identities.append(seats[seat])
+            prefix.append(stream.prefix)
+            streams.append(stream)
+        rows.identities = np.asarray(identities, np.int64)
+        rows.prefix = np.asarray(prefix, np.int64)
+        rows.streams = streams
 
     def _plan(self, r: _StepRows) -> _StepPlan:
         """Play rows grouped by policy identity (learner first), their host inputs
@@ -1019,6 +1143,11 @@ class HistoryCollector:
                 unique = list(dict.fromkeys(keys))
                 first = dict(zip(keys, triples))
                 streams = [self.store.round_stream(*first[k]) for k in unique]
+            elif r.streams is not None:
+                # _read_rows' stream of each row: the objects store.stream returns.
+                keys = list(zip(r.env_id[rows].tolist(), r.match_id[rows].tolist()))
+                by_key = dict(zip(keys, map(r.streams.__getitem__, rows.tolist())))
+                unique, streams = list(by_key), list(by_key.values())
             else:
                 keys = list(zip(r.env_id[rows].tolist(), r.match_id[rows].tolist()))
                 unique = list(dict.fromkeys(keys))
@@ -1028,18 +1157,24 @@ class HistoryCollector:
             if self.batch_snapshot_policies and identity != LEARNER:
                 plan.merged.append(group)
                 continue
-            index = {key: i for i, key in enumerate(unique)}
+            if group.one_decision_per_stream:
+                match_index = np.arange(len(rows), dtype=np.int64)   # keys in first-row order
+            else:
+                index = {key: i for i, key in enumerate(unique)}
+                match_index = np.asarray([index[k] for k in keys], np.int64)
             src = ragged_index(r.offsets[rows], r.counts[rows])
             local = np.concatenate(([0], np.cumsum(r.counts[rows])))
             plan.groups.append(group)
             plan.host_fields.extend((
-                np.asarray([index[k] for k in keys], np.int64), r.prefix[rows],
-                r.obs[rows].astype(np.uint8), r.seat[rows], r.cand[src].astype(np.uint8),
+                match_index, r.prefix[rows],
+                r.obs[rows].astype(np.uint8, copy=False), r.seat[rows],
+                r.cand[src].astype(np.uint8, copy=False),
                 local, np.repeat(np.arange(len(rows), dtype=np.int64), r.counts[rows])))
         if plan.merged:
             from train.history_snapshot_batch import SnapshotHeads, merged_layout
             if self.snapshot_heads is None:
                 self.snapshot_heads = SnapshotHeads(encoder=self.batch_snapshot_encoder)
+            self._freeze_snapshot_heads()
             plan.merged_actors = [self.resolve_policy(g.identity) for g in plan.merged]
             plan.slots = [self.snapshot_heads.slot(g.identity, actor)
                           for g, actor in zip(plan.merged, plan.merged_actors)]

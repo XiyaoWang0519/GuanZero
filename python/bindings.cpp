@@ -110,6 +110,45 @@ py::array_t<T> view_of(const std::span<const T>& s, const DecisionBatch& batch) 
   return a;
 }
 
+// The public events since the last drain as plain arrays, in drain order:
+// int32 env_id, round_index, cards_left; int64 match_id; int8 seat; uint8
+// phase; float32 encoded_action [n, kActDim]. The token layout stays in
+// Python (train.logs.public_tokens).
+py::dict public_event_arrays(std::span<const PublicActionEvent> events) {
+  const auto n = static_cast<py::ssize_t>(events.size());
+  py::array_t<int32_t> env_id(n), round_index(n), cards_left(n);
+  py::array_t<int64_t> match_id(n);
+  py::array_t<int8_t> seat(n);
+  py::array_t<uint8_t> phase(n);
+  py::array_t<float> encoded({n, py::ssize_t(kActDim)});
+  auto* env_out = env_id.mutable_data();
+  auto* round_out = round_index.mutable_data();
+  auto* cards_out = cards_left.mutable_data();
+  auto* match_out = match_id.mutable_data();
+  auto* seat_out = seat.mutable_data();
+  auto* phase_out = phase.mutable_data();
+  auto* encoded_out = encoded.mutable_data();
+  for (py::ssize_t i = 0; i < n; ++i) {
+    const PublicActionEvent& event = events[static_cast<size_t>(i)];
+    env_out[i] = event.env_id;
+    match_out[i] = event.match_id;
+    round_out[i] = event.round_index;
+    seat_out[i] = event.seat;
+    phase_out[i] = static_cast<uint8_t>(event.phase);
+    cards_out[i] = event.cards_left;
+    std::memcpy(encoded_out + i * kActDim, event.encoded_action.data(), sizeof(float) * kActDim);
+  }
+  py::dict out;
+  out["env_id"] = env_id;
+  out["match_id"] = match_id;
+  out["round_index"] = round_index;
+  out["seat"] = seat;
+  out["phase"] = phase;
+  out["cards_left"] = cards_left;
+  out["encoded_action"] = encoded;
+  return out;
+}
+
 }  // namespace
 
 PYBIND11_MODULE(_gd_core, m) {
@@ -601,6 +640,11 @@ PYBIND11_MODULE(_gd_core, m) {
       .def("drain_public_actions", [](VecEnv& e) {
         const auto events = e.drain_public_actions();
         return std::vector<PublicActionEvent>(events.begin(), events.end());
+      })
+      // The same drain as plain arrays (drain_public_actions and this method
+      // consume one shared queue; call one per step).
+      .def("drain_public_arrays", [](VecEnv& e) {
+        return public_event_arrays(e.drain_public_actions());
       })
       .def("set_styles", [](VecEnv& e, py::array_t<float, py::array::c_style> styles) {
         if (styles.ndim() != 3 || styles.shape(1) != 4 ||
