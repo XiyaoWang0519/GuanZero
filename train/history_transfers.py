@@ -1,6 +1,6 @@
 """Lossless packing for the small, mixed-dtype history inference transfers."""
 import os
-from typing import Sequence
+from typing import Any, Sequence
 
 import numpy as np
 import torch
@@ -21,18 +21,29 @@ def _byte_view(tensor: torch.Tensor) -> torch.Tensor:
     return flat.view(torch.uint8)
 
 
-def runtime_settings(device: str | torch.device) -> dict[str, bool]:
-    """Report live numerics and the effective default upload setting.
+def runtime_settings(device: str | torch.device) -> dict[str, Any]:
+    """Report live numerics, the effective default upload setting and this
+    process's CPU threading.
 
     The upload flag is captured at module import; reading the environment again
     here could report a setting different from the one used by existing callers.
     Explicit ``upload_arrays`` overrides remain local to that individual call.
+    Threading is observability only: torch's intra-op and inter-op pool sizes,
+    the OpenMP/MKL environment (None: unset) and the CPUs this process may run
+    on (None where the platform cannot tell), so a manifest shows whether
+    several ranks oversubscribe the host.
     """
+    affinity = os.sched_getaffinity(0) if hasattr(os, "sched_getaffinity") else None
     return dict(pinned_upload=torch.device(device).type == "cuda" and _PINNED_CUDA_UPLOAD,
                 deterministic_algorithms=torch.are_deterministic_algorithms_enabled(),
                 deterministic_warn_only=torch.is_deterministic_algorithms_warn_only_enabled(),
                 tf32_matmul=torch.backends.cuda.matmul.allow_tf32,
-                tf32_cudnn=torch.backends.cudnn.allow_tf32)
+                tf32_cudnn=torch.backends.cudnn.allow_tf32,
+                torch_num_threads=torch.get_num_threads(),
+                torch_interop_threads=torch.get_num_interop_threads(),
+                omp_num_threads=os.environ.get("OMP_NUM_THREADS"),
+                mkl_num_threads=os.environ.get("MKL_NUM_THREADS"),
+                cpu_affinity=None if affinity is None else len(affinity))
 
 
 def upload_arrays(arrays: Sequence[np.ndarray], device: str | torch.device, *,

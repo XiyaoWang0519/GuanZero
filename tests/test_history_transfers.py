@@ -5,6 +5,10 @@ import torch
 
 from train.history_transfers import download_tensors, runtime_settings, upload_arrays
 
+# CPU threading as the process runs (runtime_settings records it for manifests).
+THREAD_KEYS = {"torch_num_threads", "torch_interop_threads", "omp_num_threads",
+               "mkl_num_threads", "cpu_affinity"}
+
 
 @pytest.mark.parametrize("enabled", [False, True])
 def test_runtime_settings_use_imported_upload_flag_and_current_numerics(monkeypatch, enabled):
@@ -22,13 +26,36 @@ def test_runtime_settings_use_imported_upload_flag_and_current_numerics(monkeypa
         torch.use_deterministic_algorithms(enabled, warn_only=enabled)
         torch.backends.cuda.matmul.allow_tf32 = not enabled
         torch.backends.cudnn.allow_tf32 = enabled
-        assert runtime_settings(torch.device("cpu")) == dict(
+        settings = runtime_settings(torch.device("cpu"))
+        assert {k: v for k, v in settings.items() if k not in THREAD_KEYS} == dict(
             pinned_upload=False, deterministic_algorithms=enabled,
             deterministic_warn_only=enabled, tf32_matmul=not enabled, tf32_cudnn=enabled)
+        assert THREAD_KEYS <= set(settings)     # observability; see the test below
     finally:
         torch.use_deterministic_algorithms(original[0], warn_only=original[1])
         torch.backends.cuda.matmul.allow_tf32 = original[2]
         torch.backends.cudnn.allow_tf32 = original[3]
+
+
+def test_runtime_settings_record_live_cpu_threading(monkeypatch):
+    import os
+    previous = torch.get_num_threads()
+    monkeypatch.setenv("OMP_NUM_THREADS", "3")
+    monkeypatch.delenv("MKL_NUM_THREADS", raising=False)
+    try:
+        torch.set_num_threads(2)
+        settings = runtime_settings("cpu")
+        assert THREAD_KEYS <= set(settings)
+        assert settings["torch_num_threads"] == 2
+        assert settings["torch_interop_threads"] == torch.get_num_interop_threads() >= 1
+        # The environment as the process sees it now; None when unset.
+        assert settings["omp_num_threads"] == "3" and settings["mkl_num_threads"] is None
+        if hasattr(os, "sched_getaffinity"):
+            assert settings["cpu_affinity"] == len(os.sched_getaffinity(0)) >= 1
+        else:
+            assert settings["cpu_affinity"] is None
+    finally:
+        torch.set_num_threads(previous)
 
 
 @pytest.mark.parametrize("device", ["cpu", "cuda"])
