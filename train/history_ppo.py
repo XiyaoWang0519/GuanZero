@@ -838,15 +838,22 @@ class HistoryTrainer:
 
     @torch.no_grad()
     def refresh_values(self, chunk: int = 4096) -> np.ndarray:
-        """Current critic value of every stored row (completed or not)."""
+        """Current critic value of every stored row (completed or not).
+
+        Evaluated in the same ``chunk``-row calls as always; the outputs are
+        joined on the device and downloaded with one copy (one sync instead of
+        one per chunk), the same float32 values bit for bit."""
         data = self.buffer.compact()
         n = len(self.buffer)
-        values = np.zeros(n, np.float32)
+        if n == 0:
+            return np.zeros(0, np.float32)
+        parts = []
         for begin in range(0, n, chunk):
             obs = torch.as_tensor(data["obs"][begin:begin + chunk], device=self.device)
             hidden = torch.as_tensor(data["hidden"][begin:begin + chunk], device=self.device)
-            values[begin:begin + chunk] = self.critic(obs, hidden).float().cpu().numpy()
-        return values
+            parts.append(self.critic(obs, hidden).float())
+        values = parts[0] if len(parts) == 1 else torch.cat(parts)
+        return values.cpu().numpy()
 
     def recompute_log_probs(self, rows: np.ndarray, streams=None
                             ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -1208,6 +1215,9 @@ class HistoryTrainer:
         self.progress["matches"] += collected.matches
         self.progress["elapsed_seconds"] = (self.prior_elapsed + time.monotonic()
                                             - self.started)
+        # Each metric source read once (all host-side reads, no device work).
+        cache = self.collector.cache_metrics()
+        memory_stats = torch.cuda.memory_stats(self.device) if self.device.type == "cuda" else {}
         line = {
             "update": self.progress["updates"], "decisions": self.progress["decisions"],
             "rounds": self.progress["rounds"], "matches": self.progress["matches"],
@@ -1228,8 +1238,8 @@ class HistoryTrainer:
             "policy_version_min": int(self.buffer.compact()["version"].min()) if len(self.buffer) else None,
             "cuda_peak_allocated_bytes": torch.cuda.max_memory_allocated(self.device) if self.device.type == "cuda" else 0,
             "cuda_peak_reserved_bytes": torch.cuda.max_memory_reserved(self.device) if self.device.type == "cuda" else 0,
-            "cache_bytes": self.collector.cache_metrics()["bytes"],
-            "cache": self.collector.cache_metrics(),
+            "cache_bytes": cache["bytes"],
+            "cache": cache,
             "collection_cache": collection_cache,
             "private_graphs": self.collector.graph_metrics(),
             "cache_transfers": self.collector.transfer_metrics(),
@@ -1252,8 +1262,8 @@ class HistoryTrainer:
                                           if collected.learner_rows else None),
             "cuda_allocated_bytes": torch.cuda.memory_allocated(self.device) if self.device.type == "cuda" else 0,
             "cuda_reserved_bytes": torch.cuda.memory_reserved(self.device) if self.device.type == "cuda" else 0,
-            "cuda_inactive_split_peak_bytes": torch.cuda.memory_stats(self.device).get("inactive_split_bytes.all.peak", 0) if self.device.type == "cuda" else 0,
-            "cuda_allocation_retries": torch.cuda.memory_stats(self.device).get("num_alloc_retries", 0) if self.device.type == "cuda" else 0,
+            "cuda_inactive_split_peak_bytes": memory_stats.get("inactive_split_bytes.all.peak", 0),
+            "cuda_allocation_retries": memory_stats.get("num_alloc_retries", 0),
         }
         line.update(stats)
         self.extend_metrics(line)
