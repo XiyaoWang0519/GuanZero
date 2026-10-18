@@ -49,7 +49,8 @@ SWITCHABLE = frozenset({"rollout_paged_cache", "rollout_page_span", "rollout_tri
                         "rollout_graph_budget_mb", "rollout_graph_policy_budget_mb",
                         "batch_snapshot_encoder", "batch_snapshot_policies",
                         "learner_length_groups", "learner_chosen_response",
-                        "rollout_trim_cuda_cache", "rollout_prefill_learner_cache",
+                        "rollout_trim_cuda_cache", "rollout_trim_slack_mb",
+                        "rollout_prefill_learner_cache",
                         "profile_collection", "profile_learn"})
 
 
@@ -70,7 +71,9 @@ def parse_arm(text: str) -> tuple[str, dict]:
 
 def switch(trainer, origin, settings: dict) -> None:
     """Apply one arm's settings, relative to the resumed ``origin`` config, to a
-    live trainer without restarting environments."""
+    live trainer without restarting environments. Options read from
+    ``trainer.config`` at every update (the trim and its slack, learner and
+    profile options) need nothing beyond the config swap."""
     config = replace(origin, **settings)              # validated by __post_init__
     collector = trainer.collector
     if ((config.rollout_private_graphs or config.rollout_triton_cache)

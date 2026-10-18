@@ -1,10 +1,12 @@
-"""Allocator cache trim (``rollout_trim_cuda_cache``).
+"""Allocator cache trim (``rollout_trim_cuda_cache``, ``rollout_trim_slack_mb``).
 
 ``torch.cuda.empty_cache()`` after collect and after learn returns only free
 cached blocks to the driver: allocator timing, no numeric change. On CPU the
 trim is a no-op, so a run with it on must equal a run with it off bit for bit
 (rows, choices, metrics, weights, sampler). The CUDA variant checks the same on
-the device and that reserved memory does not grow across a trim.
+the device and that reserved memory does not grow across a trim. The slack
+gate only decides whether a trim runs; its decision is tested on CPU over a
+faked allocator and, on CUDA, with the same bitwise comparison.
 """
 import os
 
@@ -231,6 +233,124 @@ def test_trim_leaves_training_bitwise_unchanged_on_cuda(tmp_path, order):
             assert record_["reserved_before"] > 0
             assert record_["reserved_after"] <= record_["reserved_before"]
             assert record_["allocated_after"] == record_["allocated_before"]
+
+
+class FakeAllocator:
+    """torch.cuda's memory readers, synchronize and empty_cache over fixed
+    readings: empty_cache returns every cached free byte."""
+
+    def __init__(self, monkeypatch, reserved_mb: int, allocated_mb: int):
+        self.reserved, self.allocated = reserved_mb << 20, allocated_mb << 20
+        self.calls: list[str] = []
+        monkeypatch.setattr(torch.cuda, "synchronize", lambda device=None: self.calls.append("sync"))
+        monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device=None: self.reserved)
+        monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device=None: self.allocated)
+        monkeypatch.setattr(torch.cuda, "empty_cache", self.empty_cache)
+
+    def empty_cache(self):
+        self.calls.append("empty_cache")
+        self.reserved = self.allocated
+
+
+@pytest.mark.parametrize("slack_mb, skipped", [(0, False), (39, False), (40, True), (4096, True)])
+def test_slack_gate_skips_only_while_the_cached_free_bytes_fit(monkeypatch, slack_mb, skipped):
+    """reserved 100 MiB, allocated 60 MiB: 40 MiB of cached free blocks. The trim
+    is skipped iff that is at most the slack; 0 always trims (today's path)."""
+    from types import SimpleNamespace
+    fake = FakeAllocator(monkeypatch, 100, 60)
+    owner = SimpleNamespace(rollout_device=torch.device("cuda"), device=torch.device("cpu"))
+    trims: dict[str, dict] = {}
+    HistoryTrainer.trim_cuda_cache(owner, "after_collect", trims, slack_mb)
+    record = trims["after_collect"]
+    assert record["seconds"] >= 0.0
+    assert (record["reserved_before"], record["allocated_before"]) == (100 << 20, 60 << 20)
+    assert record["allocated_after"] == 60 << 20
+    if skipped:
+        assert record["skipped"] is True and record["reserved_after"] == 100 << 20
+        assert fake.calls == ["sync"] and fake.reserved == 100 << 20
+    else:
+        assert "skipped" not in record and record["reserved_after"] == 60 << 20
+        assert fake.calls == ["sync", "empty_cache", "sync"]
+
+
+def test_slack_gates_after_collect_and_after_learn_but_never_graphs_released(tmp_path,
+                                                                             monkeypatch):
+    trainer = HistoryTrainer(HistoryPPOConfig(**base(batch_snapshot_policies=True,
+                                                     rollout_trim_cuda_cache=True,
+                                                     rollout_trim_slack_mb=512)),
+                             tmp_path / "gated")
+    calls, original = [], trainer.trim_cuda_cache
+
+    def spy(point, trims, slack_mb=0):
+        calls.append((point, slack_mb))
+        original(point, trims, slack_mb)
+
+    monkeypatch.setattr(trainer, "trim_cuda_cache", spy)
+    monkeypatch.setattr(trainer.collector, "release_snapshot_graphs", lambda: 1)
+    line = trainer.update()
+    assert calls == [("graphs_released", 0), ("after_collect", 512), ("after_learn", 512)]
+    assert set(line["cuda_trim"]) == {"graphs_released"} | POINTS
+    for record_ in line["cuda_trim"].values():   # CPU: no device, nothing to gate
+        assert "skipped" not in record_ and record_["reserved_before"] == 0
+    manifest = (tmp_path / "gated" / "manifest.json").read_text()
+    assert '"rollout_trim_slack_mb": 512' in manifest
+
+
+def test_slack_defaults_off_and_is_a_resume_and_arm_setting(tmp_path):
+    from bench.history_arms import SWITCHABLE
+    from train.history_ppo import RESUME_OVERRIDES
+    assert HistoryPPOConfig().rollout_trim_slack_mb == 0
+    parser = build_parser()
+    assert config_from_args(parser.parse_args(["--output", "x"])).rollout_trim_slack_mb == 0
+    assert config_from_args(parser.parse_args(
+        ["--output", "x", "--rollout-trim-slack-mb", "2048"])).rollout_trim_slack_mb == 2048
+    with pytest.raises(ValueError):
+        HistoryPPOConfig(rollout_trim_slack_mb=-1)
+    assert "rollout_trim_slack_mb" in RESUME_OVERRIDES and "rollout_trim_slack_mb" in SWITCHABLE
+    assert parse_resume_overrides(["rollout_trim_slack_mb=2048"]) == {
+        "rollout_trim_slack_mb": 2048}
+    trainer = HistoryTrainer(HistoryPPOConfig(**base()), tmp_path / "start")
+    trainer.update()
+    resumed = HistoryTrainer(HistoryPPOConfig(updates=2), tmp_path / "resumed",
+                             resume=trainer.save(), resume_overrides=parse_resume_overrides(
+                                 ["rollout_trim_cuda_cache=true", "rollout_trim_slack_mb=2048"]))
+    assert resumed.config_changes[-1] == dict(
+        at_update=1, changes={"rollout_trim_cuda_cache": [None, True],
+                              "rollout_trim_slack_mb": [0, 2048]})
+
+
+def test_slack_gated_trim_leaves_training_bitwise_unchanged_on_cpu(tmp_path):
+    records = run_pair(tmp_path, "cpu",
+                       ["batch_snapshot_policies=true", "rollout_trim_cuda_cache=true",
+                        "rollout_trim_slack_mb=2048"],
+                       ["batch_snapshot_policies=true", "rollout_trim_cuda_cache=false"])
+    assert_identical(records)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA allocator cache trim")
+@pytest.mark.parametrize("slack_mb", [1, 1 << 20], ids=["small-slack", "always-skip"])
+def test_slack_gated_trim_leaves_training_bitwise_unchanged_on_cuda(tmp_path, slack_mb):
+    records = run_pair(tmp_path, "cuda",
+                       ["batch_snapshot_policies=true", "rollout_trim_cuda_cache=true",
+                        f"rollout_trim_slack_mb={slack_mb}"],
+                       ["batch_snapshot_policies=true", "rollout_trim_cuda_cache=false"],
+                       rollout_device="cuda")
+    for line in records["on"]["lines"]:
+        print(f"\nupdate {line['update']} gated trims: " + ", ".join(
+            f"{point} {'skipped' if r.get('skipped') else 'trimmed'} free "
+            f"{(r['reserved_before'] - r['allocated_before']) / 2**20:.1f} MiB"
+            for point, r in line["cuda_trim"].items()))
+    assert_identical(records)
+    for line in records["on"]["lines"]:
+        for point in POINTS:
+            record_ = line["cuda_trim"][point]
+            free = record_["reserved_before"] - record_["allocated_before"]
+            assert bool(record_.get("skipped")) == (free <= slack_mb << 20), point
+            assert record_["reserved_after"] <= record_["reserved_before"]
+            assert record_["allocated_after"] == record_["allocated_before"]
+    if slack_mb == 1 << 20:
+        assert all(line["cuda_trim"][point].get("skipped")
+                   for line in records["on"]["lines"] for point in POINTS)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA private graphs")

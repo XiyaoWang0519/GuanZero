@@ -62,6 +62,25 @@ reserved/allocated bytes before and after each trim and its seconds
 (bitwise apart from process-wide allocator counters) and a 30-update check kept
 nvidia-smi flat at 0.12 s per update
 ([report](reports/history-snapshot-batching-2026-09-28.md)).
+`rollout_trim_slack_mb` (`--rollout-trim-slack-mb N`, default 0; resume-settable,
+recorded, and switchable between `bench.history_arms` arms) gates the
+after-collect and after-learn trims: with N > 0 a trim is skipped while the
+allocator's cached free bytes (reserved - allocated) are at most N MiB, so the
+next phase reuses those blocks instead of allocating them again; the
+`cuda_trim` record then carries `skipped: true` and its readings. The
+`graphs_released` trim never skips, and 0 keeps the unconditional trim.
+Allocator timing only: CPU tests check the gate's decision over a faked
+allocator and bitwise-unchanged training; the CUDA bitwise test exists but has
+not run (October 18, 2026). Expected saving, unmeasured: up to the historical
+0.12-0.145 s per update of trims plus the re-allocation they cause, at the cost
+of up to N MiB more reserved memory per rank. A/B it in the production
+rank->GPU layout (`bench.history_arms --spread-gpus`) and watch whole-card
+memory. Each manifest's `inference` block also records the process's CPU
+threading (`torch_num_threads`, `torch_interop_threads`, `omp_num_threads` and
+`mkl_num_threads` from the environment, `cpu_affinity`); `--torch-threads 0`
+leaves torch's default in every rank, sized from the cores the process sees
+rather than divided among ranks, so check it against the ranks per host and
+the CPU quota.
 `bench.history_stack` alternates dense/SDPA/KV cases with fixed learning rules
 and records full-update throughput/memory. CPU mode requires `--collect-only`
 and charges a learner-cache rebuild each chunk unless explicitly disabled for

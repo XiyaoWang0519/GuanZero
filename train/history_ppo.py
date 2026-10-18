@@ -148,6 +148,11 @@ class HistoryPPOConfig:
     # private graphs are captured, so nothing else ever trims and each process's
     # reserved memory only ratchets upward.
     rollout_trim_cuda_cache: bool | None = None
+    # With the trim on: skip the after-collect / after-learn trims while the
+    # cached free bytes (reserved - allocated) are at most this many MiB, so
+    # the next phase reuses the cache instead of re-allocating it. 0 trims
+    # always. Allocator timing only; the graphs_released trim never skips.
+    rollout_trim_slack_mb: int = 0
     rollout_device: str | None = None  # None shares the learner device
     # learner
     lr: float = 3e-4
@@ -201,6 +206,8 @@ class HistoryPPOConfig:
             raise ValueError('rollout Triton minimum batch must be positive')
         if self.profile_collection_warmup < 0:
             raise ValueError('profile_collection_warmup must not be negative')
+        if self.rollout_trim_slack_mb < 0:
+            raise ValueError('rollout_trim_slack_mb must not be negative')
         parse_arm_schedule(self.batch_snapshot_policies_schedule)
         if (self.batch_snapshot_policies or self.batch_snapshot_policies_schedule) and (
                 self.window or self.response_mode == "explicit"):
@@ -364,7 +371,7 @@ def parse_arm_schedule(schedule: str) -> list[tuple[int, bool]]:
 # processes and threads, checkpoint cadence and graph budgets (the per-update batch
 # stays num_envs x world size), the diagnostic collection profile (timing only),
 # merged snapshot inference and encoding (tier 2: frozen snapshot seats' float-order noise only),
-# the allocator cache trim (allocator timing only), the public KV cache storage
+# the allocator cache trim and its slack gate (allocator timing only), the public KV cache storage
 # (Triton copies: same attention inputs; paged pool: bitwise on CPU, but SDPA reads
 # strided K/V views, so tier 2 on CUDA for learner seats too until the CUDA gate says
 # otherwise; private graphs replay the same kernels; page-padded spans and the
@@ -379,7 +386,8 @@ RESUME_OVERRIDES = frozenset({"num_envs", "num_threads", "minibatch_matches", "t
                               "rollout_triton_min_batch", "snapshot_updates",
                               "profile_collection", "profile_collection_warmup",
                               "batch_snapshot_policies", "batch_snapshot_policies_schedule",
-                              "rollout_trim_cuda_cache", "rollout_paged_cache",
+                              "rollout_trim_cuda_cache", "rollout_trim_slack_mb",
+                              "rollout_paged_cache",
                               "rollout_triton_cache", "batch_snapshot_encoder",
                               "learner_length_groups", "learner_chosen_response",
                               "rollout_page_span", "rollout_prefill_learner_cache",
@@ -632,12 +640,14 @@ class HistoryTrainer:
             return self.snapshot_batching()
         return bool(self.config.rollout_trim_cuda_cache)
 
-    def trim_cuda_cache(self, point: str, trims: dict[str, dict]) -> None:
+    def trim_cuda_cache(self, point: str, trims: dict[str, dict], slack_mb: int = 0) -> None:
         """``torch.cuda.empty_cache()`` with reserved/allocated bytes before and
         after and the seconds it took, recorded under ``trims[point]``. Only free
         cached blocks are returned to the driver; live tensors, KV caches and
         captured graphs are untouched, so nothing computed changes. A no-op
-        (zero bytes) without CUDA."""
+        (zero bytes) without CUDA. With ``slack_mb`` > 0 the trim is skipped
+        while the cached free bytes (reserved - allocated) are at most that many
+        MiB; the record then has ``skipped=True`` and after = before readings."""
         devices = [d for d in (self.rollout_device, self.device) if d.type == "cuda"]
         begin = time.perf_counter()
         record = dict(reserved_before=0, allocated_before=0, reserved_after=0,
@@ -647,10 +657,15 @@ class HistoryTrainer:
             torch.cuda.synchronize(device)
             record.update(reserved_before=torch.cuda.memory_reserved(device),
                           allocated_before=torch.cuda.memory_allocated(device))
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize(device)
-            record.update(reserved_after=torch.cuda.memory_reserved(device),
-                          allocated_after=torch.cuda.memory_allocated(device))
+            if slack_mb > 0 and (record["reserved_before"] - record["allocated_before"]
+                                 <= slack_mb << 20):
+                record.update(skipped=True, reserved_after=record["reserved_before"],
+                              allocated_after=record["allocated_before"])
+            else:
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize(device)
+                record.update(reserved_after=torch.cuda.memory_reserved(device),
+                              allocated_after=torch.cuda.memory_allocated(device))
         record["seconds"] = time.perf_counter() - begin
         trims[point] = record
 
@@ -791,8 +806,11 @@ class HistoryTrainer:
                           "batch_snapshot_policies_schedule":
                               self.config.batch_snapshot_policies_schedule,
                           "rollout_trim_cuda_cache": self.config.rollout_trim_cuda_cache,
+                          "rollout_trim_slack_mb": self.config.rollout_trim_slack_mb,
                           "cuda_cache_trim": "torch.cuda.empty_cache() after collect and after "
-                                             "learn (None: with the merged-snapshot arm); "
+                                             "learn (None: with the merged-snapshot arm), "
+                                             "skipped while reserved - allocated <= "
+                                             "rollout_trim_slack_mb MiB (0: never skipped); "
                                              "allocator timing only",
                           "snapshot_batching": "merged head over stacked snapshot weights; "
                                                "per-identity public KV cache; snapshot seats "
@@ -1176,8 +1194,10 @@ class HistoryTrainer:
         # live set rather than on top of collection's freed variable-shape
         # blocks; after learn, so collection does not sit on the learner's
         # activation cache. Switching the merged arm on releases the snapshot
-        # private graphs; their pools only return to the driver on a trim.
+        # private graphs; their pools only return to the driver on a trim, which
+        # is therefore never gated. rollout_trim_slack_mb gates the other two.
         trim = self.cuda_cache_trimmed()
+        slack_mb = self.config.rollout_trim_slack_mb
         trims: dict[str, dict] = {}
         if trim and self.collector.batch_snapshot_policies:
             if self.collector.release_snapshot_graphs():
@@ -1190,7 +1210,7 @@ class HistoryTrainer:
         t1 = time.perf_counter()
         collection_cache = self.collector.cache_metrics()
         if trim:
-            self.trim_cuda_cache("after_collect", trims)
+            self.trim_cuda_cache("after_collect", trims, slack_mb)
         t1_learn = time.perf_counter()
         lr_scale = self.apply_lr_schedule()
         with self.torch_profile("learn"):
@@ -1199,7 +1219,7 @@ class HistoryTrainer:
             torch.cuda.synchronize(self.device)
         t2 = time.perf_counter()
         if trim:
-            self.trim_cuda_cache("after_learn", trims)
+            self.trim_cuda_cache("after_learn", trims, slack_mb)
         cited = self.buffer.next_iteration()
         pruned = self.store.prune(cited)
         self.progress["updates"] += 1
@@ -1457,6 +1477,10 @@ def build_parser() -> argparse.ArgumentParser:
                         metavar="auto|true|false",
                         help="torch.cuda.empty_cache() after collect and after learn "
                              "(allocator timing only); auto follows the merged-snapshot arm")
+    parser.add_argument("--rollout-trim-slack-mb", type=int, default=0,
+                        help="with the trim on: skip the after-collect/after-learn trim while "
+                             "reserved - allocated CUDA memory is at most this many MiB "
+                             "(0: always trim; allocator timing only)")
     parser.add_argument("--rollout-prefill-learner-cache", action="store_true",
                         help="rebuild the learner's public KV cache for all current matches "
                              "at the start of each collection (FP32; learner seats' "
