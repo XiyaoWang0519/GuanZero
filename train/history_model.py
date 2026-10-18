@@ -450,12 +450,13 @@ _POSITION_TABLES: dict[tuple[int, torch.device, torch.dtype], Tensor] = {}
 def position_table(length: int, width: int, device, dtype) -> Tensor:
     """``sinusoidal(length, width, device, dtype)`` as a read-only slice of a cached table."""
     device = torch.device(device)
+    if device.type == "cuda" and torch.cuda.is_current_stream_capturing():
+        # A graph must own its table: a cached one may be replaced (and its
+        # storage reused) after capture, and must never live in a graph pool.
+        return sinusoidal(length, width, device, dtype)
     key = (int(width), device, dtype)
     table = _POSITION_TABLES.get(key)
     if table is None or len(table) < length:
-        if device.type == "cuda" and torch.cuda.is_current_stream_capturing():
-            # Never let a cached table live in a CUDA graph's private pool.
-            return sinusoidal(length, width, device, dtype)
         size = max(int(length), 2 * len(table) if table is not None else 256)
         with torch.inference_mode(False):   # a normal tensor, usable in autograd later
             table = sinusoidal(size, width, device, dtype)

@@ -53,6 +53,11 @@ def fixture(matches=64, decisions=128, tokens=600, candidates=12):
     return store, buffer
 
 
+# Host-planned fields added on October 18, 2026 (training_batch uploads them);
+# a baseline from before leaves them unset and derives them on the device.
+PLANNED_FIELDS = frozenset({"candidate_rows", "next_weight", "next_positions"})
+
+
 def assert_equal(left, right):
     if isinstance(left, torch.Tensor):
         assert left.dtype == right.dtype and torch.equal(left, right)
@@ -60,6 +65,8 @@ def assert_equal(left, right):
         np.testing.assert_array_equal(left, right)
     elif is_dataclass(left):
         for field in fields(left):
+            if field.name in PLANNED_FIELDS and getattr(right, field.name, None) in (None, 0):
+                continue
             assert_equal(getattr(left, field.name), getattr(right, field.name))
     elif isinstance(left, dict):
         assert list(left) == list(right)
