@@ -652,7 +652,12 @@ class HistoryCollector:
     ``collect`` in one batched pass per prefill chunk; without it each stream
     is rebuilt by the first step whose learner row reads it, in passes of its
     own. Same function of the same tokens in different batches: FP32
-    reduction-order noise on learner seats (tier 2).
+    reduction-order noise on learner seats (tier 2). ``span_groups`` (opt-in,
+    > 1, with ``paged_cache``) runs every cache append's attention, and the
+    learner's private attention over its memory (one decision per stream,
+    batched private attention), in up to that many end-sorted span groups,
+    each padded only to its own longest stream
+    (``train.history_paged_cache.span_plan``); tier 2 on every seat.
     """
 
     def __init__(self, env: Any, actor: HistoryActor, store: MatchEventStore,
@@ -673,7 +678,8 @@ class HistoryCollector:
                  page_span: bool = False,
                  round_streams: bool = False,
                  row_style: Callable[[int, int], int] | None = None,
-                 prefill_learner_cache: bool = False) -> None:
+                 prefill_learner_cache: bool = False,
+                 span_groups: int = 1) -> None:
         self.env = env
         self.actor = actor
         self.store = store
@@ -695,6 +701,9 @@ class HistoryCollector:
             raise ValueError("merged snapshot encoding requires the paged KV cache")
         if page_span and (not paged_cache or private_graphs):
             raise ValueError("page-padded spans require the paged KV cache and no private graphs")
+        if span_groups < 1 or (span_groups > 1 and (not paged_cache or private_graphs)):
+            raise ValueError("span groups must be positive; more than one requires the paged "
+                             "KV cache and no private graphs")
         if triton_min_batch < 1:
             raise ValueError("Triton minimum batch must be positive")
         if private_graph_budget_mb < 1 or private_graph_policy_budget_mb < 1:
@@ -727,6 +736,7 @@ class HistoryCollector:
         self.learner_pool = None        # the learner's own pages, returned before each learn
         self.batch_snapshot_encoder = bool(batch_snapshot_encoder)
         self.page_span = bool(page_span)
+        self.span_groups = int(span_groups)
         self.batch_snapshot_policies = bool(batch_snapshot_policies)
         self.snapshot_heads = None      # stacked snapshot heads, created on first merged step
         if self.batch_snapshot_policies:
@@ -832,7 +842,8 @@ class HistoryCollector:
                 name = "learner_pool" if int(identity) == LEARNER else "kv_pool"
                 if getattr(self, name) is None:
                     setattr(self, name, KVPagePool.for_actor(actor))
-                cache = PagedHistoryCache(actor, getattr(self, name), page_span=self.page_span)
+                cache = PagedHistoryCache(actor, getattr(self, name), page_span=self.page_span,
+                                          span_groups=self.span_groups)
             elif self.triton_cache:
                 from train.history_triton_cache import TritonHistoryCache
                 cache = TritonHistoryCache(actor, min_batch=self.triton_min_batch)
@@ -910,7 +921,8 @@ class HistoryCollector:
                         uploaded_prefix: torch.Tensor, prefix: np.ndarray
                         ) -> tuple[StreamBatch, torch.Tensor | None]:
         """A group's public streams: ``(metadata, encoded)`` through the KV cache,
-        or the raw ``StreamBatch`` and ``None`` without it."""
+        or the raw ``StreamBatch`` and ``None`` without it. Learner rows of one
+        decision per stream read a ``RolloutMemory`` when span groups are on."""
         if not self.kv_cache:
             return StreamBatch.from_streams(group.streams, self.device), None
         lengths_hint = {}
@@ -922,8 +934,11 @@ class HistoryCollector:
             if host_lengths == tuple(stream.prefix for stream in group.streams):
                 lengths_hint = dict(preuploaded_lengths=uploaded_prefix,
                                     host_lengths=host_lengths)
-        return self._cache(group.identity, actor).encode(group.keys, group.streams,
-                                                         **lengths_hint)
+        cache = self._cache(group.identity, actor)
+        if (self.paged_cache and group.identity == LEARNER and group.one_decision_per_stream
+                and self.span_groups > 1 and actor.batched_private_attention):
+            return cache.encode_rollout(group.keys, group.streams, **lengths_hint)
+        return cache.encode(group.keys, group.streams, **lengths_hint)
 
     @torch.no_grad()
     def _merged_snapshot_step(self, plan: _StepPlan, fields: dict[str, torch.Tensor],

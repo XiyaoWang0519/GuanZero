@@ -58,7 +58,7 @@ from torch.nn import functional as F
 
 from train.history_attention import finish
 from train.history_inference import BatchedHistoryCache, bucket
-from train.history_model import HistoryActor, PublicStream
+from train.history_model import HistoryActor, PublicStream, RolloutMemory, StreamBatch
 from train.history_transfers import upload_arrays
 from train.logs import TOKEN_DIM
 
@@ -187,15 +187,79 @@ class PagedEntry:
     pages: list[int] = field(default_factory=list)
 
 
+def span_plan(spans: np.ndarray, groups: int, min_share: float = 0.0, min_rows: int = 0
+              ) -> list[tuple[int, int, int]]:
+    """Contiguous groups ``(begin, end, span)`` of a batch sorted by length.
+
+    ``spans[i]`` (non-increasing) is the padded span row ``i`` alone would
+    need; a group pads every member to its first member's span. Chooses at
+    most ``groups`` groups minimising the padded rows ``sum n_g * span_g``,
+    by dynamic programming over the points where the span drops. A group is
+    added only if it saves at least ``min_share`` of the one-group rows and
+    ``min_rows`` rows over the best plan with one group fewer.
+    """
+    n = len(spans)
+    starts = np.flatnonzero(np.r_[True, spans[1:] != spans[:-1]]) if n else np.zeros(1, np.int64)
+    if groups < 2 or len(starts) < 2:
+        return [(0, n, int(spans[0]))]
+    bounds = np.r_[starts, n].astype(np.int64)
+    m = len(starts)
+    # cost[i, j]: rows of one group over [bounds[i], bounds[j]), i < j.
+    cost = ((bounds[None, :] - bounds[:, None]) * np.r_[spans[starts], 0][:, None]).astype(np.float64)
+    cost[np.tril_indices(m + 1)] = np.inf
+    best = np.full(m + 1, np.inf)
+    best[0] = 0.0
+    totals, choices = [], []
+    for _ in range(min(groups, m)):
+        candidates = best[:, None] + cost
+        choice = candidates.argmin(0)
+        best = candidates[choice, np.arange(m + 1)]
+        totals.append(best[m])
+        choices.append(choice)
+    chosen = 1
+    for g in range(2, len(totals) + 1):
+        saving = totals[chosen - 1] - totals[g - 1]
+        if saving > 0 and saving >= min_share * totals[0] and saving >= min_rows:
+            chosen = g
+    plan, j = [], m
+    for g in range(chosen, 0, -1):
+        i = int(choices[g - 1][j])
+        plan.append((int(bounds[i]), int(bounds[j]), int(spans[bounds[i]])))
+        j = i
+    return plan[::-1]
+
+
+# Span groups (``PagedHistoryCache(span_groups=G)``): an extra group must save
+# this share of the one-group padded rows, and this many rows, to be worth
+# its extra gather and SDPA launches per layer.
+SPAN_GROUP_MIN_SHARE = 0.1
+SPAN_GROUP_MIN_ROWS = 2048
+
+
 class PagedHistoryCache(BatchedHistoryCache):
-    """``BatchedHistoryCache`` over a shared ``KVPagePool`` (see the module notes)."""
+    """``BatchedHistoryCache`` over a shared ``KVPagePool`` (see the module notes).
+
+    ``span_groups`` (opt-in, > 1): every append sorts its streams by end and
+    runs the key/value gather and SDPA per span group (``span_plan``), each
+    padded only to its own longest stream; token-wise layers still run once
+    over the batch, whose order is invisible to the pool. ``encode_rollout``
+    groups the returned memory the same way. FP32 reduction shapes change
+    (acceptance tier 2); with one group everything is as without it.
+    """
 
     def __init__(self, actor: HistoryActor, pool: KVPagePool | None = None,
-                 chunk_size: int = 128, *, page_span: bool = False) -> None:
+                 chunk_size: int = 128, *, page_span: bool = False, span_groups: int = 1) -> None:
         super().__init__(actor, chunk_size)
         self.pool = pool if pool is not None else KVPagePool.for_actor(actor)
         self.pool.check(actor)
         self.page_span = page_span
+        if span_groups < 1:
+            raise ValueError("span groups must be positive")
+        self.span_groups = int(span_groups)
+        # Host counters of attention key rows: gathered (padded) and valid, for
+        # appends and returned memory; and how many appends ran in groups.
+        self.span_rows = dict(append=0, append_valid=0, memory=0, memory_valid=0,
+                              grouped_appends=0)
 
     def _span(self, longest: int) -> int:
         """Attention keys and memory positions to materialize for ``longest``."""
@@ -206,6 +270,19 @@ class PagedHistoryCache(BatchedHistoryCache):
 
     def _memory_size(self, longest: int) -> int:
         return self._span(longest)
+
+    def _groups(self, ends: np.ndarray) -> tuple[np.ndarray | None, list[tuple[int, int, int]]]:
+        """``(order, plan)``: the batch order (None: unchanged) and its span groups
+        ``(begin, end, span)`` in that order; one group without ``span_groups``."""
+        if self.span_groups < 2 or len(ends) < 2:
+            return None, [(0, len(ends), self._span(int(ends.max())))]
+        order = np.argsort(-ends, kind="stable")
+        spans = {int(end): self._span(int(end)) for end in np.unique(ends)}
+        plan = span_plan(np.asarray([spans[int(end)] for end in ends[order]], np.int64),
+                         self.span_groups, SPAN_GROUP_MIN_SHARE, SPAN_GROUP_MIN_ROWS)
+        if len(plan) == 1:          # keep the batch exactly as it came
+            return None, [(0, len(ends), plan[0][2])]
+        return order, plan
 
     # -- storage ------------------------------------------------------------
 
@@ -276,20 +353,49 @@ class PagedHistoryCache(BatchedHistoryCache):
 
     # -- encoding -----------------------------------------------------------
 
-    def _gather_pages(self, source: Tensor, entries: list[PagedEntry], size: int) -> Tensor:
-        """``[len(entries), size, features]`` rows of ``source`` (a ``[rows, features]``
-        pool tensor) at each entry's positions, gathered one whole page at a time.
-        Rows past an entry's length read zeros: page 0 or the zeroed tail of its
-        last page."""
+    def _gather_table(self, source: Tensor, table: Tensor, size: int) -> Tensor:
+        """``[len(table), size, features]`` rows of ``source`` (a ``[rows, features]``
+        pool tensor) at the positions of each uploaded page-table row, gathered
+        one whole page at a time. Rows past an entry's length read zeros: page 0
+        or the zeroed tail of its last page."""
         P = self.pool.page_tokens
-        table, = upload_arrays((self._page_table(entries, size),), self.pool.device)
         features = source.shape[1]
         gathered = torch.index_select(source.view(-1, P * features), 0, table.view(-1))
-        gathered = gathered.view(len(entries), -1, features)
+        gathered = gathered.view(len(table), -1, features)
         return gathered if gathered.shape[1] == size else gathered[:, :size].contiguous()
 
     def _gather_memory(self, entries: list[PagedEntry], size: int) -> Tensor:
-        return self._gather_pages(self.pool.memory, entries, size)
+        table, = upload_arrays((self._page_table(entries, size),), self.pool.device)
+        self.span_rows["memory"] += len(entries) * size
+        self.span_rows["memory_valid"] += sum(entry.length for entry in entries)
+        return self._gather_table(self.pool.memory, table, size)
+
+    @torch.no_grad()
+    def encode_rollout(self, keys: list[tuple[int, int]], streams: list[PublicStream], *,
+                       preuploaded_lengths: Tensor | None = None,
+                       host_lengths: tuple[int, ...] | None = None
+                       ) -> tuple[StreamBatch, RolloutMemory]:
+        """``encode`` for one decision per stream (decision ``i`` reads stream
+        ``i``), returned as a ``RolloutMemory``: the streams in up to
+        ``span_groups`` end-sorted span groups, each padded only to its own
+        longest stream. With one group the memory is exactly ``encode``'s."""
+        targets = self._targets(keys, streams, preuploaded_lengths, host_lengths)
+        entries = self._extend(keys, streams, targets)
+        source, projected = self.pool.memory, False
+        lengths = np.asarray(targets, np.int64)
+        order, plan = self._groups(lengths)
+        ordered = entries if order is None else [entries[i] for i in order]
+        tables = [self._page_table(ordered[a:b], span) for a, b, span in plan]
+        rows = [] if order is None else [order[a:b] for a, b, _ in plan]
+        uploaded = upload_arrays((*tables, *rows), self.pool.device)
+        groups = []
+        for index, (a, b, span) in enumerate(plan):
+            groups.append((None if order is None else uploaded[len(plan) + index],
+                           self._gather_table(source, uploaded[index], span)))
+            self.span_rows["memory"] += (b - a) * span
+        self.span_rows["memory_valid"] += int(lengths.sum())
+        return (self._metadata(targets, preuploaded_lengths, source.device),
+                RolloutMemory(groups, projected))
 
     @staticmethod
     def _mask(allowed: Tensor, dtype: torch.dtype) -> Tensor:
@@ -298,6 +404,37 @@ class PagedHistoryCache(BatchedHistoryCache):
         mask = torch.full(allowed.shape, float("-inf"), dtype=dtype, device=allowed.device)
         return mask.masked_fill_(allowed, 0.0)[:, None]
 
+    def _attention_plan(self, plan: list[tuple[int, int, int]], positions: Tensor,
+                        end_positions: Tensor, table: Tensor, key_positions: Tensor,
+                        dtype: torch.dtype) -> list[tuple[int, int, int, Tensor, Tensor]]:
+        """Per span group ``(begin, end, span, rows, mask)``: the pool rows to
+        gather and the additive mask, built once per append for every layer."""
+        groups = []
+        for a, b, span in plan:
+            keys = key_positions[:span]
+            mask = self._mask((keys[None, None] <= positions[a:b, :, None])
+                              & (keys[None, None] < end_positions[a:b, None, None]), dtype)
+            rows = self._rows(table[a:b], end_positions[a:b], keys).view(-1)
+            groups.append((a, b, span, rows, mask))
+            self.span_rows["append"] += (b - a) * span
+        if len(groups) > 1:
+            self.span_rows["grouped_appends"] += 1
+        return groups
+
+    @staticmethod
+    def _attend(q: Tensor, kv: Tensor, groups: list[tuple[int, int, int, Tensor, Tensor]]
+                ) -> Tensor:
+        """SDPA of queries ``q`` ``[batch, heads, width, depth]`` over the keys and
+        values gathered from pool rows ``kv`` per span group, in batch order."""
+        heads, depth = kv.shape[2], kv.shape[3]
+        parts = []
+        for a, b, span, rows, mask in groups:
+            # [n * span, 2, heads, depth] -> keys/values [n, heads, span, depth]
+            packed = torch.index_select(kv, 0, rows).view(b - a, span, 2, heads, depth).permute(2, 0, 3, 1, 4)
+            parts.append(F.scaled_dot_product_attention(q[a:b], packed[0], packed[1],
+                                                        attn_mask=mask, dropout_p=0.0))
+        return parts[0] if len(parts) == 1 else torch.cat(parts)
+
     def _append(self, entries: list[PagedEntry], counts: list[int]) -> None:
         actor, cfg, pool = self.actor, self.actor.config, self.pool
         device, dtype = actor.bos.device, actor.bos.dtype
@@ -305,8 +442,14 @@ class PagedHistoryCache(BatchedHistoryCache):
         starts = np.asarray([e.length for e in entries], np.int64)
         count_array = np.asarray(counts, np.int64)
         ends = starts + count_array
+        order, plan = self._groups(ends)
+        if order is not None:       # end-sorted; outputs go to the pool by row
+            entries = [entries[i] for i in order]
+            counts = [counts[i] for i in order]
+            starts, count_array, ends = starts[order], count_array[order], ends[order]
+        self.span_rows["append_valid"] += int(ends.sum())
         capacity = bucket(int(ends.max()))
-        span = self._span(int(ends.max()))
+        span = plan[0][2]
         P = pool.page_tokens
         new_pages = self._allocate(entries, ends)
         # Upload only new raw events, not the complete historical prefix.
@@ -342,10 +485,8 @@ class PagedHistoryCache(BatchedHistoryCache):
         position_table, key_positions = self._position_buffers(capacity)
         positions = start_positions[:, None] + key_positions[:width]
         state = state + position_table[positions.clamp(max=capacity - 1)]
-        key_positions = key_positions[:span]
-        mask = self._mask((key_positions[None, None] <= positions[:, :, None])
-                          & (key_positions[None, None] < end_positions[:, None, None]), dtype)
-        rows = self._rows(table_d, end_positions, key_positions).view(-1)
+        groups = self._attention_plan(plan, positions, end_positions, table_d, key_positions,
+                                      dtype)
         heads, depth = cfg.heads, cfg.width // cfg.heads
         for layer_index, layer in enumerate(actor.stream.layers):
             attention = layer.self_attn
@@ -355,11 +496,7 @@ class PagedHistoryCache(BatchedHistoryCache):
             q = qkv[:, :, 0].transpose(1, 2)
             kv = pool.kv[layer_index]
             kv[write_rows_d] = qkv[write_batch_d, write_slot_d, 1:]
-            # [batch * span, 2, heads, depth] -> keys/values [batch, heads, span, depth]
-            packed = torch.index_select(kv, 0, rows).view(batch, span, 2, heads, depth).permute(2, 0, 3, 1, 4)
-            attended = F.scaled_dot_product_attention(q, packed[0], packed[1],
-                                                      attn_mask=mask, dropout_p=0.0)
-            state = finish(layer, state, attended)
+            state = finish(layer, state, self._attend(q, kv, groups))
         if actor.stream.norm is not None:
             state = actor.stream.norm(state)
         state = actor.stream_norm(state)
@@ -421,11 +558,19 @@ def _merged_append(cache: PagedHistoryCache, entries: list[PagedEntry], counts: 
     slot ``s`` sits at ``s * M + rank``, ``M`` the most rows of one slot, and
     every layer is one ``baddbmm`` against the stacked ``[slot, in, out]``
     weights. Padding rows are zero tokens whose outputs are never written.
-    Attention runs over the real rows only.
+    Attention runs over the real rows only, per span group with
+    ``cache.span_groups`` (the entries then sorted by end before the slot
+    layout is laid out).
     """
     from train.history_snapshot_batch import _linear, _norm
     pool, tensors, cfg, eps = cache.pool, heads.tensors, heads.config, heads.eps
     device = pool.device
+    order, plan = cache._groups(np.asarray([e.length for e in entries], np.int64)
+                                + np.asarray(counts, np.int64))
+    if order is not None:
+        entries = [entries[i] for i in order]
+        counts = [counts[i] for i in order]
+        slots = [slots[i] for i in order]
     batch, width = len(entries), max(counts)
     S = max(slots) + 1
     rank = np.zeros(batch, np.int64)
@@ -439,8 +584,9 @@ def _merged_append(cache: PagedHistoryCache, entries: list[PagedEntry], counts: 
     starts = np.asarray([e.length for e in entries], np.int64)
     count_array = np.asarray(counts, np.int64)
     ends = starts + count_array
+    cache.span_rows["append_valid"] += int(ends.sum())
     capacity = bucket(int(ends.max()))
-    span = cache._span(int(ends.max()))
+    span = plan[0][2]
     P = pool.page_tokens
     new_pages = cache._allocate(entries, ends)
     tokens = np.zeros((R, width, TOKEN_DIM), np.uint8)
@@ -483,19 +629,15 @@ def _merged_append(cache: PagedHistoryCache, entries: list[PagedEntry], counts: 
     state = state + position_table[(starts_pad_d[:, None] + key_positions[:width])
                                    .clamp(max=capacity - 1)]
     positions = start_positions[:, None] + key_positions[:width]
-    key_positions = key_positions[:span]
-    mask = cache._mask((key_positions[None, None] <= positions[:, :, None])
-                       & (key_positions[None, None] < end_positions[:, None, None]), state.dtype)
-    rows = cache._rows(table_d, end_positions, key_positions).view(-1)
+    groups = cache._attention_plan(plan, positions, end_positions, table_d, key_positions,
+                                   state.dtype)
     for index in range(cfg.layers):
         hidden = _norm(flat(state), tensors, f"e{index}_n1", S, eps)
         qkv = _linear(hidden, tensors, f"e{index}_in", S).view(R, width, 3, H, depth)
         kv = pool.kv[index]
         kv[write_rows_d] = qkv[write_pad_d, write_slot_d, 1:]
         q = qkv[:, :, 0][pad_d].transpose(1, 2)        # the real rows' queries only
-        packed = torch.index_select(kv, 0, rows).view(batch, span, 2, H, depth).permute(2, 0, 3, 1, 4)
-        attended = F.scaled_dot_product_attention(q, packed[0], packed[1],
-                                                  attn_mask=mask, dropout_p=0.0)
+        attended = cache._attend(q, kv, groups)
         attended = state.new_zeros(R, width, W).index_copy_(
             0, pad_d, attended.transpose(1, 2).reshape(batch, width, W))
         state = state + _linear(flat(attended), tensors, f"e{index}_o", S).view(R, width, W)

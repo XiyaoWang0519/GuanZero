@@ -128,6 +128,11 @@ class HistoryPPOConfig:
     # stream by stream as learner rows first read them. Tier 2 (learner seats'
     # FP32 reduction order: the same tokens are encoded in different batches).
     rollout_prefill_learner_cache: bool = False
+    # Paged cache: run each append's key/value gather and attention, and the
+    # learner's private attention over its memory, in up to N end-sorted span
+    # groups, each padded only to its own longest stream
+    # (train/history_paged_cache.span_plan). 1 is off. Tier 2 (FP32 shapes change).
+    rollout_span_groups: int = 1
     profile_collection: bool = False   # synchronized phase timings; diagnostic only
     profile_learn: bool = False        # the same for the PPO update's phases
     profile_collection_warmup: int = 0  # unprofiled updates of this process before profiling
@@ -214,6 +219,10 @@ class HistoryPPOConfig:
         if self.rollout_page_span and (not self.rollout_paged_cache
                                        or self.rollout_private_graphs):
             raise ValueError('rollout_page_span requires rollout_paged_cache and no private graphs')
+        if not 1 <= self.rollout_span_groups <= 4 or (self.rollout_span_groups > 1 and (
+                not self.rollout_paged_cache or self.rollout_private_graphs)):
+            raise ValueError('rollout_span_groups must be 1-4; more than one requires '
+                             'rollout_paged_cache and no private graphs')
         if self.rollout_prefill_learner_cache and (not self.rollout_kv_cache
                                                    or self.habit_view == "round"):
             raise ValueError('rollout_prefill_learner_cache requires the match-keyed '
@@ -367,8 +376,8 @@ def parse_arm_schedule(schedule: str) -> list[tuple[int, bool]]:
 # the allocator cache trim (allocator timing only), the public KV cache storage
 # (Triton copies: same attention inputs; paged pool: bitwise on CPU, but SDPA reads
 # strided K/V views, so tier 2 on CUDA for learner seats too until the CUDA gate says
-# otherwise; private graphs replay the same kernels; page-padded spans and the
-# batched learner cache prefill are tier 2), the learn-phase profile (timing only),
+# otherwise; private graphs replay the same kernels; page-padded spans, span
+# groups and the batched learner cache prefill are tier 2), the learn-phase profile (timing only),
 # the learner's length-grouped
 # encode and chosen-only auxiliary response head (tier 2: same loss, learner
 # float-order noise), plus snapshot_updates,
@@ -383,6 +392,7 @@ RESUME_OVERRIDES = frozenset({"num_envs", "num_threads", "minibatch_matches", "t
                               "rollout_triton_cache", "batch_snapshot_encoder",
                               "learner_length_groups", "learner_chosen_response",
                               "rollout_page_span", "rollout_prefill_learner_cache",
+                              "rollout_span_groups",
                               "profile_learn",
                               "aux_heads", "aux_coef", "aux_warmup_updates",
                               "rollout_private_graphs",
@@ -612,7 +622,8 @@ class HistoryTrainer:
                                 round_streams=config.habit_round,
                                 row_style=(self.population.style
                                            if self.actor.config.style_input else None),
-                                prefill_learner_cache=config.rollout_prefill_learner_cache)
+                                prefill_learner_cache=config.rollout_prefill_learner_cache,
+                                span_groups=config.rollout_span_groups)
 
     def snapshot_batching(self) -> bool:
         """Merged snapshot inference for this update (the schedule's block, if any)."""
@@ -787,6 +798,7 @@ class HistoryTrainer:
                           "rollout_page_span": self.collector.page_span,
                           "rollout_prefill_learner_cache":
                               self.collector.prefill_learner_cache,
+                          "rollout_span_groups": self.collector.span_groups,
                           "batch_snapshot_policies": self.config.batch_snapshot_policies,
                           "batch_snapshot_policies_schedule":
                               self.config.batch_snapshot_policies_schedule,
@@ -1451,6 +1463,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="rebuild the learner's public KV cache for all current matches "
                              "at the start of each collection (FP32; learner seats' "
                              "reduction order differs)")
+    parser.add_argument("--rollout-span-groups", type=int, default=1,
+                        help="with --rollout-paged-cache: attend in up to N end-sorted span "
+                             "groups per cache append and learner decision step, each padded "
+                             "to its own longest stream (FP32; not bitwise); 1 is off")
     parser.add_argument("--profile-collection", action="store_true")
     parser.add_argument("--profile-learn", action="store_true",
                         help="synchronized wall time per learn phase (learn_phase_seconds)")

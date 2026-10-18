@@ -50,6 +50,7 @@ SWITCHABLE = frozenset({"rollout_paged_cache", "rollout_page_span", "rollout_tri
                         "batch_snapshot_encoder", "batch_snapshot_policies",
                         "learner_length_groups", "learner_chosen_response",
                         "rollout_trim_cuda_cache", "rollout_prefill_learner_cache",
+                        "rollout_span_groups",
                         "profile_collection", "profile_learn"})
 
 
@@ -94,6 +95,7 @@ def switch(trainer, origin, settings: dict) -> None:
     collector.private_graph_policy_budget_bytes = config.rollout_graph_policy_budget_mb << 20
     collector.batch_snapshot_encoder = config.batch_snapshot_encoder
     collector.prefill_learner_cache = config.rollout_prefill_learner_cache
+    collector.span_groups = config.rollout_span_groups
     if trainer.device.type == "cuda":
         torch.cuda.synchronize(trainer.device)
         torch.cuda.empty_cache()
