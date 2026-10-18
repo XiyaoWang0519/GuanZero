@@ -214,9 +214,10 @@ class HistoryPPOConfig:
     # loss over the union of the ranks' minibatches, as one minibatch would be
     ddp_global_minibatch: bool = False
     # Gradient all-reduce transport of the data-parallel ranks: "gloo" (TCP ring)
-    # or "shm" (same-node /dev/shm mapping, fixed rank-order sum,
-    # train/history_shm_reduce.py). shm equals gloo bitwise at two ranks; with
-    # more ranks the FP32 summation order differs (tier 2).
+    # or "shm" (same-node /dev/shm mapping, train/history_shm_reduce.py) that adds
+    # in gloo's ring order, so it equals gloo bitwise at any world size; a start-up
+    # self-check falls back to gloo on any mismatch. Opt-in for operational reasons
+    # (/dev/shm size, spin barriers), not numerics.
     ddp_reduce: str = "gloo"
     # torch.optim.Adam(fused=True) for both optimizers: one fused kernel per step
     # with device-resident step counters; FP32 arithmetic differs from the
@@ -433,8 +434,8 @@ def parse_arm_schedule(schedule: str) -> list[tuple[int, bool]]:
 # learn-phase profile (timing only),
 # the learner's length-grouped
 # encode, chosen-only auxiliary response head and compact next-token loss (tier 2:
-# same loss, learner float-order noise), the data-parallel gradient transport and
-# fused Adam (tier 2: FP32 order), plus snapshot_updates,
+# same loss, learner float-order noise), the data-parallel gradient transport
+# (bitwise with gloo, self-checked), fused Adam (tier 2: FP32 order), plus snapshot_updates,
 # which changes dynamics.
 RESUME_OVERRIDES = frozenset({"num_envs", "num_threads", "minibatch_matches", "torch_threads",
                               "checkpoint_updates", "ddp_global_minibatch", "ddp_reduce",
@@ -672,6 +673,11 @@ class HistoryTrainer:
         Returns the environment seed offset; a single process is rank 0."""
         return 0
 
+    def parameters_stepped(self) -> list[torch.Tensor]:
+        """Every parameter the two optimizers update."""
+        return [p for optimizer in (self.actor_optimizer, self.critic_optimizer)
+                for group in optimizer.param_groups for p in group["params"]]
+
     def apply_adam_policy(self) -> None:
         """Make both optimizers follow ``config.adam_fused``, whatever state they loaded.
 
@@ -750,8 +756,10 @@ class HistoryTrainer:
         cached blocks are returned to the driver; live tensors, KV caches and
         captured graphs are untouched, so nothing computed changes. A no-op
         (zero bytes) without CUDA. With ``slack_mb`` > 0 the trim is skipped
-        while the cached free bytes (reserved - allocated) are at most that many
-        MiB; the record then has ``skipped=True`` and after = before readings."""
+        while the cached free bytes it could release are at most that many MiB:
+        reserved - allocated, less the free fragments of partly used segments
+        (``inactive_split_bytes``), which empty_cache cannot return. The record
+        then has ``skipped=True`` and after = before readings."""
         devices = [d for d in (self.rollout_device, self.device) if d.type == "cuda"]
         begin = time.perf_counter()
         record = dict(reserved_before=0, allocated_before=0, reserved_after=0,
@@ -761,8 +769,13 @@ class HistoryTrainer:
             torch.cuda.synchronize(device)
             record.update(reserved_before=torch.cuda.memory_reserved(device),
                           allocated_before=torch.cuda.memory_allocated(device))
-            if slack_mb > 0 and (record["reserved_before"] - record["allocated_before"]
-                                 <= slack_mb << 20):
+            releasable = 0
+            if slack_mb > 0:
+                split = torch.cuda.memory_stats(device).get("inactive_split_bytes.all.current", 0)
+                releasable = max(record["reserved_before"] - record["allocated_before"]
+                                 - int(split), 0)
+                record["releasable_before"] = releasable
+            if slack_mb > 0 and releasable <= slack_mb << 20:
                 record.update(skipped=True, reserved_after=record["reserved_before"],
                               allocated_after=record["allocated_before"])
             else:
@@ -1375,6 +1388,12 @@ class HistoryTrainer:
                 mark("norms_clip_and_stats")
                 self.actor_optimizer.step()
                 self.critic_optimizer.step()
+                if self.config.adam_fused:
+                    # The fused kernel updates parameters without bumping their
+                    # autograd version counters; caches and graphs that detect
+                    # weight changes by version (history_inference._signature)
+                    # must still see this step.
+                    torch.autograd.graph.increment_version(self.parameters_stepped())
                 mark("optimizer")
                 steps += 1
                 if terms is None:

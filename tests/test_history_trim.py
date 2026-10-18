@@ -239,9 +239,12 @@ class FakeAllocator:
     """torch.cuda's memory readers, synchronize and empty_cache over fixed
     readings: empty_cache returns every cached free byte."""
 
-    def __init__(self, monkeypatch, reserved_mb: int, allocated_mb: int):
+    def __init__(self, monkeypatch, reserved_mb: int, allocated_mb: int, split_mb: int = 0):
         self.reserved, self.allocated = reserved_mb << 20, allocated_mb << 20
+        self.split = split_mb << 20
         self.calls: list[str] = []
+        monkeypatch.setattr(torch.cuda, "memory_stats", lambda device=None: {
+            "inactive_split_bytes.all.current": self.split})
         monkeypatch.setattr(torch.cuda, "synchronize", lambda device=None: self.calls.append("sync"))
         monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device=None: self.reserved)
         monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device=None: self.allocated)
@@ -271,6 +274,20 @@ def test_slack_gate_skips_only_while_the_cached_free_bytes_fit(monkeypatch, slac
     else:
         assert "skipped" not in record and record["reserved_after"] == 60 << 20
         assert fake.calls == ["sync", "empty_cache", "sync"]
+
+
+@pytest.mark.parametrize("slack_mb, skipped", [(24, False), (25, True)])
+def test_slack_gate_ignores_free_fragments_empty_cache_cannot_release(monkeypatch, slack_mb,
+                                                                      skipped):
+    """40 MiB cached free, 15 MiB of it fragments of partly used segments: only
+    the 25 MiB empty_cache can return counts against the slack."""
+    from types import SimpleNamespace
+    FakeAllocator(monkeypatch, 100, 60, split_mb=15)
+    owner = SimpleNamespace(rollout_device=torch.device("cuda"), device=torch.device("cpu"))
+    trims: dict[str, dict] = {}
+    HistoryTrainer.trim_cuda_cache(owner, "after_learn", trims, slack_mb)
+    assert trims["after_learn"]["releasable_before"] == 25 << 20
+    assert trims["after_learn"].get("skipped", False) is skipped
 
 
 def test_slack_gates_after_collect_and_after_learn_but_never_graphs_released(tmp_path,

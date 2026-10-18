@@ -503,8 +503,8 @@ def build_parser() -> argparse.ArgumentParser:
                              "the ranks' minibatches, as one minibatch would be")
     parser.add_argument("--ddp-reduce", choices=("gloo", "shm"), default="gloo",
                         help="gradient all-reduce transport: gloo, or a same-node /dev/shm "
-                             "mapping with a fixed rank-order sum (bitwise equal to gloo at "
-                             "two ranks; FP32 order differs beyond)")
+                             "mapping that adds in gloo's ring order (bitwise equal to gloo; "
+                             "a start-up self-check falls back to gloo on any mismatch)")
     return parser
 
 

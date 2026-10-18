@@ -192,3 +192,34 @@ def test_prefetched_minibatch_matches_inline_preparation(tmp_path):
         assert new.rng.bit_generator.state == old.rng.bit_generator.state
     finally:
         torch.use_deterministic_algorithms(previous[0], warn_only=previous[1])
+
+
+def test_fused_adam_steps_bump_parameter_versions(tmp_path):
+    """The fused kernel writes parameters without bumping their autograd version
+    counters; the trainer bumps them so version-based weight signatures (the KV
+    caches' refresh_weights / frozen_weights checks) still see every step."""
+    from train.history_inference import BatchedHistoryCache
+    trainer = HistoryTrainer(config(updates=1, epochs=1, adam_fused=True), tmp_path / "f")
+    signature = BatchedHistoryCache(trainer.actor)._signature()
+    before = [p._version for p in trainer.parameters_stepped()]
+    trainer.update()
+    assert all(p._version > v for p, v in zip(trainer.parameters_stepped(), before))
+    assert BatchedHistoryCache(trainer.actor)._signature() != signature
+
+
+def test_arms_switch_moves_the_optimizers_to_the_arms_adam(tmp_path):
+    """bench.history_arms.switch makes the live optimizers follow the arm's adam_fused."""
+    from dataclasses import replace
+    from bench import history_arms
+    trainer = HistoryTrainer(config(updates=1, epochs=1), tmp_path / "s")
+    trainer.update()
+    origin = trainer.config
+    fused = lambda: {g.get("fused") for o in (trainer.actor_optimizer, trainer.critic_optimizer)
+                     for g in o.param_groups}
+    assert fused() == {None}
+    history_arms.switch(trainer, origin, dict(adam_fused=True))
+    assert trainer.config == replace(origin, adam_fused=True) and fused() == {True}
+    trainer.update()
+    history_arms.switch(trainer, origin, {})
+    assert fused() == {None}
+    trainer.update()
