@@ -230,6 +230,51 @@ def test_merged_encode_with_span_groups(device, eager_groups):
     assert caches[3][0].span_rows["grouped_appends"] > 0
 
 
+@pytest.mark.parametrize("device", devices())
+def test_grouped_merged_snapshot_memory_and_log_probs(device, eager_groups):
+    """``merged_encode`` with the layout's span groups returns each group's streams
+    up to its own longest stream (the padded memory's rows, bit for bit), and
+    ``merged_log_probs`` over them is the padded call within FP32 noise while its
+    attention reads fewer rows."""
+    skip_without(device)
+    from train.history_snapshot_batch import (LAYOUT_FIELDS, SPAN_FIELDS, SnapshotHeads,
+                                              merged_layout, merged_log_probs)
+    from test_history_snapshot_batch import SPECS, Step
+    step = Step(SPECS["one-per-stream"], seed=4, longest=300)
+    groups = step.groups()
+    actors = {g.identity: fresh_player(CONFIG, 50 + g.identity)[0].to(device) for g in groups}
+    heads = SnapshotHeads(encoder=True)
+    slots = [heads.slot(g.identity, actors[g.identity]) for g in groups]
+    pool = KVPagePool.for_actor(actors[groups[0].identity], page_tokens=16)
+    caches = [PagedHistoryCache(actors[g.identity], pool, chunk_size=64, page_span=True,
+                                span_groups=3) for g in groups]
+    layouts = [merged_layout(groups, slots, step.prefix, step.obs, step.seat, step.cand,
+                             step.offsets, step.counts, step.env_id, step.match_id, planner)
+               for planner in (None, caches[0]._groups)]
+    plain, grouped = layouts
+    assert grouped.span_groups is not None and len(grouped.span_groups) > 1
+    parts = [(cache, g.keys, g.streams, slot) for cache, g, slot in zip(caches, groups, slots)]
+    order, plan = grouped.span_order, grouped.span_groups
+    with torch.no_grad():
+        padded = paged.merged_encode(parts, heads, plain.length)
+        memory = paged.merged_encode(parts, heads, plain.length, groups=(order, plan))
+    assert len(memory) == len(plan)
+    for (a, b, span), values in zip(plan, memory):
+        assert values.shape[:2] == (b - a, span) and span <= plain.length
+        index = torch.as_tensor(order[a:b], device=device)
+        assert torch.equal(values, padded.index_select(0, index)[:, :span])
+    fields = [{name: torch.as_tensor(array, device=device)
+               for name, array in zip(LAYOUT_FIELDS + SPAN_FIELDS, layout.arrays)}
+              for layout in layouts]
+    before = merged_log_probs(heads, plain, fields[0], padded)
+    after = merged_log_probs(heads, grouped, fields[1], memory)
+    worst = float((after - before).abs().max())
+    read = (sum((b - a) * span for a, b, span in plan), len(plain.rows) * plain.length)
+    assert worst < LOGP_ATOL and read[0] < read[1]
+    print(f"grouped merged snapshot log-probs max |diff| {worst:.2e}, "
+          f"attention rows {read[1]} -> {read[0]}")
+
+
 # ---- collector level ---------------------------------------------------------------
 
 def learner_players(device, wide=True):
@@ -294,6 +339,54 @@ def test_collector_span_groups(device, groups, eager_groups):
     assert learner["grouped_appends"] > 0 and learner["memory"] < plain.caches[0].span_rows["memory"]
     assert sum(c.span_rows["grouped_appends"] for k, c in fast.caches.items() if k) > 0
     print(f"collector span groups {groups}: learner log-prob max |diff| {worst:.2e}")
+
+
+def record_snapshot_calls(monkeypatch):
+    """Every merged snapshot call: grouped or not, the memory rows its attention
+    reads, and its candidate log-probabilities."""
+    import train.history_snapshot_batch as batch
+    calls, original = [], batch.merged_log_probs
+
+    def recording(heads, layout, fields, memory):
+        result = original(heads, layout, fields, memory)
+        parts = memory if layout.span_groups is not None else [memory]
+        calls.append((layout.span_groups is not None, sum(m.shape[0] * m.shape[1] for m in parts),
+                      result.detach().cpu().clone()))
+        return result
+
+    monkeypatch.setattr(batch, "merged_log_probs", recording)
+    return calls
+
+
+@pytest.mark.parametrize("device", devices())
+@pytest.mark.parametrize("groups", [2, 3])
+def test_collector_span_groups_split_merged_snapshot_memory(device, groups, eager_groups,
+                                                           monkeypatch):
+    """With the merged snapshot encoder the merged snapshot call attends per span
+    group too: its log-probabilities stay within FP32 noise of the padded memory,
+    every choice and the generator state are identical, and fewer memory rows are
+    read. One group is the padded call itself (identical log-probabilities)."""
+    skip_without(device)
+    calls = record_snapshot_calls(monkeypatch)
+    plain, fast, _ = compare_rollouts(device, dict(span_groups=groups))
+    half = len(calls) // 2
+    assert half and len(calls) == 2 * half
+    worst, rows = 0.0, [0, 0]
+    for (was_grouped, before_rows, before), (grouped, after_rows, after) in zip(calls[:half],
+                                                                                calls[half:]):
+        assert not was_grouped and before.shape == after.shape
+        if not grouped:
+            assert torch.equal(before, after)
+        worst = max(worst, float((before - after).abs().max()))
+        rows[0] += before_rows
+        rows[1] += after_rows
+    grouped_calls = sum(grouped for grouped, _, _ in calls[half:])
+    assert grouped_calls >= 10
+    assert rows[1] < rows[0] and worst < LOGP_ATOL
+    assert torch.equal(plain.generator.get_state(), fast.generator.get_state())
+    print(f"merged snapshot span groups {groups}: {grouped_calls}/{half} calls grouped, "
+          f"log-prob max |diff| {worst:.2e}, memory rows read {rows[0]} -> {rows[1]} "
+          f"({rows[1] / rows[0] - 1:+.1%})")
 
 
 # ---- private K/V pages -----------------------------------------------------------

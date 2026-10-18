@@ -51,7 +51,7 @@ import torch
 from train.history_model import (HIDDEN_DIM, PLAY_PHASE, DecisionInputs, HistoryActor,
                                  PublicStream, RolloutMemory, StreamBatch,
                                  public_token_error)
-from train.history_snapshot_batch import LAYOUT_FIELDS
+from train.history_snapshot_batch import LAYOUT_FIELDS, SPAN_FIELDS
 from train.history_transfers import download_tensors as _download_tensors, upload_arrays
 from train.logs import TOKEN_DIM, public_tokens
 
@@ -840,11 +840,13 @@ class HistoryCollector:
     is rebuilt by the first step whose learner row reads it, in passes of its
     own. Same function of the same tokens in different batches: FP32
     reduction-order noise on learner seats (tier 2). ``span_groups`` (opt-in,
-    > 1, with ``paged_cache``) runs every cache append's attention, and the
+    > 1, with ``paged_cache``) runs every cache append's attention, the
     learner's private attention over its memory (one decision per stream,
-    batched private attention), in up to that many end-sorted span groups,
-    each padded only to its own longest stream
-    (``train.history_paged_cache.span_plan``); tier 2 on every seat.
+    batched private attention) and, with the merged snapshot encoder, the
+    merged snapshot call's attention over its memory (one decision per
+    stream), in up to that many end-sorted span groups, each padded only to
+    its own longest stream (``train.history_paged_cache.span_plan``); tier 2
+    on every seat.
     ``private_kv_pages`` (opt-in, with ``paged_cache``) stores the learner's
     private attention keys/values (``kv_proj`` of its memory) per token when
     the token is encoded, and its private attention reads them instead of
@@ -1175,7 +1177,9 @@ class HistoryCollector:
             from train.history_paged_cache import merged_encode
             parts = [(self._cache(group.identity, actor), group.keys, group.streams, slot)
                      for group, actor, slot in zip(groups, actors, plan.slots)]
-            memory = merged_encode(parts, self.snapshot_heads, layout.length)
+            memory = merged_encode(parts, self.snapshot_heads, layout.length,
+                                   groups=None if layout.span_groups is None
+                                   else (layout.span_order, layout.span_groups))
             mark("public_cache_or_collation", "snapshot")
             groups = ()     # memory is complete
         for group, actor, (begin, end), (first, last) in zip(
@@ -1347,8 +1351,12 @@ class HistoryCollector:
             plan.merged_actors = [self.resolve_policy(g.identity) for g in plan.merged]
             plan.slots = [self.snapshot_heads.slot(g.identity, actor)
                           for g, actor in zip(plan.merged, plan.merged_actors)]
+            planner = None
+            if self.span_groups > 1 and self.batch_snapshot_encoder and self.kv_cache:
+                # The snapshot caches' own span plan (they share one configuration).
+                planner = self._cache(plan.merged[0].identity, plan.merged_actors[0])._groups
             plan.layout = merged_layout(plan.merged, plan.slots, r.prefix, r.obs, r.seat, r.cand,
-                                        r.offsets, r.counts, r.env_id, r.match_id)
+                                        r.offsets, r.counts, r.env_id, r.match_id, planner)
             plan.host_fields.extend(plan.layout.arrays)
         return plan
 
@@ -1472,7 +1480,7 @@ class HistoryCollector:
         if plan.layout is not None:
             # After the learner, as the per-identity calls were: identical
             # generator order. One merged actor call for every snapshot row.
-            fields = dict(zip(LAYOUT_FIELDS, uploaded[width * len(plan.groups):]))
+            fields = dict(zip(LAYOUT_FIELDS + SPAN_FIELDS, uploaded[width * len(plan.groups):]))
             downloads = self._merged_snapshot_step(plan, fields, rows.prefix, mark)
             pending.append((-1, plan.layout.rows, downloads))
             self._count_call(stats, "snapshot", plan.merged)

@@ -132,9 +132,10 @@ class HistoryPPOConfig:
     # stream by stream as learner rows first read them. Tier 2 (learner seats'
     # FP32 reduction order: the same tokens are encoded in different batches).
     rollout_prefill_learner_cache: bool = False
-    # Paged cache: run each append's key/value gather and attention, and the
-    # learner's private attention over its memory, in up to N end-sorted span
-    # groups, each padded only to its own longest stream
+    # Paged cache: run each append's key/value gather and attention, the
+    # learner's private attention over its memory and (with the merged snapshot
+    # encoder) the merged snapshot call's attention over its memory, in up to N
+    # end-sorted span groups, each padded only to its own longest stream
     # (train/history_paged_cache.span_plan). 1 is off. Tier 2 (FP32 shapes change).
     rollout_span_groups: int = 1
     # Paged cache, batched rollout attention: store the learner's private-attention
@@ -1718,8 +1719,9 @@ def build_parser() -> argparse.ArgumentParser:
                              "reduction order differs)")
     parser.add_argument("--rollout-span-groups", type=int, default=1,
                         help="with --rollout-paged-cache: attend in up to N end-sorted span "
-                             "groups per cache append and learner decision step, each padded "
-                             "to its own longest stream (FP32; not bitwise); 1 is off")
+                             "groups per cache append, learner decision step and merged "
+                             "snapshot step, each padded to its own longest stream (FP32; "
+                             "not bitwise); 1 is off")
     parser.add_argument("--rollout-private-kv-pages", action="store_true",
                         help="with --rollout-paged-cache and --rollout-batched-attention: store "
                              "the learner's private-attention keys/values per token when "

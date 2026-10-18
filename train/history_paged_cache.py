@@ -410,22 +410,41 @@ class PagedHistoryCache(BatchedHistoryCache):
 
     # -- encoding -----------------------------------------------------------
 
-    def _gather_table(self, source: Tensor, table: Tensor, size: int) -> Tensor:
+    def _gather_table(self, source: Tensor, table: Tensor, size: int, copy: bool = True
+                      ) -> Tensor:
         """``[len(table), size, features]`` rows of ``source`` (a ``[rows, features]``
         pool tensor) at the positions of each uploaded page-table row, gathered
         one whole page at a time. Rows past an entry's length read zeros: page 0
-        or the zeroed tail of its last page."""
+        or the zeroed tail of its last page. ``copy`` False returns a size not
+        filling whole pages as a strided view of the gathered pages."""
         P = self.pool.page_tokens
         features = source.shape[1]
         gathered = torch.index_select(source.view(-1, P * features), 0, table.view(-1))
         gathered = gathered.view(len(table), -1, features)
-        return gathered if gathered.shape[1] == size else gathered[:, :size].contiguous()
+        if gathered.shape[1] == size:
+            return gathered
+        return gathered[:, :size].contiguous() if copy else gathered[:, :size]
 
     def _gather_memory(self, entries: list[PagedEntry], size: int) -> Tensor:
         table, = upload_arrays((self._page_table(entries, size),), self.pool.device)
         self.span_rows["memory"] += len(entries) * size
         self.span_rows["memory_valid"] += sum(entry.length for entry in entries)
         return self._gather_table(self.pool.memory, table, size)
+
+    def _gather_groups(self, source: Tensor, entries: list[PagedEntry],
+                       plan: list[tuple[int, int, int]], extra: tuple[np.ndarray, ...] = (),
+                       copy: bool = True) -> tuple[list[Tensor], tuple[Tensor, ...]]:
+        """``[n_g, span_g, features]`` rows of ``source`` for every span group
+        ``(begin, end, span)`` of ``entries`` (already in group order), each
+        padded only to its own span (``_gather_table``). One upload carries
+        every group's page table and the ``extra`` host arrays, returned uploaded."""
+        tables = [self._page_table(entries[a:b], span) for a, b, span in plan]
+        uploaded = upload_arrays((*tables, *extra), self.pool.device)
+        values = [self._gather_table(source, table, span, copy)
+                  for table, (_, _, span) in zip(uploaded, plan)]
+        self.span_rows["memory"] += sum((b - a) * span for a, b, span in plan)
+        self.span_rows["memory_valid"] += sum(entry.length for entry in entries)
+        return values, uploaded[len(plan):]
 
     @torch.no_grad()
     def encode_rollout(self, keys: list[tuple[int, int]], streams: list[PublicStream], *,
@@ -443,18 +462,11 @@ class PagedHistoryCache(BatchedHistoryCache):
         targets = self._encode_targets(keys, streams, preuploaded_lengths, host_lengths)
         entries = self._extend(keys, streams, targets)
         source = self.pool.private if projected else self.pool.memory
-        lengths = np.asarray(targets, np.int64)
-        order, plan = self._groups(lengths)
+        order, plan = self._groups(np.asarray(targets, np.int64))
         ordered = entries if order is None else [entries[i] for i in order]
-        tables = [self._page_table(ordered[a:b], span) for a, b, span in plan]
-        rows = [] if order is None else [order[a:b] for a, b, _ in plan]
-        uploaded = upload_arrays((*tables, *rows), self.pool.device)
-        groups = []
-        for index, (a, b, span) in enumerate(plan):
-            groups.append((None if order is None else uploaded[len(plan) + index],
-                           self._gather_table(source, uploaded[index], span)))
-            self.span_rows["memory"] += (b - a) * span
-        self.span_rows["memory_valid"] += int(lengths.sum())
+        rows = () if order is None else tuple(order[a:b] for a, b, _ in plan)
+        values, rows = self._gather_groups(source, ordered, plan, rows)
+        groups = list(zip(rows or (None,), values))
         return (self._stream_metadata(targets, preuploaded_lengths, source.device),
                 RolloutMemory(groups, projected))
 
@@ -660,7 +672,9 @@ class PagedHistoryCache(BatchedHistoryCache):
 # ---- merged snapshot encoding ----------------------------------------------------
 
 def merged_encode(parts: list[tuple[PagedHistoryCache, list[tuple[int, int]], list[PublicStream], int]],
-                  heads, size: int) -> Tensor:
+                  heads, size: int, *,
+                  groups: tuple[np.ndarray, list[tuple[int, int, int]]] | None = None
+                  ) -> Tensor | list[Tensor]:
     """Encode several frozen identities' streams in ONE append pass per chunk.
 
     ``parts`` are ``(cache, keys, streams, slot)`` per identity, in identity
@@ -672,6 +686,12 @@ def merged_encode(parts: list[tuple[PagedHistoryCache, list[tuple[int, int]], li
     rows. Returns ``[sum of streams, size, width]`` memory in part order, zero
     past each stream's length. Same function as ``cache.encode`` per part,
     with FP32 reduction-order differences (acceptance tier 2).
+
+    ``groups`` ``(order, plan)`` (span groups ``(begin, end, span)`` of the
+    streams in part order, e.g. ``merged_layout``'s) returns one
+    ``[n_g, span_g, width]`` memory per group instead, holding streams
+    ``order[begin:end]``: whole pages are gathered and a span short of a page
+    boundary is a strided view (no copy).
     """
     if not parts:
         raise ValueError("nothing to encode")
@@ -700,7 +720,11 @@ def merged_encode(parts: list[tuple[PagedHistoryCache, list[tuple[int, int]], li
         parts[0][0].appends += 1    # one shared pass, counted once
         for i, count in zip(short, counts):
             owners[i].encoded_tokens += count
-    return parts[0][0]._gather_memory(entries, size)
+    if groups is None:
+        return parts[0][0]._gather_memory(entries, size)
+    order, plan = groups
+    return parts[0][0]._gather_groups(pool.memory, [entries[i] for i in order], plan,
+                                      copy=False)[0]
 
 
 def _merged_append(cache: PagedHistoryCache, entries: list[PagedEntry], counts: list[int],

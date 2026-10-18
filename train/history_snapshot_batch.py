@@ -37,6 +37,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+from typing import Callable
 import weakref
 
 import numpy as np
@@ -50,6 +51,9 @@ from train.history_model import HistoryActor, arange_view, neg_gumbel_, segment_
 LAYOUT_FIELDS = ("obs", "seat", "prefix", "cand", "row_pad", "seat_pad", "stream",
                  "cand_pad", "cand_state_pad", "cand_row", "cand_table", "uniform_base",
                  "uniform_last")
+# Appended to the layout fields when the snapshot memory is span grouped:
+# ``row_pad`` and ``prefix`` of the rows in span-group order.
+SPAN_FIELDS = ("span_pad", "span_prefix")
 
 
 def _mlp_linears(module: nn.Module, layers: int) -> tuple[nn.Linear, ...]:
@@ -348,15 +352,27 @@ class MergedLayout:
     length: int                 # T: longest public prefix + BOS
     streams: int
     identity_streams: bool      # every row reads its own stream, in row order
+    # Span groups of the merged memory (``span_planner``): the rows (= streams)
+    # in group order and ``(begin, end, span)`` per group, ``span`` the group's
+    # longest stream; None: one padded memory.
+    span_order: np.ndarray | None = None
+    span_groups: list[tuple[int, int, int]] | None = None
 
 
 def merged_layout(groups, slots: list[int], prefix: np.ndarray, obs: np.ndarray,
                   seat: np.ndarray, cand: np.ndarray, offsets: np.ndarray,
-                  counts: np.ndarray, env_id: np.ndarray, match_id: np.ndarray
+                  counts: np.ndarray, env_id: np.ndarray, match_id: np.ndarray,
+                  span_planner: Callable[[np.ndarray], tuple] | None = None
                   ) -> MergedLayout:
     """Index arrays placing every snapshot group's rows and candidates into the
     slot-padded layout. ``groups`` are the collector's per-identity groups in
-    identity order and ``slots`` their ``SnapshotHeads`` slots."""
+    identity order and ``slots`` their ``SnapshotHeads`` slots.
+
+    ``span_planner`` (the snapshot caches' ``PagedHistoryCache._groups``)
+    splits the memory of one-decision-per-stream steps into end-sorted span
+    groups over the streams' lengths; when it returns more than one group the
+    layout records them, each padded to its own longest stream (never past
+    the padded memory's ``length``), and appends the ``SPAN_FIELDS`` arrays."""
     from train.history_rollout import ragged_index
     rows = np.concatenate([g.rows for g in groups])
     n = len(rows)
@@ -431,8 +447,16 @@ def merged_layout(groups, slots: list[int], prefix: np.ndarray, obs: np.ndarray,
               cand[src].astype(np.uint8, copy=False),
               row_pad, seat_pad, stream, cand_pad, cand_state_pad, cand_row,
               cand_row * K + local_cand, uniform_base, uniform_width - 1)
+    identity_streams = bool(np.array_equal(stream, row_numbers))
+    span_order = span_groups = None
+    if span_planner is not None and identity_streams:
+        lengths = np.fromiter((s.prefix + 1 for g in groups for s in g.streams), np.int64, n)
+        span_order, plan = span_planner(lengths)
+        if span_order is not None:
+            span_groups = [(a, b, int(lengths[span_order[a]])) for a, b, _ in plan]
+            arrays += (row_pad[span_order], prefix[rows][span_order])
     return MergedLayout(rows, group_rows, group_streams, arrays, draws, S, M, Cm, K, length,
-                        stream_base, bool(np.array_equal(stream, row_numbers)))
+                        stream_base, identity_streams, span_order, span_groups)
 
 
 def _linear(x: Tensor, tensors: dict[str, Tensor], name: str, slots: int) -> Tensor:
@@ -449,14 +473,34 @@ def _pad(values: Tensor, index: Tensor, size: int) -> Tensor:
     return out.index_copy_(0, index, values)
 
 
+def _span_group_context(folded: Tensor, memory: list[Tensor], layout: MergedLayout,
+                        fields: dict[str, Tensor], size: int) -> Tensor:
+    """The decision rows' attention context, ``[size, heads, width]`` slot
+    padded, from span-grouped memory: rows are gathered once in group order,
+    each group attends over its own ``[n_g, span_g, width]`` memory only, and
+    one scatter returns them to their slots."""
+    rows = folded.index_select(0, fields["span_pad"])           # [rows, heads, width]
+    context = torch.empty_like(rows)
+    prefix = fields["span_prefix"]
+    for (begin, end, span), own in zip(layout.span_groups, memory):
+        scores = torch.bmm(rows[begin:end], own.transpose(1, 2))   # [n_g, heads, span_g]
+        masked = arange_view(span, own.device)[None] > prefix[begin:end, None]
+        scores.masked_fill_(masked[:, None], float("-inf"))
+        torch.bmm(torch.softmax(scores, dim=-1), own, out=context[begin:end])
+    return _pad(context, fields["span_pad"], size)
+
+
 @torch.no_grad()
 def merged_log_probs(heads: SnapshotHeads, layout: MergedLayout, fields: dict[str, Tensor],
-                     memory: Tensor) -> Tensor:
+                     memory: Tensor | list[Tensor]) -> Tensor:
     """Log-probability of every snapshot candidate, ``[sum_k]``, in merged order.
 
     ``memory`` is ``[layout.streams, T, width]``: each identity's encoded
     public streams (as ``cache.encode`` or ``encode_batch`` return them),
-    zero beyond each stream's length.
+    zero beyond each stream's length. With ``layout.span_groups`` it is one
+    ``[n_g, span_g, width]`` memory per group instead (``merged_encode``
+    with groups), and attention reads each group's own span only: the same
+    function, FP32 reduction shapes differ (acceptance tier 2).
     """
     tensors, cfg = heads.tensors, heads.config
     S, M, Cm = layout.slots, layout.rows_per_slot, layout.cands_per_slot
@@ -471,13 +515,18 @@ def merged_log_probs(heads: SnapshotHeads, layout: MergedLayout, fields: dict[st
     q = _linear(query, tensors, "q", S).view(S, M, heads_n, depth).transpose(1, 2)
     # Keys folded into the query: [S, heads, M, width], then one row per decision.
     folded = torch.matmul(q, tensors["k_w"][:S]) * depth ** -0.5
-    folded = folded.transpose(1, 2).reshape(S * M, heads_n, width)[fields["row_pad"]]
-    own = memory if layout.identity_streams else memory[fields["stream"]]
-    scores = torch.bmm(folded, own.transpose(1, 2))                  # [rows, heads, T]
-    masked = arange_view(own.shape[1], own.device)[None] > fields["prefix"][:, None]
-    scores = scores.masked_fill(masked[:, None], float("-inf"))
-    context = torch.bmm(torch.softmax(scores, dim=-1), own)           # [rows, heads, width]
-    context = _pad(context, fields["row_pad"], S * M).view(S, M, heads_n, width).transpose(1, 2)
+    folded = folded.transpose(1, 2).reshape(S * M, heads_n, width)
+    if layout.span_groups is not None:
+        context = _span_group_context(folded, memory, layout, fields, S * M)
+    else:
+        folded = folded[fields["row_pad"]]
+        own = memory if layout.identity_streams else memory[fields["stream"]]
+        scores = torch.bmm(folded, own.transpose(1, 2))              # [rows, heads, T]
+        masked = arange_view(own.shape[1], own.device)[None] > fields["prefix"][:, None]
+        scores = scores.masked_fill(masked[:, None], float("-inf"))
+        context = torch.bmm(torch.softmax(scores, dim=-1), own)       # [rows, heads, width]
+        context = _pad(context, fields["row_pad"], S * M)
+    context = context.view(S, M, heads_n, width).transpose(1, 2)
     attended = torch.matmul(context, tensors["v_w"][:S])               # [S, heads, M, depth]
     attended = attended.transpose(1, 2).reshape(S, M, width) + tensors["v_b"][:S]
     attended = _linear(attended, tensors, "o", S)
