@@ -51,6 +51,7 @@ SWITCHABLE = frozenset({"rollout_paged_cache", "rollout_page_span", "rollout_tri
                         "learner_length_groups", "learner_chosen_response",
                         "rollout_trim_cuda_cache", "rollout_prefill_learner_cache",
                         "rollout_span_groups", "rollout_private_kv_pages",
+                        "rollout_causal_prefill",
                         "profile_collection", "profile_learn"})
 
 
@@ -97,6 +98,7 @@ def switch(trainer, origin, settings: dict) -> None:
     collector.prefill_learner_cache = config.rollout_prefill_learner_cache
     collector.span_groups = config.rollout_span_groups
     collector.private_kv_pages = config.rollout_private_kv_pages
+    collector.causal_prefill = config.rollout_causal_prefill
     if trainer.device.type == "cuda":
         torch.cuda.synchronize(trainer.device)
         torch.cuda.empty_cache()

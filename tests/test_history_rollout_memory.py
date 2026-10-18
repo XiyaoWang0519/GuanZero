@@ -1,6 +1,7 @@
 """Opt-in rollout public-memory layouts (acceptance tier 2, all default off):
-span groups (``rollout_span_groups``) and the learner's private K/V pages
-(``rollout_private_kv_pages``).
+span groups (``rollout_span_groups``), the learner's private K/V pages
+(``rollout_private_kv_pages``) and the causal learner prefill
+(``rollout_causal_prefill``).
 
 Each is checked at the cache level against the default layout and at the
 collector level on real VecEnv rollouts with snapshot seats: the same choices
@@ -404,6 +405,111 @@ def test_private_kv_pages_default_off_and_configuration():
     assert inspect.signature(PagedHistoryCache).parameters["private_kv"].default is False
 
 
+# ---- causal prefill -------------------------------------------------------------
+
+def position_rows(cache, key):
+    entry, P = cache.entries[key], cache.pool.page_tokens
+    return torch.as_tensor([entry.pages[t // P] * P + t % P for t in range(entry.length)])
+
+
+def assert_close_pools(chunked, causal, keys, worst):
+    for key in keys:
+        a, b = position_rows(chunked, key), position_rows(causal, key)
+        pairs = [(chunked.pool.memory, causal.pool.memory)]
+        pairs += list(zip(chunked.pool.kv, causal.pool.kv))
+        if chunked.private_kv:
+            pairs.append((chunked.pool.private, causal.pool.private))
+        for x, y in pairs:
+            torch.testing.assert_close(y[b.to(y.device)], x[a.to(x.device)], rtol=1e-5, atol=1e-5)
+            worst[0] = max(worst[0], float((y[b.to(y.device)] - x[a.to(x.device)]).abs().max()))
+
+
+@pytest.mark.parametrize("device", devices())
+@pytest.mark.parametrize("private", [False, True])
+def test_causal_prefill_matches_chunked_prefill(device, private, monkeypatch):
+    """Causal length-group passes hold the same entries, pages, counters and pool
+    rows (keys/values, memory, private K/V) as chunked prefill, to FP32 order;
+    partly encoded entries take the chunked path; later appends agree."""
+    skip_without(device)
+    monkeypatch.setattr(paged, "CAUSAL_PREFILL_TOKENS", 640)   # several passes per group
+    actor = fresh_player(CONFIG, 13)[0].to(device).train()
+    caches = [PagedHistoryCache(actor, KVPagePool.for_actor(
+        actor, page_tokens=16, private_width=64 if private else 0), chunk_size=32,
+        page_span=True, private_kv=private, causal_prefill=causal) for causal in (False, True)]
+    streams = make_streams([0, 3, 40, 150, 7, 90, 260, 12, 1, 31])
+    keys = [(i, i) for i in range(len(streams))]
+    for cache in caches:            # two entries already partly encoded
+        cache.encode(keys[:2], streams[:2])
+    for stream in streams[:2]:
+        append(stream, 50, offset=3)
+    worst = [0.0]
+    for round_ in range(2):
+        passes = [cache.prefill(keys, streams) for cache in caches]
+        assert passes[1] < passes[0]
+        for name in ("encoded_tokens", "rebuilds"):
+            assert getattr(caches[0], name) == getattr(caches[1], name)
+        assert ({k: (e.length, len(e.pages)) for k, e in caches[0].entries.items()}
+                == {k: (e.length, len(e.pages)) for k, e in caches[1].entries.items()})
+        assert_close_pools(*caches, keys, worst)
+        assert caches[1].prefill(keys, streams) == 0
+        for step in range(3):
+            for i, stream in enumerate(streams):
+                append(stream, (i + step) % 5, offset=step)
+            memory = [cache.encode(keys, streams)[1] for cache in caches]
+            torch.testing.assert_close(memory[1], memory[0], rtol=1e-5, atol=1e-5)
+            worst[0] = max(worst[0], float((memory[1] - memory[0]).abs().max()))
+        assert_close_pools(*caches, keys, worst)
+        with torch.no_grad():       # a weight update: everything is rebuilt from BOS
+            actor.public.weight.add_(1e-3)
+        for cache in caches:
+            cache.refresh_weights()
+            cache.pool.reset()
+    print(f"causal prefill (private={private}): pool rows and memory max |diff| {worst[0]:.2e}")
+
+
+@pytest.mark.parametrize("device", devices())
+@pytest.mark.parametrize("options", ["causal", "all"])
+def test_collector_causal_prefill(device, options, eager_groups, monkeypatch):
+    """Learner cache prefill, causal against chunked (and with every option on)."""
+    skip_without(device)
+    spans = []
+    causal_pass = PagedHistoryCache._causal_pass
+
+    def spy(self, entries, targets, span):
+        spans.append(span)
+        return causal_pass(self, entries, targets, span)
+
+    monkeypatch.setattr(PagedHistoryCache, "_causal_pass", spy)
+    invalidate = lambda chunk, policies, collector: collector.invalidate_learner_cache()
+    extra = dict(causal_prefill=True)
+    if options == "all":
+        extra.update(span_groups=3, private_kv_pages=True)
+    plain, fast, worst = compare_rollouts(device, extra, steps=420, prefill_learner_cache=True,
+                                          between=invalidate)
+    assert len(set(spans)) > 1 and max(spans) > 128     # several length groups, long streams
+    assert fast.caches[0].appends <= plain.caches[0].appends
+    assert fast.caches[0].encoded_tokens == plain.caches[0].encoded_tokens
+    print(f"collector causal prefill ({options}): learner log-prob max |diff| {worst:.2e}")
+
+
+def test_causal_prefill_default_off_and_configuration():
+    from train.history_ppo import HistoryPPOConfig, build_parser, config_from_args
+    from train.history_rollout import HistoryCollector
+    import inspect
+    assert HistoryPPOConfig().rollout_causal_prefill is False
+    assert not config_from_args(build_parser().parse_args(["--output", "x"])).rollout_causal_prefill
+    assert build_parser().parse_args(["--output", "x", "--rollout-causal-prefill"]
+                                     ).rollout_causal_prefill
+    base = dict(rollout_kv_cache=True, rollout_paged_cache=True,
+                rollout_prefill_learner_cache=True)
+    HistoryPPOConfig(rollout_causal_prefill=True, **base)
+    for drop in ("rollout_paged_cache", "rollout_prefill_learner_cache"):
+        with pytest.raises(ValueError, match="causal_prefill"):
+            HistoryPPOConfig(rollout_causal_prefill=True, **{**base, drop: False})
+    assert inspect.signature(HistoryCollector).parameters["causal_prefill"].default is False
+    assert inspect.signature(PagedHistoryCache).parameters["causal_prefill"].default is False
+
+
 def test_span_groups_default_off_and_configuration():
     from train.history_ppo import HistoryPPOConfig, build_parser, config_from_args
     from train.history_rollout import HistoryCollector
@@ -419,3 +525,47 @@ def test_span_groups_default_off_and_configuration():
     import inspect
     assert inspect.signature(HistoryCollector).parameters["span_groups"].default == 1
     assert inspect.signature(PagedHistoryCache).parameters["span_groups"].default == 1
+
+
+# ---- trainer -----------------------------------------------------------------------
+
+def test_trainer_with_every_rollout_memory_option(tmp_path, eager_groups):
+    """A tiny PPO run with all three options (and the production rollout set) gives
+    finite metrics; stored log-probabilities match the learner's full-history
+    recomputation within the repository's recompute gate; the manifest records the
+    options and a resume may switch them."""
+    import json
+    from train.history_ppo import HistoryPPOConfig, HistoryTrainer, parse_resume_overrides
+    options = dict(rollout_span_groups=3, rollout_private_kv_pages=True,
+                   rollout_causal_prefill=True)
+    config = HistoryPPOConfig(width=32, layers=2, heads=4, num_envs=4, steps_per_update=60,
+                              updates=3, epochs=1, minibatch_matches=2, snapshot_updates=1,
+                              seed=4, causal_sdpa=True, response_mode="auxiliary",
+                              rollout_kv_cache=True, rollout_paged_cache=True,
+                              rollout_page_span=True, rollout_batched_attention=True,
+                              rollout_wide_projection=True, batch_snapshot_policies=True,
+                              batch_snapshot_encoder=True, rollout_prefill_learner_cache=True,
+                              learner_batched_attention=True, **options)
+    trainer = HistoryTrainer(config, tmp_path / "run")
+    lines = [trainer.update() for _ in range(3)]
+    learned = [line for line in lines if line["update_samples"] > 0]
+    assert len(learned) >= 2
+    for line in learned:
+        for name in ("policy_loss", "value_loss", "entropy", "approx_kl", "actor_grad_norm"):
+            assert np.isfinite(line[name]), (name, line[name])
+    collector = trainer.collector
+    assert collector.span_groups == 3 and collector.private_kv_pages and collector.causal_prefill
+    trainer.collect()
+    assert collector.learner_pool.private is not None
+    assert collector.caches[0].span_rows["grouped_appends"] > 0
+    data = trainer.buffer.compact()
+    rows = np.flatnonzero(data["version"] == trainer.progress["updates"])
+    assert rows.size
+    with torch.no_grad():
+        logp, _ = trainer.recompute_log_probs(rows)
+    gap = float(np.abs(logp.cpu().numpy() - data["logp"][rows]).max())
+    assert gap < 3e-5
+    print(f"recompute against stored log-probabilities: max |diff| {gap:.2e}")
+    manifest = json.loads((tmp_path / "run" / "manifest.json").read_text())
+    assert {key: manifest["inference"][key] for key in options} == options
+    assert parse_resume_overrides([f"{key}={value}" for key, value in options.items()]) == options

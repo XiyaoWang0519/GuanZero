@@ -662,6 +662,10 @@ class HistoryCollector:
     private attention keys/values (``kv_proj`` of its memory) per token when
     the token is encoded, and its private attention reads them instead of
     projecting the whole gathered memory at every step; tier 2 on learner seats.
+    ``causal_prefill`` (opt-in, with ``prefill_learner_cache`` and
+    ``paged_cache``) runs that prefill as one causal pass per length group for
+    streams rebuilt from BOS instead of one masked pass per chunk; tier 2 on
+    learner seats.
     """
 
     def __init__(self, env: Any, actor: HistoryActor, store: MatchEventStore,
@@ -683,7 +687,8 @@ class HistoryCollector:
                  round_streams: bool = False,
                  row_style: Callable[[int, int], int] | None = None,
                  prefill_learner_cache: bool = False,
-                 span_groups: int = 1, private_kv_pages: bool = False) -> None:
+                 span_groups: int = 1, private_kv_pages: bool = False,
+                 causal_prefill: bool = False) -> None:
         self.env = env
         self.actor = actor
         self.store = store
@@ -710,6 +715,8 @@ class HistoryCollector:
                              "KV cache and no private graphs")
         if private_kv_pages and (not paged_cache or private_graphs):
             raise ValueError("private K/V pages require the paged KV cache and no private graphs")
+        if causal_prefill and (not paged_cache or not prefill_learner_cache):
+            raise ValueError("causal prefill requires the paged KV cache and learner cache prefill")
         if triton_min_batch < 1:
             raise ValueError("Triton minimum batch must be positive")
         if private_graph_budget_mb < 1 or private_graph_policy_budget_mb < 1:
@@ -744,6 +751,7 @@ class HistoryCollector:
         self.page_span = bool(page_span)
         self.span_groups = int(span_groups)
         self.private_kv_pages = bool(private_kv_pages)
+        self.causal_prefill = bool(causal_prefill)
         self.batch_snapshot_policies = bool(batch_snapshot_policies)
         self.snapshot_heads = None      # stacked snapshot heads, created on first merged step
         if self.batch_snapshot_policies:
@@ -853,7 +861,8 @@ class HistoryCollector:
                     setattr(self, name, KVPagePool.for_actor(
                         actor, private_width=2 * actor.config.width if private else 0))
                 cache = PagedHistoryCache(actor, getattr(self, name), page_span=self.page_span,
-                                          span_groups=self.span_groups, private_kv=private)
+                                          span_groups=self.span_groups, private_kv=private,
+                                          causal_prefill=learner and self.causal_prefill)
             elif self.triton_cache:
                 from train.history_triton_cache import TritonHistoryCache
                 cache = TritonHistoryCache(actor, min_batch=self.triton_min_batch)

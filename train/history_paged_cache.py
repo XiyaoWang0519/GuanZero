@@ -247,6 +247,11 @@ def span_plan(spans: np.ndarray, groups: int, min_share: float = 0.0, min_rows: 
 # its extra gather and SDPA launches per layer.
 SPAN_GROUP_MIN_SHARE = 0.1
 SPAN_GROUP_MIN_ROWS = 2048
+# Causal prefill (``PagedHistoryCache(causal_prefill=True)``): length groups
+# (``history_model.length_groups``) and the most padded tokens in one pass,
+# which bounds its transient activations.
+CAUSAL_PREFILL_GROUPS = 4
+CAUSAL_PREFILL_TOKENS = 1 << 15
 
 
 class PagedHistoryCache(BatchedHistoryCache):
@@ -266,11 +271,18 @@ class PagedHistoryCache(BatchedHistoryCache):
     at every step. Same dot products; only the projection's GEMM row count
     differs (acceptance tier 2). The parameter signature covers ``kv_proj``,
     so a weight change rebuilds them with the rest of the cache.
+
+    ``causal_prefill`` (opt-in): ``prefill`` encodes every entry that starts
+    from BOS in one causal pass per length group (``is_causal`` SDPA over its
+    own fresh keys/values; no pool gather, no mask) instead of one masked
+    append per ``chunk_size`` tokens, and writes the same pool rows. Other
+    entries take the chunked path. Same function of the same tokens; FP32
+    reduction shapes differ (acceptance tier 2).
     """
 
     def __init__(self, actor: HistoryActor, pool: KVPagePool | None = None,
                  chunk_size: int = 128, *, page_span: bool = False, span_groups: int = 1,
-                 private_kv: bool = False) -> None:
+                 private_kv: bool = False, causal_prefill: bool = False) -> None:
         super().__init__(actor, chunk_size)
         self.pool = pool if pool is not None else KVPagePool.for_actor(
             actor, private_width=2 * actor.config.width if private_kv else 0)
@@ -282,6 +294,7 @@ class PagedHistoryCache(BatchedHistoryCache):
         if private_kv and self.pool.private_width != 2 * actor.config.width:
             raise ValueError("private K/V pages need a pool with private_width = 2 * width")
         self.private_kv = bool(private_kv)
+        self.causal_prefill = bool(causal_prefill)
         # Host counters of attention key rows: gathered (padded) and valid, for
         # appends and returned memory; and how many appends ran in groups.
         self.span_rows = dict(append=0, append_valid=0, memory=0, memory_valid=0,
@@ -542,6 +555,87 @@ class PagedHistoryCache(BatchedHistoryCache):
         if self.private_kv:
             projection = self.actor.kv_proj
             self.pool.private[rows] = F.linear(memory, projection.weight, projection.bias)
+
+    # -- causal prefill -----------------------------------------------------
+
+    @torch.no_grad()
+    def prefill(self, keys: list[tuple[int, int]], streams: list[PublicStream]) -> int:
+        """``BatchedHistoryCache.prefill``; with ``causal_prefill`` the entries that
+        start from BOS are encoded in causal length-group passes first."""
+        if not self.causal_prefill or not keys:
+            return super().prefill(keys, streams)
+        if len(keys) != len(streams) or len(set(keys)) != len(keys):
+            raise ValueError("one distinct match key per public stream required")
+        before = self.appends
+        self.refresh_weights()
+        entries = [self._entry(key, stream) for key, stream in zip(keys, streams)]
+        fresh = [i for i, entry in enumerate(entries) if entry.length == 0]
+        if fresh:
+            self._causal_prefill([entries[i] for i in fresh],
+                                 np.asarray([streams[i].prefix + 1 for i in fresh], np.int64))
+        self._extend(keys, streams, [s.prefix + 1 for s in streams])
+        return self.appends - before
+
+    def _causal_prefill(self, entries: list[PagedEntry], targets: np.ndarray) -> None:
+        """Encode fresh ``entries`` from BOS up to ``targets`` positions: per
+        length group, under a token budget, one causal pass over the whole
+        prefix that writes keys/values and memory into the entries' pages."""
+        from train.history_model import length_groups
+        P = self.pool.page_tokens
+        # Never more length groups than the chunked path would take passes.
+        groups = min(CAUSAL_PREFILL_GROUPS, -(-int(targets.max()) // self.chunk_size))
+        for part in length_groups(targets - 1, groups, self.actor.config.width):
+            part = part[np.argsort(-targets[part], kind="stable")]
+            span = -(-int(targets[part[0]]) // P) * P
+            count = max(1, CAUSAL_PREFILL_TOKENS // span)
+            for begin in range(0, len(part), count):
+                members = part[begin:begin + count]
+                self._causal_pass([entries[i] for i in members], targets[members], span)
+                self.appends += 1
+
+    def _causal_pass(self, entries: list[PagedEntry], targets: np.ndarray, span: int) -> None:
+        actor, cfg, pool = self.actor, self.actor.config, self.pool
+        device, dtype = actor.bos.device, actor.bos.dtype
+        batch, P = len(entries), pool.page_tokens
+        tokens = np.zeros((batch, span, TOKEN_DIM), np.uint8)
+        rounds, phases = np.zeros((batch, span), np.int64), np.zeros((batch, span), np.int64)
+        for i, (entry, target) in enumerate(zip(entries, targets.tolist())):
+            events = target - 1                 # position 0 is BOS
+            tokens[i, 1:target] = entry.stream.tokens[:events]
+            rounds[i, 1:target] = entry.stream.rounds[:events]
+            phases[i, 1:target] = entry.stream.phases[:events]
+        new_pages = self._allocate(entries, targets)
+        table = self._page_table(entries, span)
+        write_batch = np.repeat(np.arange(batch, dtype=np.int64), targets)
+        write_slot = np.arange(len(write_batch), dtype=np.int64) - np.repeat(
+            np.cumsum(targets) - targets, targets)
+        write_rows = table[write_batch, write_slot // P] * P + write_slot % P
+        t, r, p, write_batch_d, write_slot_d, write_rows_d, new_pages_d = upload_arrays(
+            (tokens, rounds, phases, write_batch, write_slot, write_rows, new_pages), device)
+        if len(new_pages):
+            pool.zero_pages(new_pages_d)
+        state = (actor.public(t.to(dtype)) + actor.round_embedding(r.clamp(0, cfg.max_rounds - 1))
+                 + actor.phase_embedding(p.clamp(0, 3)))
+        state[:, 0] = actor.bos[0, 0]
+        position_table, _ = self._position_buffers(bucket(span))
+        state = state + position_table[:span]
+        heads, depth = cfg.heads, cfg.width // cfg.heads
+        for layer_index, layer in enumerate(actor.stream.layers):
+            attention = layer.self_attn
+            qkv = F.linear(layer.norm1(state), attention.in_proj_weight, attention.in_proj_bias)
+            qkv = qkv.view(batch, span, 3, heads, depth)
+            pool.kv[layer_index][write_rows_d] = qkv[write_batch_d, write_slot_d, 1:]
+            # Trailing padding cannot reach a valid position under causal attention.
+            q, k, v = (qkv[:, :, i].transpose(1, 2) for i in range(3))
+            state = finish(layer, state, F.scaled_dot_product_attention(
+                q, k, v, dropout_p=0.0, is_causal=True))
+        if actor.stream.norm is not None:
+            state = actor.stream.norm(state)
+        state = actor.stream_norm(state)
+        self._write_memory(state[write_batch_d, write_slot_d], write_rows_d)
+        for entry, target in zip(entries, targets.tolist()):
+            entry.length = target
+        self.encoded_tokens += int(targets.sum())
 
 
 # ---- merged snapshot encoding ----------------------------------------------------
