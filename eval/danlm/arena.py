@@ -38,8 +38,9 @@ import gd
 from eval.danlm.bridge import (BIG_JOKER, NormalizedPlay, PlayIndex, card_ours_to_theirs,
                                card_theirs_to_ours, decode_play, hand_ours_to_theirs,
                                level_ours_to_theirs, normalize_action)
-from eval.duplicate import bootstrap_interval
+from eval.duplicate import bootstrap_interval, deal_set_sha256
 from eval.history_policy import apply_and_observe, needs_history
+from infra.history_artifacts import sha256, source_identity
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DANLM_ROOT = ROOT / ".work/external/DanLM"
@@ -140,6 +141,10 @@ class RoundRecord:
     # One entry per finisher, in finish order: the finishing seat, the decision
     # count at that moment and every seat's remaining card count (gd's mirror).
     finish_snapshots: list[dict] = field(default_factory=list)
+    # For a mirror_failed round: the fatal divergence kind, its detail and the
+    # reading substitution made earlier in the same trick, if any (a mapped
+    # reading leaves the two engines with different tops for that trick).
+    failure: dict | None = None
 
 
 class LockstepRound:
@@ -166,6 +171,8 @@ class LockstepRound:
         self.decisions = 0
         self.tribute_kind = "none"
         self.finish_snapshots: list[dict] = []
+        self.failure: dict | None = None
+        self.trick_reading: str | None = None
         self._play_cache: dict[tuple[int, str, bytes], NormalizedPlay] = {}
         # A history policy hears every action applied to our mirror (both
         # sides' plays, tribute exchanges and the lone passes applied
@@ -187,6 +194,13 @@ class LockstepRound:
 
     def note(self, kind: str, detail: str = "", n: int = 1) -> None:
         self.div.add(kind, f"{self.round_id}: {detail}" if detail else "", n)
+
+    def fail(self, kind: str, detail: str = "") -> str:
+        """Note a fatal divergence and keep it as this round's failure record."""
+        self.note(kind, detail)
+        self.failure = {"kind": kind, "detail": detail, "decision": self.decisions,
+                        "trick_reading": self.trick_reading}
+        return "mirror_failed"
 
     def apply_ours(self, action) -> None:
         self.applied += 1
@@ -332,15 +346,13 @@ class LockstepRound:
         while obs is not None and not rnd.done:
             guard += 1
             if guard > 2000:
-                self.note("runaway_round")
-                status = "mirror_failed"
+                status = self.fail("runaway_round")
                 break
             player = int(obs.player)
             index = PlayIndex(obs.legal_plays, self.level, cache=self._play_cache)
             theirs_only_pass = len(index) == 1 and index.play(0).is_pass
             if self.state.phase != gd.Phase.Play:
-                self.note("round_end_mismatch", f"gd ended first, theirs at {player}")
-                status = "mirror_failed"
+                status = self.fail("round_end_mismatch", f"gd ended first, theirs at {player}")
                 break
             ours_actions = self.engine_full.legal_actions(self.state)
             if player != int(self.state.to_move):
@@ -351,8 +363,7 @@ class LockstepRound:
                 if ours_only_pass:
                     self.apply_ours(ours_actions[0])
                     continue
-                self.note("to_move_mismatch", f"theirs {player} ours {self.state.to_move}")
-                status = "mirror_failed"
+                status = self.fail("to_move_mismatch", f"theirs {player} ours {self.state.to_move}")
                 break
             if self.diff:
                 self.compare_legal_sets(index, ours_actions)
@@ -361,7 +372,7 @@ class LockstepRound:
                 play = index.play(choice)
                 action = self.match_theirs(play, ours_actions)
                 if action is None:
-                    status = "mirror_failed"
+                    status = self.fail("their_choice_missing", f"seat {player} {play}")
                     break
                 self.apply_ours(action)
             else:
@@ -375,12 +386,12 @@ class LockstepRound:
                     rows.append((row, how))
                     usable.append(action)
                 if not usable:
-                    self.note("our_candidates_all_unmatched")
-                    status = "mirror_failed"
+                    status = self.fail("our_candidates_all_unmatched")
                     break
                 pick = self.our_policy.select(self.engine_canon, self.state, usable, self.rng)
                 choice, how = rows[pick]
                 if how == "reading":
+                    self.trick_reading = f"ours seat {player} {usable[pick]} -> {index.play(choice)}"
                     self.note("our_choice_reading", f"{usable[pick]} -> {index.play(choice)}")
                 self.apply_ours(usable[pick])
             self.decisions += 1
@@ -395,11 +406,9 @@ class LockstepRound:
         our_order = our_returns = None
         if status == "ok":
             if not rnd.done:
-                self.note("their_round_not_done")
-                status = "mirror_failed"
+                status = self.fail("their_round_not_done")
             elif self.state.phase != gd.Phase.RoundEnd:
-                self.note("round_end_mismatch", "theirs ended first")
-                status = "mirror_failed"
+                status = self.fail("round_end_mismatch", "theirs ended first")
             else:
                 result = self.engine_full.end_round(self.state)
                 our_order, our_returns = list(result.order), list(result.seat_return)
@@ -409,13 +418,16 @@ class LockstepRound:
                     self.note("reward_mismatch", f"ours {our_returns} theirs {rewards}")
         self.check_history()
         return RoundRecord(status, self.seat_kind, finish, rewards, our_order, our_returns,
-                           self.decisions, self.tribute_kind, self.div, self.finish_snapshots)
+                           self.decisions, self.tribute_kind, self.div, self.finish_snapshots,
+                           self.failure)
 
     def step_theirs(self, rnd, obs, choice: int):
         play = obs.legal_plays[choice]
         new_obs = rnd.step(choice, obs)
         new_trick = (new_obs is not None and bool(new_obs.is_leading)
                      and int(new_obs.player) == int(rnd.state.lead_player))
+        if new_trick:
+            self.trick_reading = None
         for seat in range(4):
             if self.seat_kind[seat] != "ours":
                 self.their_agent(seat).observe_action(int(obs.player), play, new_trick)
@@ -428,9 +440,9 @@ class LockstepRound:
         same_cards = [a for a in ours_actions if a.type == play.type
                       and tuple(sorted(int(c) for c in a.cards)) == play.cards]
         if same_cards:
+            self.trick_reading = f"theirs seat {int(self.state.to_move)} {play} -> {same_cards[0]}"
             self.note("their_choice_reading", f"{play} -> {same_cards[0]}")
             return same_cards[0]
-        self.note("their_choice_missing", f"{play}")
         return None
 
     def compare_legal_sets(self, index: PlayIndex, ours_actions) -> None:
@@ -534,7 +546,7 @@ def _run_rounds(job: dict) -> list[dict]:
                     "finish_order": record.finish_order, "rewards": record.rewards,
                     "our_order": record.our_order, "our_returns": record.our_returns,
                     "decisions": record.decisions, "tribute": record.tribute,
-                    "finish_snapshots": record.finish_snapshots,
+                    "finish_snapshots": record.finish_snapshots, "failure": record.failure,
                     "divergences": {"counts": record.divergences.counts,
                                     "samples": record.divergences.samples}})
     return out
@@ -600,19 +612,7 @@ def run_duplicate(checkpoint: str, deals: int, seed: int, danlm_spec: str, worke
     started = time.monotonic()
     records = run_jobs(items, checkpoint=checkpoint, danlm_spec=danlm_spec, workers=workers, diff=False)
     elapsed = time.monotonic() - started
-    by_id = {r["id"]: r for r in records}
-    per_deal, wins, legs, excluded = [], 0, 0, 0
-    per_deal_tribute: dict[str, list[float]] = {}
-    for i, deal in enumerate(deal_specs):
-        a, b = by_id[f"deal-{i}/a"], by_id[f"deal-{i}/b"]
-        if a["status"] != "ok" or b["status"] != "ok":
-            excluded += 1
-            continue
-        ours_a, ours_b = a["rewards"][0], b["rewards"][1]
-        per_deal.append((ours_a + ours_b) / 2)
-        per_deal_tribute.setdefault(a["tribute"], []).append((ours_a + ours_b) / 2)
-        wins += int(a["finish_order"][0] % 2 == 0) + int(b["finish_order"][0] % 2 == 1)
-        legs += 2
+    scores = score_duplicate(records, len(deal_specs), seed, bootstrap_samples)
     if checkpoint.startswith("danlm:"):
         name, checkpoint_id = checkpoint, None
     else:
@@ -620,23 +620,74 @@ def run_duplicate(checkpoint: str, deals: int, seed: int, danlm_spec: str, worke
 
         policy = load_policy(checkpoint)
         name, checkpoint_id = policy.name, getattr(policy, "checkpoint_id", None)
+    path = Path(checkpoint)
     summary = {"mode": "duplicate", "checkpoint": checkpoint, "checkpoint_name": name,
-               "checkpoint_id": checkpoint_id, "danlm": danlm_spec,
-               "deals": deals, "seed": seed, "tribute_fraction": tribute_fraction,
-               "elapsed_seconds": elapsed, "scored_deals": len(per_deal),
-               "excluded_deals_mirror_failed": excluded,
-               "levels_per_round": float(np.mean(per_deal)) if per_deal else None,
-               "levels_per_round_ci95": list(bootstrap_interval(per_deal, seed, bootstrap_samples))
-               if len(per_deal) > 1 else None,
-               "round_win_rate": wins / legs if legs else None, "round_legs": legs,
-               "by_tribute": {k: {"deals": len(v), "levels_per_round": float(np.mean(v))}
-                              for k, v in per_deal_tribute.items()},
+               "checkpoint_id": checkpoint_id,
+               "checkpoint_sha256": sha256(path) if path.is_file() else None,
+               "danlm": danlm_spec, "deals": deals, "seed": seed,
+               "tribute_fraction": tribute_fraction,
+               "deal_set_sha256": deal_set_sha256(deal_specs),
+               "source_sha256": source_identity()["source_sha256"],
+               "elapsed_seconds": elapsed, **scores,
                "divergences": merge_divergences(records),
                "reading": "levels_per_round is our team's mean net level gain per round over "
                           "both legs of each deal (DanLM's engine scores); round_win_rate is "
                           "the fraction of legs whose first finisher is on our team, DanLM's "
-                          "single-round metric"}
+                          "single-round metric; per_deal holds both legs of every deal, "
+                          "excluded ones included, for eval.paired"}
     return summary
+
+
+def _leg_record(record: dict, team_seat: int) -> dict:
+    ok = record["status"] == "ok"
+    return {"status": record["status"],
+            "reward": record["rewards"][team_seat] if ok else None,
+            "round_win": record["finish_order"][0] % 2 == team_seat if ok else None,
+            "decisions": record["decisions"], "failure": record.get("failure"),
+            "divergences": dict(sorted(record["divergences"]["counts"].items()))}
+
+
+def score_duplicate(records: list[dict], deals: int, seed: int,
+                    bootstrap_samples: int = 2000) -> dict:
+    """Scores and per-deal records of ``deals`` duplicate deals from their leg records.
+
+    Leg ``a`` seats our team at 0/2 and leg ``b`` at 1/3. A deal is scored only
+    when both legs completed; an excluded deal keeps its legs and failures.
+    """
+    by_id = {r["id"]: r for r in records}
+    per_deal, scored, wins = [], [], 0
+    per_deal_tribute: dict[str, list[float]] = {}
+    reasons: dict[str, int] = {}
+    for i in range(deals):
+        a, b = by_id[f"deal-{i}/a"], by_id[f"deal-{i}/b"]
+        legs = [_leg_record(a, 0), _leg_record(b, 1)]
+        ok = all(leg["status"] == "ok" for leg in legs)
+        score = (legs[0]["reward"] + legs[1]["reward"]) / 2 if ok else None
+        per_deal.append({"deal": i, "tribute": a["tribute"], "scored": ok, "score": score,
+                         "round_wins": sum(leg["round_win"] for leg in legs) if ok else None,
+                         "legs": legs})
+        if not ok:
+            for leg in legs:
+                if leg["status"] != "ok":
+                    kind = (leg["failure"] or {}).get("kind", "unrecorded")
+                    reasons[kind] = reasons.get(kind, 0) + 1
+            continue
+        scored.append(score)
+        per_deal_tribute.setdefault(a["tribute"], []).append(score)
+        wins += per_deal[-1]["round_wins"]
+    legs_scored = 2 * len(scored)
+    return {"scored_deals": len(scored),
+            "excluded_deals_mirror_failed": deals - len(scored),
+            "excluded_deal_ids": [d["deal"] for d in per_deal if not d["scored"]],
+            "failed_legs_by_kind": dict(sorted(reasons.items())),
+            "levels_per_round": float(np.mean(scored)) if scored else None,
+            "levels_per_round_ci95": list(bootstrap_interval(scored, seed, bootstrap_samples))
+            if len(scored) > 1 else None,
+            "round_win_rate": wins / legs_scored if legs_scored else None,
+            "round_legs": legs_scored,
+            "by_tribute": {k: {"deals": len(v), "levels_per_round": float(np.mean(v))}
+                           for k, v in per_deal_tribute.items()},
+            "per_deal": per_deal}
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -668,7 +719,8 @@ def main(argv: list[str] | None = None) -> None:
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(report, indent=2) + "\n")
-    print(json.dumps({k: v for k, v in report.items() if k != "divergences"}, indent=2))
+    print(json.dumps({k: v for k, v in report.items() if k not in ("divergences", "per_deal")},
+                     indent=2))
     print("divergence counts:", json.dumps(report["divergences"]["counts"], indent=2))
     print("written", output)
 
