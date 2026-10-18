@@ -160,6 +160,11 @@ class HistoryPPOConfig:
     # streams are encoded in one pass per step over stacked encoder weights
     # (train/history_paged_cache.merged_encode); tier 2, snapshot seats only.
     batch_snapshot_encoder: bool = False
+    # With merged snapshot inference: each stacked snapshot head stores its
+    # query/key and value/output projections pre-multiplied, so each attention
+    # side is one batched linear layer instead of four kernels
+    # (train/history_snapshot_batch._head_values). Tier 2, snapshot seats only.
+    rollout_merged_head_prefold: bool = False
     # Release the CUDA caching allocator's free blocks (torch.cuda.empty_cache)
     # after collect and after learn. Allocator timing only; no numeric change.
     # None follows the update's merged-snapshot arm: with the arm on, no snapshot
@@ -270,6 +275,9 @@ class HistoryPPOConfig:
                 and (self.batch_snapshot_policies or self.batch_snapshot_policies_schedule)):
             raise ValueError('batch_snapshot_encoder requires rollout_paged_cache and merged '
                              'snapshot policies')
+        if self.rollout_merged_head_prefold and not (self.batch_snapshot_policies
+                                                     or self.batch_snapshot_policies_schedule):
+            raise ValueError('rollout_merged_head_prefold requires merged snapshot policies')
         if self.rollout_wide_projection and not self.rollout_batched_attention:
             raise ValueError('rollout_wide_projection requires rollout_batched_attention')
         if self.ddp_reduce not in ("gloo", "shm"):
@@ -441,7 +449,7 @@ RESUME_OVERRIDES = frozenset({"num_envs", "num_threads", "minibatch_matches", "t
                               "learner_compact_next",
                               "rollout_page_span", "rollout_prefill_learner_cache",
                               "rollout_span_groups", "rollout_private_kv_pages",
-                              "rollout_causal_prefill",
+                              "rollout_causal_prefill", "rollout_merged_head_prefold",
                               "profile_learn",
                               "aux_heads", "aux_coef", "aux_warmup_updates",
                               "rollout_private_graphs",
@@ -714,7 +722,8 @@ class HistoryTrainer:
                                 prefill_learner_cache=config.rollout_prefill_learner_cache,
                                 span_groups=config.rollout_span_groups,
                                 private_kv_pages=config.rollout_private_kv_pages,
-                                causal_prefill=config.rollout_causal_prefill)
+                                causal_prefill=config.rollout_causal_prefill,
+                                merged_head_prefold=config.rollout_merged_head_prefold)
 
     def snapshot_batching(self) -> bool:
         """Merged snapshot inference for this update (the schedule's block, if any)."""
@@ -902,6 +911,7 @@ class HistoryTrainer:
                           "rollout_span_groups": self.collector.span_groups,
                           "rollout_private_kv_pages": self.collector.private_kv_pages,
                           "rollout_causal_prefill": self.collector.causal_prefill,
+                          "rollout_merged_head_prefold": self.collector.merged_head_prefold,
                           "batch_snapshot_policies": self.config.batch_snapshot_policies,
                           "batch_snapshot_policies_schedule":
                               self.config.batch_snapshot_policies_schedule,
@@ -1703,6 +1713,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="with --batch-snapshot-policies and --rollout-paged-cache: encode "
                              "all snapshot identities' public streams in one pass per step "
                              "(FP32; snapshot seats' reduction order differs)")
+    parser.add_argument("--rollout-merged-head-prefold", action="store_true",
+                        help="with --batch-snapshot-policies: pre-multiply each snapshot "
+                             "head's query/key and value/output projections (FP32; snapshot "
+                             "seats' reduction order differs)")
     parser.add_argument("--batch-snapshot-policies-schedule", default="",
                         help="diagnostic A/B: N:on|off blocks of this process's updates")
     parser.add_argument("--rollout-trim-cuda-cache", type=optional_bool, default=None,

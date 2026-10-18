@@ -854,7 +854,10 @@ class HistoryCollector:
     ``causal_prefill`` (opt-in, with ``prefill_learner_cache`` and
     ``paged_cache``) runs that prefill as one causal pass per length group for
     streams rebuilt from BOS instead of one masked pass per chunk; tier 2 on
-    learner seats.
+    learner seats. ``merged_head_prefold`` (opt-in, with the merged call)
+    stores each stacked snapshot head's query/key and value/output projections
+    pre-multiplied (``train.history_snapshot_batch.SnapshotHeads``); tier 2 on
+    snapshot seats only.
     """
 
     def __init__(self, env: Any, actor: HistoryActor, store: MatchEventStore,
@@ -877,7 +880,7 @@ class HistoryCollector:
                  row_style: Callable[[int, int], int] | None = None,
                  prefill_learner_cache: bool = False,
                  span_groups: int = 1, private_kv_pages: bool = False,
-                 causal_prefill: bool = False) -> None:
+                 causal_prefill: bool = False, merged_head_prefold: bool = False) -> None:
         self.env = env
         self.actor = actor
         self.store = store
@@ -942,6 +945,7 @@ class HistoryCollector:
         self.private_kv_pages = bool(private_kv_pages)
         self.causal_prefill = bool(causal_prefill)
         self.batch_snapshot_policies = bool(batch_snapshot_policies)
+        self.merged_head_prefold = bool(merged_head_prefold)
         self.snapshot_heads = None      # stacked snapshot heads, created on first merged step
         if self.batch_snapshot_policies:
             from train.history_snapshot_batch import validate_actor
@@ -1346,7 +1350,8 @@ class HistoryCollector:
         if plan.merged:
             from train.history_snapshot_batch import SnapshotHeads, merged_layout
             if self.snapshot_heads is None:
-                self.snapshot_heads = SnapshotHeads(encoder=self.batch_snapshot_encoder)
+                self.snapshot_heads = SnapshotHeads(encoder=self.batch_snapshot_encoder,
+                                                    prefold=self.merged_head_prefold)
             self._freeze_snapshot_heads()
             plan.merged_actors = [self.resolve_policy(g.identity) for g in plan.merged]
             plan.slots = [self.snapshot_heads.slot(g.identity, actor)
@@ -1502,8 +1507,10 @@ class HistoryCollector:
         stats = CollectStats()
         if self.batch_snapshot_encoder and not self.paged_cache:
             raise ValueError("merged snapshot encoding requires the paged KV cache")
-        if (not self.batch_snapshot_policies or (self.snapshot_heads is not None and
-                                                 self.snapshot_heads.encoder != self.batch_snapshot_encoder)):
+        heads = self.snapshot_heads
+        if (not self.batch_snapshot_policies or (heads is not None and (
+                heads.encoder != self.batch_snapshot_encoder
+                or heads.prefold != self.merged_head_prefold))):
             self.snapshot_heads = None      # switched off or re-laid out: release the stacked copy
         if self.batch_snapshot_policies:
             if self.snapshot_heads is None:

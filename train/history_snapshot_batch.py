@@ -117,9 +117,15 @@ def validate_actor(actor: HistoryActor) -> None:
                              "actors with forward hooks are refused")
 
 
-def _head_values(actor: HistoryActor) -> dict[str, Tensor]:
+def _head_values(actor: HistoryActor, prefold: bool = False) -> dict[str, Tensor]:
     """One identity's head in the stacked layout: Linear weights as [in, out],
-    biases as [1, out], key/value weights split per head."""
+    biases as [1, out], key/value weights split per head.
+
+    ``prefold``: the query projection is pre-multiplied with the per-head key
+    weights (and the attention scale), and the per-head value weights with the
+    output projection, so each side of the attention is one ``[width,
+    heads * width]`` (``[heads * width, width]``) linear layer. Products are
+    formed in FP64 and rounded once to FP32 (acceptance tier 2)."""
     cfg = actor.config
     width, heads = cfg.width, cfg.heads
     depth = width // heads
@@ -130,15 +136,31 @@ def _head_values(actor: HistoryActor) -> dict[str, Tensor]:
     f0, f1 = actor.feed_forward[0], actor.feed_forward[2]
     kv_w, kv_b = actor.kv_proj.weight, actor.kv_proj.bias
     linear = lambda layer, name: {f"{name}_w": layer.weight.t(), f"{name}_b": layer.bias[None]}
+    # query-side key weights: (W_k^T q) per head, [heads, depth, width]
+    k_w = kv_w[:width].reshape(heads, depth, width)
+    # value weights applied after attention, [heads, width, depth]
+    v_w = kv_w[width:].reshape(heads, depth, width).transpose(1, 2)
+    if prefold:
+        q_w, q_b = actor.q_proj.weight.double(), actor.q_proj.bias.double()
+        o_w, o_b = actor.out_proj.weight.double(), actor.out_proj.bias.double()
+        k64, v64, scale = k_w.double(), v_w.double(), depth ** -0.5
+        attention = {
+            # folded[h, j] = sum_d q[h, d] k_w[h, d, j] * scale, q = W_q x + b_q
+            "qk_w": (torch.einsum("hdi,hdj->ihj", q_w.view(heads, depth, width), k64)
+                     * scale).reshape(width, heads * width).float(),
+            "qk_b": (torch.einsum("hd,hdj->hj", q_b.view(heads, depth), k64)
+                     * scale).reshape(1, heads * width).float(),
+            # out = W_o (context v_w + v_b) + b_o, context [heads, width] per row
+            "vo_w": torch.einsum("hjd,ohd->hjo", v64, o_w.view(width, heads, depth))
+                         .reshape(heads * width, width).float(),
+            "vo_b": (kv_b[width:].double() @ o_w.t() + o_b)[None].float(),
+        }
+    else:
+        attention = {**linear(actor.q_proj, "q"), "k_w": k_w, "v_w": v_w,
+                     "v_b": kv_b[width:][None], **linear(actor.out_proj, "o")}
     return {
         **linear(p0, "p0"), **linear(p1, "p1"), "seat": actor.seat.weight,
-        **linear(actor.q_proj, "q"),
-        # query-side key weights: (W_k^T q) per head, [heads, depth, width]
-        "k_w": kv_w[:width].reshape(heads, depth, width),
-        # value weights applied after attention, [heads, width, depth]
-        "v_w": kv_w[width:].reshape(heads, depth, width).transpose(1, 2),
-        "v_b": kv_b[width:][None],
-        **linear(actor.out_proj, "o"),
+        **attention,
         "n1_w": actor.attention_norm.weight[None], "n1_b": actor.attention_norm.bias[None],
         **linear(f0, "f0"), **linear(f1, "f1"),
         "n2_w": actor.output_norm.weight[None], "n2_b": actor.output_norm.bias[None],
@@ -211,6 +233,8 @@ class SnapshotHeads:
     (re)writes the slot first, so a stale stacked copy is never read. Inside
     ``frozen_weights`` (the collector enters it with its own) that check runs
     once per identity and again at the interval's end instead of every step.
+    ``prefold`` (opt-in, tier 2) stores the attention's query/key and
+    value/output projections pre-multiplied (``_head_values``).
     ``retain`` frees the slots of identities no longer assigned to any match,
     driven by the collector's cache-pruning signal. Only the head is stacked
     unless ``encoder`` is set, which also stacks the public stream encoder for
@@ -218,11 +242,13 @@ class SnapshotHeads:
     ``bytes``. Collector-owned: never actor or checkpoint state.
     """
 
-    def __init__(self, capacity: int = 4, *, encoder: bool = False) -> None:
+    def __init__(self, capacity: int = 4, *, encoder: bool = False, prefold: bool = False
+                 ) -> None:
         if capacity < 1:
             raise ValueError("slot capacity must be positive")
         self.capacity = capacity
         self.encoder = encoder
+        self.prefold = bool(prefold)
         self.tensors: dict[str, Tensor] | None = None
         self.eps: float | None = None
         self.config = None
@@ -311,7 +337,7 @@ class SnapshotHeads:
         if self.config is not None and (actor.config != self.config or eps != self.eps
                                         or actor.output_norm.eps != eps):
             raise ValueError("stacked snapshot heads require one architecture")
-        values = _head_values(actor)
+        values = _head_values(actor, self.prefold)
         if self.encoder:
             values.update(_encoder_values(actor))
         index = record.index if record is not None else self._free_index()
@@ -512,10 +538,14 @@ def merged_log_probs(heads: SnapshotHeads, layout: MergedLayout, fields: dict[st
     x = torch.relu(_linear(x, tensors, "p0", S))
     x = torch.relu(_linear(x, tensors, "p1", S))
     query = x + tensors["seat"][:S].reshape(S * 4, width)[fields["seat_pad"]].view(S, M, width)
-    q = _linear(query, tensors, "q", S).view(S, M, heads_n, depth).transpose(1, 2)
-    # Keys folded into the query: [S, heads, M, width], then one row per decision.
-    folded = torch.matmul(q, tensors["k_w"][:S]) * depth ** -0.5
-    folded = folded.transpose(1, 2).reshape(S * M, heads_n, width)
+    if heads.prefold:
+        # Query and key projections pre-multiplied: [S, M, heads * width].
+        folded = _linear(query, tensors, "qk", S).view(S * M, heads_n, width)
+    else:
+        q = _linear(query, tensors, "q", S).view(S, M, heads_n, depth).transpose(1, 2)
+        # Keys folded into the query: [S, heads, M, width], then one row per decision.
+        folded = torch.matmul(q, tensors["k_w"][:S]) * depth ** -0.5
+        folded = folded.transpose(1, 2).reshape(S * M, heads_n, width)
     if layout.span_groups is not None:
         context = _span_group_context(folded, memory, layout, fields, S * M)
     else:
@@ -526,10 +556,14 @@ def merged_log_probs(heads: SnapshotHeads, layout: MergedLayout, fields: dict[st
         scores = scores.masked_fill(masked[:, None], float("-inf"))
         context = torch.bmm(torch.softmax(scores, dim=-1), own)       # [rows, heads, width]
         context = _pad(context, fields["row_pad"], S * M)
-    context = context.view(S, M, heads_n, width).transpose(1, 2)
-    attended = torch.matmul(context, tensors["v_w"][:S])               # [S, heads, M, depth]
-    attended = attended.transpose(1, 2).reshape(S, M, width) + tensors["v_b"][:S]
-    attended = _linear(attended, tensors, "o", S)
+    if heads.prefold:
+        # Value and output projections pre-multiplied: [S, M, heads * width] in.
+        attended = _linear(context.view(S, M, heads_n * width), tensors, "vo", S)
+    else:
+        context = context.view(S, M, heads_n, width).transpose(1, 2)
+        attended = torch.matmul(context, tensors["v_w"][:S])           # [S, heads, M, depth]
+        attended = attended.transpose(1, 2).reshape(S, M, width) + tensors["v_b"][:S]
+        attended = _linear(attended, tensors, "o", S)
     state = _norm(query + attended, tensors, "n1", S, heads.eps)
     hidden = _linear(torch.relu(_linear(state, tensors, "f0", S)), tensors, "f1", S)
     state = _norm(state + hidden, tensors, "n2", S, heads.eps)
