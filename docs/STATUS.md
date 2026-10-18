@@ -10,6 +10,108 @@ studies, content swaps, fusion diagnostics, and training/fault evidence. It reco
 the u77500 resume correction and separates measured findings from unresolved
 capacity/training hypotheses. Documentation only; no new experiment or adoption.
 
+October 17 decision-value pilot: [bounded CPU result](reports/history-decision-value-2026-10-17.md)
+completed 8 fresh own-hand information sets and 2,880 frozen score-round branches,
+averaging compatible hidden deals before action selection and using independent
+evaluation deals. Identity-informed Q selection gains −0.00521 PPO round return
+(exploratory root-bootstrap 95% interval −0.14844 to +0.10417); the near-uniform
+public-history posterior selects the same action as the prior in all 32 cases.
+Native greedy FULL/ROUND choices also match, despite nonzero probability changes.
+Six selection worlds per action leave substantial Q selection noise; this does
+not establish that identity has no decision value. Prioritize a reproducible
+positive-value task before PPO adaptation; no native/history4 or norm16 training.
+With a fixed calibration mean, history4 is absorbable into out_proj and tests
+learnability/optimization rather than increased policy expressivity. Main unchanged.
+
+October 17 expanded Q check: [CPU stability and independent value replication](reports/history-decision-stability-2026-10-17.md)
+completed 40,960 rounds on the same eight roots/candidate sets. Independent
+64-world replicas agree on identity top actions in 46.88% of contexts and pairwise
+rankings in 66.09%, below the descriptive stability gate despite reduced Q noise.
+Choices pooled over 128 worlds were sealed before another 128 evaluation worlds:
+identity gain +0.03467 (fixed-root paired-world 95% interval −0.02246 to +0.09106),
+public posterior +0.01099 (−0.00244 to +0.02466; only one changed action).
+Neither establishes positive decision value or stable optimal selection; these
+are reused opening roots, not unseen-context confirmation. Source/checkpoint and
+choice seals verified, 19 related tests pass. No PPO or main model changes.
+
+October 17 larger fixed-root check: [512/512/1024-world CPU result](reports/history-decision-precision-2026-10-17.md)
+completed 327,680 score-round branches with at most four single-threaded local
+CPU workers. Identity top1/ranking agreement is 46.88%/78.75%; 84.38% of
+contexts have both cross-choice gaps within 0.1 round return. Q noise decreased,
+but strict ranking remains below the descriptive gate. After sealing pooled1024
+choices, independent evaluation gives identity −0.00076 (fixed-root 95% interval
+−0.01227 to +0.01102); public posterior never changes the prior action.
+Retain the post-hoc recheck: previous pooled128 identity choices still gain
++0.02356 over their weaker old prior on the new evaluation worlds, but their
+absolute return remains below the new type-blind prior. Type-matching controls
+remain inconclusive. Thus no established identity benefit beyond the stronger
+new prior, not a claim that identity is valueless. All raw returns/seals/source
+identities verified, 23 related tests pass. No PPO, extra budget or main change.
+
+October 17 new midgame task search: [opponent-sensitive task screening](reports/history-opponent-sensitive-tasks-2026-10-17.md)
+completed 64 generated rounds and 144,000 local CPU score branches within the
+preregistered 327,680 ceiling. Public-policy disagreement prefiltered 32 distinct
+source-round nodes; crossfit screening selected six, then sealed pooled512-world
+choices before independent512-world confirmation. Identity win gain is −0.6755pp
+(fixed-root paired-world 97.5% interval [−1.2288, −0.1302]pp); type alignment
+against the same action mixture is −0.0529pp with an interval crossing zero.
+Identity gate failed, so the separate history evaluation was not run; the sealed
+posterior also never changes the prior action. This controlled midgame hand-redraw
+and type-assignment task is not natural-match conditional inference. No established
+positive-value acceptance task, extra sampling, PPO, GPU or main-model change;
+22 related tests and raw-array/source/checkpoint/choice-seal audits pass.
+
+October 17 identity-loss diagnosis: [Q noise versus opponent response](reports/history-identity-diagnosis-2026-10-17.md)
+completed a fixed 368,640 new local CPU branches on the same six roots: fresh1024
+estimates, pooled2048 choices sealed before fresh2048 evaluation. The legacy512
+identity policy still loses −0.3316pp on new worlds; several originally positive
+Q gaps reverse. The refined identity policy improves absolute win probability by
++0.5778pp over legacy (descriptive paired 95% interval [+0.3621,+0.7894]pp).
+Its gain over its stronger blind prior is +0.1648pp (paired-world 97.5% interval
+[−0.0773,+0.4008]pp), while correct type matching versus the same marginal action
+mixture gains +0.2991pp ([+0.1490,+0.4491]pp). Thus wrong finite-sample action
+choices explain the loss; opponents are not wholly response-equivalent, but a
+reliable advantage beyond the blind prior remains unestablished. The conservative
+95% candidate-limited oracle upper bound is 3.627pp, so practical identity value
+above 2pp is not ruled out. All chunks, reused-data/source/checkpoint hashes,
+choice seals and summaries verified; 29 related tests pass. No budget extension,
+PPO, historical-input experiment, GPU or main-model change.
+
+October 17 planted-habit oracle value: [one-step value of knowing z](reports/history-habit-value-2026-10-17.md)
+gave the true style of the Sept 30 habit pack (u2623 + z*b*f logit tilt) to a
+rollout planner on 23 fresh nodes, 759,808 local CPU branches. For the phase-1a
+pack (lead_single b=1) the upward-biased plug-in value is +0.02pp round win; even
+pass b=4 is +0.27pp, with cross-fitted gains crossing zero for every style.
+Opponent types do change relative action values (pass b=4 interaction RMS 3.25pp)
+but rarely the best action. The 1a ORACLE null is therefore most simply explained
+by near-zero one-step value; whole-round cumulative value is not measured.
+
+October 17 planted-habit whole-round value: [late-round oracle vs type-blind search](reports/history-habit-round-2026-10-17.md)
+searched every observer-team decision once some seat holds <= 10 cards, with paired
+oracle-z and 50/50-blind planners on the same deals. Over 201 complete deals per
+style (prefix 0-200; plan was 800, cut by the $2 Vast budget and local load),
+pass b=4 gains +8.96pp round win [+1.99, +15.92], while the phase-1a pack
+(lead_single b=1) gives +1.49pp [-3.48, +6.47]. Multi-step targeting is valuable
+for a strong habit even though one-step value was +0.27pp; the 1a pack remains
+inconclusive. Spent $1.76 on Vast CPU instance 56445523, destroyed. No training.
+
+October 17 habit identifiability (stage 0a of the [habit attention plan](reports/habit-attention-ab-plan-2026-10-17.md)):
+[ideal-observer posterior](reports/habit-identifiability-2026-10-17.md) over 64 matches per
+style. pass b=4 is identified within the current round (ROUND posterior 0.948 in the
+first half of rounds 2+), so FULL vs ROUND cannot test cross-round reading with it.
+The preregistered rule selects pass b=1 (ROUND 0.691 / FULL 0.983) and bomb b=2
+(0.747 / 0.975); their cross-round decision value (stage 0b) is unmeasured.
+No training, local CPU only.
+
+October 18 stage 0b: [cross-round decision value](reports/habit-crossround-value-2026-10-18.md),
+700 matches per style (CPU 0-198, RTX 4090 199-699 with the batched engine, $0.50).
+Late-round full-history minus current-round-posterior planner: pass b=1 -0.57pp
+[-2.71, +1.57], bomb b=2 0.00pp [-1.43, +1.29]. Weak habits need memory but are
+worth ~nothing; strong habits are worth targeting but visible within one round, so
+stage 1 should not start on single-axis tilt opponents. The batched VecEnv /
+shared-prefix rollout engine ([design](reports/batched-rollout-design-2026-10-18.md))
+reproduces team_rollout bit for bit on CPU and CUDA; ~1,900 vs ~68 matches/hour.
+
 ## Baseline and documented readiness
 
 - Main route: randomly initialized public-history Transformer, self-play PPO,

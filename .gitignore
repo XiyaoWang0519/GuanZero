@@ -10,3 +10,5 @@ ogd_traces/
 .work/
 runs/
 .DS_Store
+.claude/worktrees/
+.claude/settings.local.json
