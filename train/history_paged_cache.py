@@ -34,9 +34,17 @@ would otherwise derive from the boolean mask in every layer; row indices are
 expanded page-major; the merged path gathers only queries; pool storage grows
 uninitialized; and memory is gathered a whole page at a time. The last two
 rest on the pool invariants below: no row is read before it is written,
-except page 0 and the memory rows of an entry's pages past its length, which
-are zeroed when the page is allocated. The gathered memory is therefore the
-same tensor as before, zero past each stream's length.
+except page 0 and the memory (and private) rows of an entry's pages past its
+length, which are zeroed when the page is allocated. The gathered memory is
+therefore the same tensor as before, zero past each stream's length.
+
+Three further opt-in options (``PagedHistoryCache`` arguments, each acceptance
+tier 2 and default off): ``span_groups`` attends per end-sorted span group
+instead of padding every stream to the batch's longest; ``private_kv`` stores
+the learner's private-attention keys/values per token, so a rollout step does
+not project the whole history again; ``causal_prefill`` rebuilds streams from
+BOS in one causal pass per length group. ``encode_rollout`` returns the
+learner's memory for those layouts as a ``history_model.RolloutMemory``.
 
 A pool is shared by the caches built on it: a cache releases its pages on
 ``clear``/``prune``. Page 0 is never allocated and stays zero. A pool grows by
@@ -310,15 +318,24 @@ class PagedHistoryCache(BatchedHistoryCache):
     def _memory_size(self, longest: int) -> int:
         return self._span(longest)
 
+    def _spans(self, ends: np.ndarray) -> np.ndarray:
+        """``_span`` of every element of ``ends`` (positive int64), vectorized."""
+        # bucket(n) = max(32, 2 ** bit_length(n - 1)); frexp's exponent of a
+        # non-negative integer below 2 ** 53 is exactly its bit length.
+        spans = np.maximum(32, np.left_shift(np.int64(1), np.frexp((ends - 1).astype(np.float64))[1]))
+        if self.page_span:
+            P = self.pool.page_tokens
+            spans = np.minimum(spans, -(-ends // P) * P)
+        return spans.astype(np.int64)
+
     def _groups(self, ends: np.ndarray) -> tuple[np.ndarray | None, list[tuple[int, int, int]]]:
         """``(order, plan)``: the batch order (None: unchanged) and its span groups
         ``(begin, end, span)`` in that order; one group without ``span_groups``."""
         if self.span_groups < 2 or len(ends) < 2:
             return None, [(0, len(ends), self._span(int(ends.max())))]
         order = np.argsort(-ends, kind="stable")
-        spans = {int(end): self._span(int(end)) for end in np.unique(ends)}
-        plan = span_plan(np.asarray([spans[int(end)] for end in ends[order]], np.int64),
-                         self.span_groups, SPAN_GROUP_MIN_SHARE, SPAN_GROUP_MIN_ROWS)
+        plan = span_plan(self._spans(ends[order]), self.span_groups, SPAN_GROUP_MIN_SHARE,
+                         SPAN_GROUP_MIN_ROWS)
         if len(plan) == 1:          # keep the batch exactly as it came
             return None, [(0, len(ends), plan[0][2])]
         return order, plan

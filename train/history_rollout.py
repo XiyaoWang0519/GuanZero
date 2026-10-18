@@ -44,7 +44,7 @@ import numpy as np
 import torch
 
 from train.history_model import (HIDDEN_DIM, PLAY_PHASE, DecisionInputs, HistoryActor,
-                                 PublicStream, StreamBatch)
+                                 PublicStream, RolloutMemory, StreamBatch)
 from train.history_snapshot_batch import LAYOUT_FIELDS
 from train.history_transfers import download_tensors as _download_tensors, upload_arrays
 
@@ -938,7 +938,7 @@ class HistoryCollector:
     @torch.no_grad()
     def _encode_streams(self, group: _PolicyBatch, actor: HistoryActor,
                         uploaded_prefix: torch.Tensor, prefix: np.ndarray
-                        ) -> tuple[StreamBatch, torch.Tensor | None]:
+                        ) -> tuple[StreamBatch, torch.Tensor | RolloutMemory | None]:
         """A group's public streams: ``(metadata, encoded)`` through the KV cache,
         or the raw ``StreamBatch`` and ``None`` without it. Learner rows of one
         decision per stream read a ``RolloutMemory`` when span groups or

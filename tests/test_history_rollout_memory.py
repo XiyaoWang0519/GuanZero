@@ -81,6 +81,16 @@ def test_span_plan_minimises_padded_rows():
     assert span_plan(spans[:1], 3) == [(0, 1, 1024)]
 
 
+def test_vectorized_spans_match_span():
+    actor = fresh_player(CONFIG, 1)[0]
+    ends = np.arange(1, 5000, dtype=np.int64)
+    for page_tokens in (8, 16, 64):
+        for page_span in (False, True):
+            cache = PagedHistoryCache(actor, KVPagePool.for_actor(actor, page_tokens=page_tokens),
+                                      page_span=page_span)
+            assert cache._spans(ends).tolist() == [cache._span(int(n)) for n in ends]
+
+
 # ---- cache level -----------------------------------------------------------------
 
 @pytest.mark.parametrize("device", devices())
