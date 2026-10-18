@@ -207,9 +207,43 @@ fresh single-process measurement is useful engineering evidence but cannot
 substitute for the trained checkpoint and the real 8-rank/shared-GPU layout.
 The script does not recreate or modify that production topology.
 
+## L40S measurement, October 18
+
+Source 824316f, one rented Vast L40S 48 GB (EPYC 9474F, 12 effective cores,
+driver 570.133.20), PyTorch 2.11.0+cu128, Triton 3.6.0, strict FP32.
+`PPO_BLOCKS=2 bash scripts/benchmark-paged-attention.sh ... --ppo`. Gates: 113
+passed, 0 skipped. Earlier attempts on this host (gate failures, then a PPO
+start failure because the tarball had no `.git`) are recorded above and in the kit.
+
+Component (gather + attention per layer, median wall time, torch / triton):
+
+| longest context | query width 1 | 27 | 128 |
+|---|---|---|---|
+| 65 | 0.056 / 0.024 ms (2.30x) | 0.074 / 0.025 (2.91x) | 0.100 / 0.042 (2.40x) |
+| 1,537 | 0.646 / 0.095 (6.79x) | 0.680 / 0.153 (4.46x) | 1.210 / 0.322 (3.76x) |
+| 4,097 | 1.749 / 0.357 (4.90x) | 1.832 / 0.436 (4.20x) | 3.255 / 0.846 (3.85x) |
+
+Complete single-process PPO (fresh players, width 128 / 4 layers, 128 envs,
+40 updates with 24 warmup, two ABBA blocks, 8 trials per case):
+
+| case | torch dec/s (median) | triton dec/s (median) | ratio | block ratios |
+|---|---|---|---|---|
+| ordinary paged | 5,982 | 8,403 | 1.40x | 1.36, 1.42 |
+| merged snapshots | 4,677 | 6,479 | 1.39x | 1.40, 1.36 |
+
+Trial ranges do not overlap (paged torch 5,903-6,357 vs triton 8,351-8,563;
+snapshots 4,535-4,945 vs 6,444-6,609). Every triton trial dispatched the kernel
+(14k-34k calls); every torch trial dispatched none. Max context in these runs was
+2,217-3,341 tokens. Scope limits: fresh players, one process on one GPU, no
+mature-checkpoint replay, no 8-rank shared-GPU (MPS) topology, no strength check.
+Artifacts: `.work/paged-attention-gpu-2026-10-18/full4/` (local, not portable).
+
 ## Acceptance decision
 
-There is **no measured CUDA or end-to-end speedup for this candidate yet**.
+**Updated October 18:** the L40S gates pass and fresh single-process complete
+PPO is 1.39-1.40x faster (above). The remaining prerequisites below still apply.
+
+Original text: there was no measured CUDA or end-to-end speedup for this candidate.
 Do not merge it as an enabled production optimization on the strength of CPU
 recurrence checks or an isolated kernel ratio. Retain the eager default and
 require successful GPU execution, real trained-policy behavior replay, finite
