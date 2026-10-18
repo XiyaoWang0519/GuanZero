@@ -85,18 +85,60 @@ def _next_slices() -> dict[str, slice]:
 
 NEXT_SLICES = _next_slices()
 
+# The six categorical fields: the five one-hot fields, then the bomb size.
+# Card bits are one contiguous block in the token and in the logits.
+_CATEGORICAL = (*(name for name, _ in ONE_HOT_FIELDS), "bomb")
+_SEAT_FIELD, _TYPE_FIELD = _CATEGORICAL.index("seat"), _CATEGORICAL.index("type")
+CARD_TOKENS = slice(CARDS1.start, CARDS2.stop)
+CARD_LOGITS = slice(NEXT_SLICES["cards1"].start, NEXT_SLICES["cards2"].stop)
+assert CARDS1.stop == CARDS2.start and NEXT_SLICES["cards1"].stop == NEXT_SLICES["cards2"].start
+
+
+def next_token_targets(tokens: Tensor) -> list[Tensor]:
+    """``[N]`` int64 targets of the categorical fields, in ``_CATEGORICAL``
+    order: each one-hot field's argmax (an all-zero field gives 0), then the
+    bomb class (``BOMB_CLASSES - 1`` for "not a bomb"). The bomb target fills
+    the argmax where no size bit is set: the same integers as a ``where``."""
+    targets = [tokens[:, field].argmax(-1) for _, field in ONE_HOT_FIELDS]
+    bomb = tokens[:, BOMB]
+    targets.append(bomb.argmax(-1).masked_fill_(bomb.amax(-1) == 0, BOMB_CLASSES - 1))
+    return targets
+
+
+def _next_token_rates(logits: Tensor, tokens: Tensor, targets: list[Tensor],
+                      weight: Tensor | None, total) -> dict[str, Tensor]:
+    """Seat/type accuracy and ``next_cards_exact``. The indicators are 0/1, so
+    their weighted sums are exact integers in any order: one stacked column sum
+    gives each rate bit for bit as three separate masked means would."""
+    with torch.no_grad():
+        cards_right = ((logits[:, CARD_LOGITS] > 0) == (tokens[:, CARD_TOKENS] > 0)).all(-1)
+        right = torch.stack((logits[:, NEXT_SLICES["seat"]].argmax(-1) == targets[_SEAT_FIELD],
+                             logits[:, NEXT_SLICES["type"]].argmax(-1) == targets[_TYPE_FIELD],
+                             cards_right), 1).to(logits.dtype)
+        if weight is not None:
+            right = right * weight[:, None]
+        rates = right.sum(0) / total
+    seat, kind, cards = rates.unbind()
+    return {"next_seat_accuracy": seat, "next_type_accuracy": kind, "next_cards_exact": cards}
+
 
 def next_token_loss(logits: Tensor, tokens: Tensor, valid: Tensor) -> dict[str, Tensor]:
     """Factorised next-token loss over positions where ``valid`` is true.
 
     ``logits`` ``[..., NEXT_LOGITS]`` predict ``tokens`` ``[..., TOKEN_DIM]`` at
     the same index (the caller aligns position ``s`` with token ``s``);
-    ``valid`` ``[...]`` masks padding. Returns the field losses' mean
-    (``next_loss``; the mean over the eight fields keeps this head at the same
-    order of magnitude as the other heads, so ``aux_coef`` weighs them evenly),
-    each field's own mean, and type/seat accuracies plus the fraction of
-    positions whose 108 card bits are all right (``next_cards_exact``). Means
-    are over valid positions; an all-padding batch gives zeros.
+    ``valid`` ``[...]`` masks padding (bool, or the same mask as 0/1 floats).
+    Returns the field losses' mean (``next_loss``; the mean over the eight
+    fields keeps this head at the same order of magnitude as the other heads,
+    so ``aux_coef`` weighs them evenly), each field's own mean, and type/seat
+    accuracies plus the fraction of positions whose 108 card bits are all
+    right (``next_cards_exact``). Means are over valid positions; an
+    all-padding batch gives zeros.
+
+    Each field's loss is its own cross-entropy (one-hot fields, bomb size) or
+    mean binary cross-entropy (card fields), added in field order; the accuracy
+    statistics come from one integer-exact stacked sum, the same values as
+    separate masked means.
     """
     logits = logits.reshape(-1, NEXT_LOGITS).float()
     tokens = tokens.reshape(-1, TOKEN_DIM)
@@ -106,31 +148,25 @@ def next_token_loss(logits: Tensor, tokens: Tensor, valid: Tensor) -> dict[str, 
     def masked_mean(values: Tensor) -> Tensor:
         return (values * weight).sum() / total
 
+    targets = next_token_targets(tokens)
     stats: dict[str, Tensor] = {}
     loss = logits.new_zeros(())
-    for name, field in ONE_HOT_FIELDS:
-        target = tokens[:, field].argmax(-1)
+    for (name, _), target in zip(ONE_HOT_FIELDS, targets):
         part = logits[:, NEXT_SLICES[name]]
         stats[f"next_{name}_loss"] = masked_mean(F.cross_entropy(part, target, reduction="none"))
         loss = loss + stats[f"next_{name}_loss"]
-        if name in ("type", "seat"):
-            stats[f"next_{name}_accuracy"] = masked_mean((part.argmax(-1) == target).to(logits.dtype))
-    cards_right = torch.ones_like(weight, dtype=torch.bool)
+    cards = tokens[:, CARD_TOKENS].to(logits.dtype)
     for name, field in MULTI_HOT_FIELDS:
-        target = tokens[:, field].to(logits.dtype)
+        target = cards[:, field.start - CARD_TOKENS.start:field.stop - CARD_TOKENS.start]
         part = logits[:, NEXT_SLICES[name]]
         stats[f"next_{name}_loss"] = masked_mean(
             F.binary_cross_entropy_with_logits(part, target, reduction="none").mean(-1))
         loss = loss + stats[f"next_{name}_loss"]
-        cards_right &= ((part > 0) == (target > 0.5)).all(-1)
-    stats["next_cards_exact"] = masked_mean(cards_right.to(logits.dtype))
-    bomb = tokens[:, BOMB]
-    bomb_target = torch.where(bomb.sum(-1) > 0, bomb.argmax(-1),
-                              torch.full_like(bomb[:, 0], BOMB_CLASSES - 1, dtype=torch.long))
     stats["next_bomb_loss"] = masked_mean(
-        F.cross_entropy(logits[:, NEXT_SLICES["bomb"]], bomb_target, reduction="none"))
+        F.cross_entropy(logits[:, NEXT_SLICES["bomb"]], targets[-1], reduction="none"))
     loss = loss + stats["next_bomb_loss"]
     stats["next_loss"] = loss / NEXT_FIELDS
+    stats.update(_next_token_rates(logits, tokens, targets, weight, total))
     return stats
 
 

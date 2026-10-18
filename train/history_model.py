@@ -318,6 +318,13 @@ class DecisionInputs:
     # int64 [n], the opponents' style z in {-1, +1}; read only by an actor
     # with ``config.style_input`` (planted-habit ORACLE arm).
     style: Tensor | None = None
+    # Learner with length groups only (``training_batch``): the next-token
+    # head's position mask as FP32 0/1, over the groups' positions in plan
+    # order, each group row-major ``[matches, tokens]`` (position ``s`` of a
+    # match counts while ``s`` is below its cited prefix), and the number of
+    # ones. Planned on the host: the same mask the device would build.
+    next_weight: Tensor | None = None
+    next_positions: int = 0
 
     @property
     def decisions(self) -> int:
@@ -345,6 +352,30 @@ def sinusoidal(length: int, width: int, device, dtype) -> Tensor:
     table[:, 0::2] = torch.sin(positions * frequencies)
     table[:, 1::2] = torch.cos(positions * frequencies)
     return table
+
+
+# One position table per (width, device, dtype), grown on demand. Every entry is
+# an elementwise function of its own (position, column), so the first ``length``
+# rows of a longer table are ``sinusoidal(length)`` bit for bit (checked in
+# tests/test_history_learner_ops.py; the rollout cache's position buffers rely
+# on the same prefix property). Saves ~11 kernels per encode_stream call.
+_POSITION_TABLES: dict[tuple[int, torch.device, torch.dtype], Tensor] = {}
+
+
+def position_table(length: int, width: int, device, dtype) -> Tensor:
+    """``sinusoidal(length, width, device, dtype)`` as a read-only slice of a cached table."""
+    device = torch.device(device)
+    key = (int(width), device, dtype)
+    table = _POSITION_TABLES.get(key)
+    if table is None or len(table) < length:
+        if device.type == "cuda" and torch.cuda.is_current_stream_capturing():
+            # Never let a cached table live in a CUDA graph's private pool.
+            return sinusoidal(length, width, device, dtype)
+        size = max(int(length), 2 * len(table) if table is not None else 256)
+        with torch.inference_mode(False):   # a normal tensor, usable in autograd later
+            table = sinusoidal(size, width, device, dtype)
+        _POSITION_TABLES[key] = table
+    return table[:length]
 
 
 def segment_log_softmax(scores: Tensor, rows: Tensor, count: int) -> Tensor:
@@ -483,7 +514,7 @@ class HistoryActor(nn.Module):
                     + self.phase_embedding(phases.clamp(0, 3)))
         stream = torch.cat((self.bos.expand(len(tokens), -1, -1), embedded), dim=1)
         length = stream.shape[1]
-        stream = stream + sinusoidal(length, self.config.width, stream.device, stream.dtype)
+        stream = stream + position_table(length, self.config.width, stream.device, stream.dtype)
         if self.causal_sdpa:
             from train.history_attention import causal_encode
             return self.stream_norm(causal_encode(self.stream, stream))
@@ -724,9 +755,9 @@ class HistoryActor(nn.Module):
             fused = fused + self.response_bridge(feature)
         elif mode == "auxiliary" and torch.is_grad_enabled():
             # Matched bridge shape/parameter count without response information.
-            # Its output is exactly zero, so inference skips it; training keeps
-            # it so the bridge weight still receives its (zero) gradient.
-            fused = fused + self.response_bridge(fused.new_zeros(len(cand), RESPONSE_CLASSES))
+            # Its output is exactly zero, so it is never computed; training keeps
+            # the bridge weight's (exactly zero) gradient through _ZeroBridge.
+            fused = _ZeroBridge.apply(fused, self.response_bridge.weight)
         return self.fusion(fused).squeeze(-1), response
 
     def candidate_logits(self, state: Tensor, cand: Tensor, offsets: Tensor,
@@ -823,6 +854,24 @@ class HistoryActor(nn.Module):
         behaviour_logp = behaviour.gather(1, choice[:, None])[:, 0]
         terms = torch.where(valid, behaviour.exp() * behaviour, torch.zeros_like(behaviour))
         return ExplorationSample(choice, logp, behaviour_logp, uniform_pick, -terms.sum(1))
+
+
+class _ZeroBridge(torch.autograd.Function):
+    """``fused + response_bridge(zeros)`` of the auxiliary mode without the zero
+    input, product and sum: the forward returns ``fused`` unchanged, the
+    backward passes its gradient through and gives the bridge weight the
+    all-zero gradient its matmul against zeros would produce. Gradient norms,
+    the data-parallel flat buffer and the Adam state are therefore unchanged."""
+
+    @staticmethod
+    def forward(ctx, fused: Tensor, weight: Tensor) -> Tensor:
+        ctx.save_for_backward(weight)
+        return fused.view_as(fused)
+
+    @staticmethod
+    def backward(ctx, grad: Tensor) -> tuple[Tensor, Tensor | None]:
+        weight, = ctx.saved_tensors
+        return grad, torch.zeros_like(weight) if ctx.needs_input_grad[1] else None
 
 
 def _gumbel_argmax(table: Tensor, generator: torch.Generator | None) -> Tensor:
