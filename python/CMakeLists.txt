@@ -5,5 +5,8 @@ if(NOT DEFINED CMAKE_INTERPROCEDURAL_OPTIMIZATION)
 endif()
 pybind11_add_module(_gd_core ${CMAKE_CURRENT_SOURCE_DIR}/bindings.cpp)
 target_link_libraries(_gd_core PRIVATE gd_core)
+# GD_PYTHON_OUTPUT_DIR builds the module elsewhere (a side package directory),
+# so a rebuild never replaces the extension under running processes.
+set(GD_PYTHON_OUTPUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/gd" CACHE PATH "Where _gd_core is written")
 set_target_properties(_gd_core PROPERTIES
-  LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/gd)
+  LIBRARY_OUTPUT_DIRECTORY ${GD_PYTHON_OUTPUT_DIR})

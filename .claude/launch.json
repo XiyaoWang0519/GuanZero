@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "play",
+      "runtimeExecutable": "/bin/sh",
+      "runtimeArgs": ["-c", "PYTHONPATH=python:oracle:. exec .work/external/danlm-venv/bin/python -m play.server --port 18688"],
+      "port": 18688
+    }
+  ]
+}

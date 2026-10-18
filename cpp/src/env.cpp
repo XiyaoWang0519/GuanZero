@@ -98,6 +98,7 @@ struct VecEnv::Impl {
   std::vector<int64_t> match_ids;
   std::vector<std::vector<Action>> cands;   // per environment, reused
   std::vector<uint8_t> waiting;             // per environment: needs a decision
+  std::vector<uint8_t> idle;                // per environment: round over, stopped
 
   // Flat batch buffers, reused across iterations.
   std::vector<float> obs, cand;
@@ -123,6 +124,7 @@ struct VecEnv::Impl {
     match_ids.assign(num_envs, 0);
     cands.resize(num_envs);
     waiting.assign(num_envs, 0);
+    idle.assign(num_envs, 0);
     style_rng_base.resize(num_envs);
     uint64_t root = s ^ 0xB0B5EED5B0B5EED5ULL;
     for (int i = 0; i < num_envs; ++i) style_rng_base[i] = splitmix64(root) | 1ULL;
@@ -198,6 +200,11 @@ struct VecEnv::Impl {
         r.env_id = i;
         r.match_id = match_ids[i];
         out.push_back(r);
+        if (cfg.stop_at_round_end) {
+          idle[i] = 1;
+          waiting[i] = 0;
+          return;
+        }
         if (m.winner >= 0) {
           ++match_ids[i];
           engine.new_match(m, splitmix64(rngs[i]));
@@ -246,6 +253,7 @@ void VecEnv::reset(std::span<const DealSpec> deals, std::span<const uint64_t> ma
       s.engine.new_match(s.states[i], splitmix64(s.rngs[i]));
     }
     s.waiting[i] = 0;
+    s.idle[i] = 0;
   }
   s.finished.clear();
   s.drained.clear();
@@ -266,12 +274,13 @@ DecisionBatch VecEnv::pending() {
   s.pool.run([&](int shard, int shards) {
     auto& out = s.finished_shards[shard];
     for (int i = shard; i < n; i += shards)
-      if (!s.waiting[i]) s.advance(i, out);
+      if (!s.waiting[i] && !s.idle[i]) s.advance(i, out);
   });
   for (auto& shard : s.finished_shards)
     s.finished.insert(s.finished.end(), shard.begin(), shard.end());
   for (int i = 0; i < n; ++i)
-    if (!s.waiting[i]) throw std::runtime_error("environment has no legal decision; check explicit deal");
+    if (!s.waiting[i] && !s.idle[i])
+      throw std::runtime_error("environment has no legal decision; check explicit deal");
 
   // Lay the rows out in environment order so that the batch is deterministic
   // however the work was sharded.
@@ -406,6 +415,7 @@ std::vector<int> VecEnv::fork(int env_id, int copies) {
     s.match_ids.push_back(s.match_ids[env_id]);
     s.cands.push_back(s.cands[env_id]);
     s.waiting.push_back(s.waiting[env_id]);
+    s.idle.push_back(s.idle[env_id]);
     s.events.emplace_back();
     // A fresh stream for the copy that leaves the source environment's own
     // stream untouched, so forking never changes the parent's decisions.
@@ -425,6 +435,37 @@ std::vector<int> VecEnv::fork(int env_id, int copies) {
   }
   s.batch_ready = false;
   return ids;
+}
+
+void VecEnv::load(std::span<const MatchState> states) {
+  Impl& s = *impl_;
+  if (states.empty()) throw std::invalid_argument("load() needs at least one state");
+  const size_t n = states.size();
+  s.states.assign(states.begin(), states.end());
+  s.rngs.resize(n);
+  uint64_t root = s.seed;
+  for (size_t i = 0; i < n; ++i) s.rngs[i] = splitmix64(root) | 1ULL;
+  s.match_ids.assign(n, 0);
+  s.cands.assign(n, {});
+  s.waiting.assign(n, 0);
+  s.idle.assign(n, 0);
+  s.style_rng_base.resize(n);
+  uint64_t style_root = s.seed ^ 0xB0B5EED5B0B5EED5ULL;
+  for (size_t i = 0; i < n; ++i) s.style_rng_base[i] = splitmix64(style_root) | 1ULL;
+  s.styles.clear();
+  s.events.assign(n, {});
+  s.finished.clear();
+  s.drained.clear();
+  s.drained_events.clear();
+  s.rows_env.clear();
+  s.initialized = true;
+  s.batch_ready = false;
+}
+
+int VecEnv::idle_count() const {
+  int n = 0;
+  for (uint8_t v : impl_->idle) n += v;
+  return n;
 }
 
 std::span<const PublicActionEvent> VecEnv::drain_public_actions() {
