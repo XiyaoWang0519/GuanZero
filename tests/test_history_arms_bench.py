@@ -75,3 +75,26 @@ def test_profile_arms_report_phases_and_profiled_updates_are_excluded(tmp_path, 
     assert "learner_prefill" in results["prof"]["collect_phase_seconds"]
     assert {"forward", "backward"} <= set(results["prof"]["learn_phase_seconds"])
     assert len(results["prof"]["wall_seconds"]) == 3
+
+
+def test_two_rank_arms_share_the_launcher_and_accept_spread_gpus(tmp_path):
+    """Ranks are launched by train.history_ddp.launch_local; --spread-gpus selects
+    rank r -> GPU r % count (a no-op on CPU) and is recorded in the summary."""
+    source = tmp_path / "source"
+    config = HistoryPPOConfig(width=32, layers=1, heads=4, num_envs=2, steps_per_update=24,
+                              snapshot_updates=1, rollout_kv_cache=True, causal_sdpa=True,
+                              batch_snapshot_policies=True, updates=1, torch_threads=1)
+    HistoryTrainer(config, source).run()
+    output = tmp_path / "arms"
+    assert history_arms.main(["--resume", str(source / "latest.pt"), "--output", str(output),
+                              "--device", "cpu", "--world-size", "2", "--spread-gpus",
+                              "--warmup", "1", "--blocks", "2", "--block-updates", "1",
+                              "--arm", "base=",
+                              "--arm", "gated=rollout_trim_cuda_cache=true,"
+                                        "rollout_trim_slack_mb=64"]) == 0
+    rows = [json.loads(line) for line in (output / "arms.jsonl").open()]
+    assert [r["arm"] for r in rows] == ["base", "base", "gated", "gated", "base"]
+    summary = json.loads((output / "summary.json").read_text())
+    assert summary["world_size"] == 2 and summary["spread_gpus"] is True
+    assert (output / "rank-1" / "metrics.jsonl").read_text().count("\n") == len(rows)
+

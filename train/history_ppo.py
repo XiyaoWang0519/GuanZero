@@ -569,8 +569,9 @@ class HistoryTrainer:
         elif config.aux_heads:
             self.progress["aux_start_update"] = 0
         self.session_first_update = int(self.progress["updates"])
+        env_offset = self.rank_streams()
         self.env = gd.VecEnv(num_envs=config.num_envs, num_threads=config.num_threads,
-                             seed=config.seed + 1000 * self.progress["updates"],
+                             seed=config.seed + 1000 * self.progress["updates"] + env_offset,
                              log_public_actions=True, log_env_limit=config.num_envs)
         if config.habit_round:
             from train.history_habit import RoundEventStore
@@ -595,6 +596,13 @@ class HistoryTrainer:
                                    cache="ephemeral; rebuilt from raw public histories" if config.rollout_kv_cache
                                          else "none; raw public histories restart with environments"))
         self.write_manifest()
+
+    def rank_streams(self) -> int:
+        """Data-parallel hook (train/history_ddp.py), called once by the
+        constructor after any restore and before the environments are built or
+        anything is written: share the lineage and reseed this rank's streams.
+        Returns the environment seed offset; a single process is rank 0."""
+        return 0
 
     def make_collector(self) -> HistoryCollector:
         """The rollout collector over this trainer's env, store and buffer."""

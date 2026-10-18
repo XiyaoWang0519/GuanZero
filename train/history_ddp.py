@@ -36,9 +36,9 @@ from pathlib import Path
 import signal
 import socket
 import sys
-from typing import Any
+import threading
+from typing import Any, Callable
 
-import gd
 import numpy as np
 import torch
 import torch.distributed as dist
@@ -58,37 +58,41 @@ class HistoryDDPTrainer(HistoryTrainer):
                  resume_overrides: dict[str, Any] | None = None) -> None:
         if world_size > 1 and not dist.is_initialized():
             raise RuntimeError("initialize torch.distributed before building a multi-rank trainer")
+        self.rank, self.world_size = int(rank), int(world_size)
+        self.resuming = resume is not None
+        # The base constructor calls rank_streams() before it builds environments
+        # or writes anything, so each rank's env, store, buffer and collector are
+        # built once, with its own seeds, and its files carry the shared lineage.
         super().__init__(config, output, device=device, resume=resume,
                          allow_source_change=allow_source_change,
                          resume_overrides=resume_overrides)
-        self.rank, self.world_size = int(rank), int(world_size)
         if self.world_size == 1:
             return
-        config = self.config
-        shared = [self.lineage]
-        dist.broadcast_object_list(shared, src=0)
-        if resume is not None and shared[0] != self.lineage:
-            raise RuntimeError("ranks resumed different lineages")
-        self.lineage = shared[0]
-        self.population.lineage = self.lineage
-        if self.rank:
-            # Rank 0 keeps the base (or exactly restored) streams; other ranks get
-            # distinct deterministic streams, advanced by the update count on resume.
-            updates = int(self.progress["updates"])
-            offset = RANK_SEED_STRIDE * self.rank + 1000 * updates
-            self.rng = np.random.default_rng(config.seed + offset)
-            self.generator.manual_seed(config.seed + offset)
-            self.population.rng = np.random.default_rng(config.seed + 17 + offset)
-            self.env = gd.VecEnv(num_envs=config.num_envs, num_threads=config.num_threads,
-                                 seed=config.seed + 1000 * updates + RANK_ENV_STRIDE * self.rank,
-                                 log_public_actions=True, log_env_limit=config.num_envs)
-            self.store.__init__()
-            self.buffer.__init__()
-            self.collector = self.make_collector()
-        self.write_manifest()
         self.population_event(dict(event="ddp", rank=self.rank, world_size=self.world_size,
                                    lineage=self.lineage, resumed=resume is not None))
         self.check_synchronized()
+
+    def rank_streams(self) -> int:
+        """Share rank 0's lineage. Rank 0 keeps the base (or exactly restored)
+        streams; rank r > 0 gets distinct deterministic sampler, seat and
+        population streams, advanced by the update count on resume, and
+        environments offset by ``RANK_ENV_STRIDE * r``."""
+        if self.world_size == 1:
+            return 0
+        shared = [self.lineage]
+        dist.broadcast_object_list(shared, src=0)
+        if self.resuming and shared[0] != self.lineage:
+            raise RuntimeError("ranks resumed different lineages")
+        self.lineage = shared[0]
+        self.population.lineage = self.lineage
+        if not self.rank:
+            return 0
+        config = self.config
+        offset = RANK_SEED_STRIDE * self.rank + 1000 * int(self.progress["updates"])
+        self.rng = np.random.default_rng(config.seed + offset)
+        self.generator.manual_seed(config.seed + offset)
+        self.population.rng = np.random.default_rng(config.seed + 17 + offset)
+        return RANK_ENV_STRIDE * self.rank
 
     # -- collectives --------------------------------------------------------------
 
@@ -268,15 +272,63 @@ def rank_cuda_index(device: str, rank: int, spread_gpus: bool, gpu_count: int) -
     return index
 
 
+def select_rank_device(device: str, rank: int, spread_gpus: bool) -> int | None:
+    """Select this rank's CUDA device (``rank_cuda_index`` over the visible GPUs)
+    and return its index; None leaves the current device (CPU, bare ``cuda``)."""
+    index = rank_cuda_index(device, rank, spread_gpus,
+                            torch.cuda.device_count() if torch.cuda.is_available() else 0)
+    if index is not None:
+        torch.cuda.set_device(index)
+    return index
+
+
+def launch_local(target: Callable[..., None], world: int, *args: Any,
+                 name: str = "history-rank") -> int:
+    """Run ``target(rank, world, port, *args)`` for ranks ``0..world-1`` as spawned
+    local processes (``port``: a free localhost port for the process group) and
+    wait for them. SIGTERM/SIGINT to the launcher are forwarded to every live
+    rank as SIGTERM (each rank decides how to stop); the launcher's previous
+    handlers are restored on return. If any rank fails, the others would block in
+    a collective, so all of them are killed. Returns 0 only if every rank exits 0."""
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    context = mp.get_context("spawn")
+    ranks = [context.Process(target=target, args=(r, world, port, *args), name=f"{name}-{r}")
+             for r in range(world)]
+    for process in ranks:
+        process.start()
+
+    def forward(signum, frame):
+        for process in ranks:
+            if process.is_alive():
+                os.kill(process.pid, signal.SIGTERM)
+    previous = ({sig: signal.signal(sig, forward) for sig in (signal.SIGTERM, signal.SIGINT)}
+                if threading.current_thread() is threading.main_thread() else {})
+    failed = False
+    try:
+        while any(p.is_alive() for p in ranks):
+            for process in ranks:
+                process.join(timeout=1.0)
+                if process.exitcode not in (None, 0) and not failed:
+                    failed = True
+                    print(f"{process.name} exited with {process.exitcode}; terminating all ranks",
+                          file=sys.stderr, flush=True)
+                    for other in ranks:
+                        if other.is_alive():
+                            other.kill()
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+    return 0 if not failed and all(p.exitcode == 0 for p in ranks) else 1
+
+
 def _rank_main(rank: int, world: int, port: int, argv: list[str]) -> None:
     args = build_parser().parse_args(argv)
     os.environ.update(MASTER_ADDR="127.0.0.1", MASTER_PORT=str(port))
     dist.init_process_group("gloo", rank=rank, world_size=world)
     try:
-        index = rank_cuda_index(args.device, rank, args.spread_gpus,
-                                torch.cuda.device_count() if torch.cuda.is_available() else 0)
-        if index is not None:
-            torch.cuda.set_device(index)
+        select_rank_device(args.device, rank, args.spread_gpus)
         trainer = HistoryDDPTrainer(config_from_args(args), rank_output(args.output, rank),
                                     device=args.device, rank=rank, world_size=world,
                                     resume=args.resume,
@@ -312,34 +364,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.world_size < 1:
         raise SystemExit("--world-size must be positive")
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-    context = mp.get_context("spawn")
-    ranks = [context.Process(target=_rank_main, args=(r, args.world_size, port, argv),
-                             name=f"history-rank-{r}") for r in range(args.world_size)]
-    for process in ranks:
-        process.start()
-
-    def forward(signum, frame):
-        for process in ranks:
-            if process.is_alive():
-                os.kill(process.pid, signal.SIGTERM)
-    signal.signal(signal.SIGTERM, forward)
-    signal.signal(signal.SIGINT, forward)
-    # If any rank fails, the others would block in a collective: stop them all.
-    failed = False
-    while any(p.is_alive() for p in ranks):
-        for process in ranks:
-            process.join(timeout=1.0)
-            if process.exitcode not in (None, 0) and not failed:
-                failed = True
-                print(f"{process.name} exited with {process.exitcode}; terminating all ranks",
-                      file=sys.stderr, flush=True)
-                for other in ranks:
-                    if other.is_alive():
-                        other.kill()
-    return 0 if not failed and all(p.exitcode == 0 for p in ranks) else 1
+    return launch_local(_rank_main, args.world_size, argv)
 
 
 if __name__ == "__main__":

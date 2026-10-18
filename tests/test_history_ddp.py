@@ -293,3 +293,45 @@ def test_spread_gpus_assigns_ranks_round_robin_and_keeps_explicit_index():
     assert [rank_cuda_index("cpu", r, True, 2) for r in range(2)] == [None, None]
     from train.history_ddp import build_parser
     assert build_parser().parse_args(["--output", "x", "--spread-gpus"]).spread_gpus is True
+
+
+def _launch_target(rank, world, port, root):
+    import time
+    from pathlib import Path
+    Path(root, f"rank-{rank}.pid").write_text(str(os.getpid()))
+    if rank == 1:
+        while not Path(root, "rank-0.pid").exists():
+            time.sleep(0.05)
+        raise SystemExit(3)
+    time.sleep(600)     # as a rank blocked in a collective would
+
+
+def test_launch_local_kills_every_rank_when_one_fails(tmp_path):
+    import signal
+    import time
+    from train.history_ddp import launch_local
+    handlers = (signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT))
+    started = time.monotonic()
+    assert launch_local(_launch_target, 2, str(tmp_path), name="test-rank") == 1
+    assert time.monotonic() - started < 300
+    # The launcher's own handlers are restored; no rank outlives it.
+    assert (signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT)) == handlers
+    for rank in range(2):
+        with pytest.raises(ProcessLookupError):
+            os.kill(int((tmp_path / f"rank-{rank}.pid").read_text()), 0)
+
+
+def test_select_rank_device_spreads_ranks_over_visible_gpus(monkeypatch):
+    from train.history_ddp import select_rank_device
+    selected = []
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 3)
+    monkeypatch.setattr(torch.cuda, "set_device", selected.append)
+    assert [select_rank_device("cuda", r, True) for r in range(8)] == [0, 1, 2, 0, 1, 2, 0, 1]
+    assert selected == [0, 1, 2, 0, 1, 2, 0, 1]
+    selected.clear()
+    assert [select_rank_device("cuda", r, False) for r in range(2)] == [None, None]
+    assert [select_rank_device("cpu", r, True) for r in range(2)] == [None, None]
+    assert selected == []
+    assert select_rank_device("cuda:2", 1, True) == 2 and selected == [2]
+

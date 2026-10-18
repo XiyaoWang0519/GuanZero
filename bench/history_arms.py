@@ -15,6 +15,14 @@ phase times; those arms are for the breakdown, not for the speed ratio.
 Only speed is measured. Tier 2 options change float order, so the arms'
 trajectories diverge; no strength claim follows from this tool.
 
+Rank -> GPU layout: by default every rank of a bare ``--device cuda`` runs on
+the current device (GPU 0). ``--spread-gpus`` gives rank r visible GPU
+r % device_count, as ``train.history_ddp --spread-gpus`` does, so an A/B of
+allocator, memory or contention-sensitive options runs in the production
+layout (e.g. 8 ranks over 3 GPUs: 3/3/2 ranks per GPU). An explicit
+``cuda:N`` keeps every rank on N. The ranks are launched, monitored and
+stopped together by ``train.history_ddp.launch_local``.
+
 Example (four actor ranks on one GPU, as the main lineage runs)::
 
     python -m bench.history_arms --resume latest.pt --output /tmp/arms --device cuda \\
@@ -29,14 +37,12 @@ from dataclasses import replace
 import json
 import os
 from pathlib import Path
-import socket
 import statistics
 import sys
 import time
 
 import torch
 import torch.distributed as dist
-import torch.multiprocessing as mp
 
 from train.history_ppo import (RESUME_OVERRIDES, TORCH_PROFILE_ENV, TORCH_PROFILE_UPDATES_ENV,
                                parse_resume_overrides)
@@ -192,14 +198,12 @@ def summarize(rows: list[dict], warmup: int) -> dict:
 
 
 def _rank(rank: int, world: int, port: int, args) -> None:
-    from train.history_ddp import HistoryDDPTrainer, cuda_index, rank_output
+    from train.history_ddp import HistoryDDPTrainer, rank_output, select_rank_device
     if world > 1:
         os.environ.update(MASTER_ADDR="127.0.0.1", MASTER_PORT=str(port))
         dist.init_process_group("gloo", rank=rank, world_size=world)
     try:
-        index = cuda_index(args.device)
-        if index is not None:
-            torch.cuda.set_device(index)
+        select_rank_device(args.device, rank, args.spread_gpus)
         arms = dict(parse_arm(text) for text in args.arm)
         # Build with the settings every arm shares; switch() applies the rest.
         fixed = {k: v for k, v in next(iter(arms.values())).items() if k not in SWITCHABLE}
@@ -213,7 +217,8 @@ def _rank(rank: int, world: int, port: int, args) -> None:
         rows = measure(trainer, plan, arms, rank, log)
         if rank == 0:
             summary = dict(arms={k: {kk: str(vv) for kk, vv in v.items()} for k, v in arms.items()},
-                           device=args.device, world_size=world, warmup=args.warmup,
+                           device=args.device, spread_gpus=args.spread_gpus,
+                           world_size=world, warmup=args.warmup,
                            blocks=args.blocks, block_updates=args.block_updates,
                            resume=str(args.resume), results=summarize(rows, args.warmup))
             (Path(args.output) / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
@@ -229,6 +234,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", required=True, help="scratch directory; not the lineage")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--world-size", type=int, default=1)
+    parser.add_argument("--spread-gpus", action="store_true",
+                        help="with --device cuda, rank r uses visible GPU r %% device_count "
+                             "(the train.history_ddp --spread-gpus layout)")
     parser.add_argument("--arm", action="append", required=True,
                         help=f"NAME=KEY=VALUE,... with KEY in {sorted(RESUME_OVERRIDES)}")
     parser.add_argument("--warmup", type=int, default=25,
@@ -252,28 +260,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.world_size == 1:
         _rank(0, 1, 0, args)
         return 0
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-    context = mp.get_context("spawn")
-    ranks = [context.Process(target=_rank, args=(r, args.world_size, port, args))
-             for r in range(args.world_size)]
-    for process in ranks:
-        process.start()
-    # If any rank fails (an out-of-memory arm, say), the others would block in a
-    # collective: stop them all. arms.jsonl keeps the updates measured so far.
-    failed = False
-    while any(p.is_alive() for p in ranks):
-        for process in ranks:
-            process.join(timeout=1.0)
-            if process.exitcode not in (None, 0) and not failed:
-                failed = True
-                print(f"rank process exited with {process.exitcode}; terminating all ranks",
-                      file=sys.stderr, flush=True)
-                for other in ranks:
-                    if other.is_alive():
-                        other.kill()
-    return 0 if not failed and all(p.exitcode == 0 for p in ranks) else 1
+    # If any rank fails (an out-of-memory arm, say), the launcher stops them all;
+    # arms.jsonl keeps the updates measured so far.
+    from train.history_ddp import launch_local
+    return launch_local(_rank, args.world_size, args, name="history-arms-rank")
 
 
 if __name__ == "__main__":
