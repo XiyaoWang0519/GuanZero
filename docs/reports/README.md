@@ -176,6 +176,7 @@ raw result/provenance pointers and negative findings.
 
 - [主线私有注意力诊断（2026-10-15）](private-attention-diagnosis-2026-10-15.md)：同一 fixture、m5–u86800 共 8 组权重的 CPU 对照；所有 head 都是分差极大的硬 one-hot（无 <1 ulp 平局），q 方向几乎不随决策变化，落点按比赛固定（u86800 有 7/8 head 落在常数 BOS）；扰动历史内容的策略 TV 中位数 ≤ 2e-3；m7 起 q/k 的 math 梯度精确为 0，u86800 部分 head 的 Adam √v 已衰减到次正规不动点。只对这一 fixture 成立，未宣布模块退化。
 
+<<<<<<< HEAD
 - [QK-norm 三臂 500M 产物核验与机制探针（2026-10-16）](qknorm-mechanism-2026-10-16.md)：同点 +503.84M decisions 与 SHA/源码核验通过；both 解除了极端饱和但 query 仍高度共线，均值替换策略变化小；未启动新训练。
 
 - [Q/K 范数调整的离线可塑性与 Adam 验证（2026-10-16）](qknorm-plasticity-2026-10-16.md)：四档缩放通过 CPU 前向门槛；方向信号保持、步幅提升，保守候选为逐 head 范数 16 配合 m/a、v/a² 且保留 step；清整块 K/V 状态会改变 V，未启动训练或写迁移 checkpoint。
@@ -192,4 +193,6 @@ raw result/provenance pointers and negative findings.
 
 - [差异旧对手池：两端点完整比赛 FULL／ROUND 消融（2026-10-16）](qknorm-diverse-match-2026-10-16.md)：2,048 场完成，两端点全场公共路径均随历史视图变化；control 胜率 +3.91 pp，单项 95% CI [+0.20, +7.62]，双比较区间仍跨零；norm16 −1.17 pp，未见收益，不训练或改主线。
 
-- [Private cross-attention: multi-batch audit tooling and Q/K-norm prototype (2026-10-18)](private-attention-audit-2026-10-18.md): adds `eval/private_attention_audit.py` (CPU, many whole-match minibatches, stratified by round and tribute round) and the config-gated `private_qk_norm` arm (default `none`, the lineage is unchanged). Checkpoints were not available on that VM, so trained-lineage saturation is **unmeasured**. On random init no head saturates. With synthetic trained-like numerics, saturation and exact-zero q/k gradients are global across all strata and minibatches; `qk` bounds the scores and keeps gradients nonzero, `query` does not; neither makes q decision-dependent.
+- [Private cross-attention: multi-batch audit tooling and Q/K-norm prototype (2026-10-18)](private-attention-audit-2026-10-18.md): adds `eval/private_attention_audit.py` (CPU, many whole-match minibatches, stratified by round and tribute round) and the config-gated `private_qk_norm` arm (default `none`, the lineage is unchanged). Checkpoints were not available on that VM. On random init no head saturates. With synthetic trained-like numerics, saturation and exact-zero q/k gradients are global across all strata and minibatches; `qk` bounds the scores and keeps gradients nonzero, `query` does not; neither makes q decision-dependent.
+
+- [Private cross-attention on m7 and u86800 (October 18, 2026)](private-attention-audit-checkpoints-2026-10-18.md): the same audit on the real main-lineage saves. m9 is not on this Mac. On both an u86800 sample and an m7 sample, every head of m7 and u86800 is one-hot in every round and tribute stratum, query cosine is at least 0.9998, and q/k math gradients are exact zero on most minibatches. Policy TV under history shuffles stays below 10⁻³. The default stays `none`. Attaching identity-init `qk` to the same weights removes the one-hot heads and makes every q/k gradient nonzero; `query` does not. Neither arm makes the query direction depend on the decision (cosine stays at least 0.993). A four-checkpoint average is an extra and shows the same saturation.

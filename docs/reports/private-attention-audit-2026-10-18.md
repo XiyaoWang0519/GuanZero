@@ -1,6 +1,10 @@
 # Private cross-attention: multi-batch audit tooling and Q/K-norm prototype (2026-10-18)
 
-Status: **implemented and measured on random-init and synthetic actors only.**
+Status: **implemented and measured on random-init and synthetic actors only**
+on the CPU VM that wrote this page. The trained-checkpoint measurement is
+[private attention on m7 and u86800](private-attention-audit-checkpoints-2026-10-18.md).
+The numbers below are still the random-init and synthetic-stress results.
+
 The trained checkpoints this audit is meant for (`m7-u73780`, `u86800`, `m9`/latest
 `runs/main`) and the 2026-10-14 rank-1 fixture were **not available** on the
 CPU VM used here: there is no `.work/` or `runs/` directory, and a filesystem
@@ -160,8 +164,9 @@ the checkpoint.
 **Not answered / limits:**
 
 - **Whether saturation is global for `m7`, `u86800` or the latest checkpoint is
-  unmeasured.** The checkpoints were not available here. The synthetic result
-  shows what the audit detects, not what the lineage does.
+  unmeasured on this VM.** The checkpoints were not available here. The synthetic result
+  shows what the audit detects, not what the lineage does. The later Mac run is
+  [private attention on m7 and u86800](private-attention-audit-checkpoints-2026-10-18.md).
 - No arm makes q decision-dependent. With a dominant constant query component,
   the q cosine stays 0.99997 under `query` and `qk`. With `qk` the attention
   becomes a soft, match-dependent average rather than a decision-dependent
