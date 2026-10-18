@@ -480,10 +480,13 @@ def _moments_worker(rank, world, port, root, queue):
                 return _original(*args, **kwargs)
             setattr(dist, name, counted)
         report = dict(rank=rank)
-        for label, cls in (("async", HistoryDDPTrainer), ("blocking", _PreviousDDPTrainer)):
+        for label, cls, transport in (("async", HistoryDDPTrainer, "gloo"),
+                                      ("blocking", _PreviousDDPTrainer, "gloo"),
+                                      ("shm", HistoryDDPTrainer, "shm")):
             # Unequal minibatch counts per rank, so some steps are padding (None).
             config = small_config(epochs=2, minibatch_matches=1 + rank, ddp_global_minibatch=True,
-                                  response_mode="auxiliary", aux_heads="outcome")
+                                  response_mode="auxiliary", aux_heads="outcome",
+                                  ddp_reduce=transport)
             trainer = cls(config, os.path.join(root, f"{label}-{rank}"), rank=rank,
                           world_size=world)
             lines, counts = [], []
@@ -497,6 +500,7 @@ def _moments_worker(rank, world, port, root, queue):
                 policy_loss=[l["policy_loss"] for l in lines],
                 minibatches=[l["minibatches"] for l in lines],
                 local=[l["local_minibatches"] for l in lines], calls=counts)
+            trainer.close()
         queue.put(report)
     finally:
         dist.destroy_process_group()
@@ -507,7 +511,8 @@ def test_trimmed_ddp_step_matches_previous_step_bitwise(tmp_path):
     order), gathering minibatch counts once per learn, one backward call, the
     shared actor/encoder norm pass and the one-collective checksum give the same
     bits as the previous step (a blocking moment all-reduce per step, a MAX per
-    epoch, ...), also when ranks have different minibatch counts."""
+    epoch, ...), also when ranks have different minibatch counts; so does the
+    shared-memory gradient reduce over those padded steps."""
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
@@ -524,6 +529,8 @@ def test_trimmed_ddp_step_matches_previous_step_bitwise(tmp_path):
     for r in results:
         a, b = r["async"], r["blocking"]
         assert np.array_equal(a["params"].view(np.int32), b["params"].view(np.int32))
+        # The shared-memory reduce over padded (non-real) steps: gloo's bits too.
+        assert np.array_equal(r["shm"]["params"].view(np.int32), a["params"].view(np.int32))
         assert a["policy_loss"] == b["policy_loss"] and a["minibatches"] == b["minibatches"]
         assert np.array_equal(a["params"], results[0]["async"]["params"])
         for update in range(2):
