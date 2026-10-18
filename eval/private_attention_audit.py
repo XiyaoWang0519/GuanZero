@@ -159,12 +159,30 @@ def load_actor(spec: str, fresh: HistoryPolicyConfig, stress: Stress | None
         actor, _ = fresh_player(config, int(parts[1]))
         if stress is not None:
             apply_stress(actor, stress)
-        return actor.eval(), None
-    actor, _, payload = load_history_checkpoint(spec, "cpu")
-    return actor.eval(), payload.get("optimizer", {}).get("actor")
+        optimizer = None
+    else:
+        actor, _, payload = load_history_checkpoint(spec, "cpu")
+        optimizer = payload.get("optimizer", {}).get("actor")
+    # Runtime encoder backend only: without a T x T mask, 2k-token matches fit in CPU memory.
+    actor.causal_sdpa = True
+    return actor.eval(), optimizer
 
 
 # ---- explicit attention ---------------------------------------------------------
+
+def encode(actor: HistoryActor, streams: StreamBatch, chunk: int = 8) -> Tensor:
+    """``encode_batch`` a few streams at a time (causal: padding never reaches a
+    valid position), so long matches fit in CPU memory."""
+    longest = streams.tokens.shape[1]
+    parts = []
+    for start in range(0, len(streams.lengths), chunk):
+        pick = slice(start, start + chunk)
+        n = int(streams.lengths[pick].max())
+        part = actor.encode_stream(streams.tokens[pick, :n], streams.rounds[pick, :n],
+                                   streams.phases[pick, :n], streams.lengths[pick])
+        parts.append(F.pad(part, (0, 0, 0, longest - n)))
+    return torch.cat(parts)
+
 
 def capture(actor: HistoryActor, inputs: DecisionInputs, chunk: int = 32,
             hooks: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -178,14 +196,14 @@ def capture(actor: HistoryActor, inputs: DecisionInputs, chunk: int = 32,
         query = actor.private(inputs.obs.float()) + actor.seat(inputs.seat)
         handles = []
         if hooks is not None:
-            lengths = inputs.streams.lengths
             for index, layer in enumerate(actor.stream.layers):
                 def record(module, args, output, index=index):
-                    valid = (torch.arange(output.shape[1])[None] <= lengths[:, None])
-                    hooks.setdefault(f"encoder.{index}", []).append((output[valid] > 0))
+                    hooks.setdefault(f"encoder.{index}", []).append(
+                        output.reshape(-1, output.shape[-1]) > 0)
                 handles.append(layer.linear1.register_forward_hook(record))
         try:
-            encoded = actor.encode_batch(inputs.streams)
+            # One stream per call while recording: no padding rows reach the hooks.
+            encoded = encode(actor, inputs.streams, 1 if hooks is not None else 8)
         finally:
             for handle in handles:
                 handle.remove()
@@ -384,8 +402,9 @@ def gradients(actor: HistoryActor, batch: dict[str, Tensor]) -> dict[str, dict[s
     losses = ["policy"] + (["outcome"] if "outcome" in actor.aux_head_names else [])
     for loss_name in losses:
         actor.zero_grad(set_to_none=True)
+        encoded = encode(actor, inputs.streams)
         with sdpa_kernel(SDPBackend.MATH):
-            state = actor.decision_states(None, inputs)
+            state = actor.decision_states(encoded, inputs)
             if loss_name == "policy":
                 rows = inputs.rows
                 log_probs = segment_log_softmax(
@@ -590,8 +609,9 @@ def adam_probe(actor: HistoryActor, batches: list[dict[str, Tensor]], steps: int
         batch = batches[step % len(batches)]
         inputs = batch_inputs(batch)
         optimizer.zero_grad(set_to_none=True)
+        encoded = encode(actor, inputs.streams)
         with sdpa_kernel(SDPBackend.MATH):
-            state = actor.decision_states(None, inputs)
+            state = actor.decision_states(encoded, inputs)
             rows = inputs.rows
             log_probs = segment_log_softmax(
                 actor.candidate_logits(state, inputs.cand, inputs.offsets, rows=rows),
@@ -609,6 +629,71 @@ def adam_probe(actor: HistoryActor, batches: list[dict[str, Tensor]], steps: int
         base = sum(float(_pick(before[n], r).double().square().sum()) for n, r in members)
         change[group] = math.sqrt(delta) / max(math.sqrt(base), 1e-30)
     return {"steps": steps, "lr": lr, "relative_change": change}
+
+
+def _fmt(x: float) -> str:
+    return "nan" if x != x else f"{x:.3g}"
+
+
+def markdown_summary(results: dict[str, Any]) -> str:
+    """The audit's key tables per actor (all decisions that see >= 1 token)."""
+    lines = []
+    for spec, r in results["actors"].items():
+        heads = r["strata"]["all"]
+        g = r.get("gradients", {}).get("policy", {})
+        lines += [f"## {spec}", "",
+                  f"{r['decisions']} decisions, {r['matches']} matches, {r['minibatches']} "
+                  f"minibatches; rounds {r['round_counts']}; tribute-round decisions "
+                  f"{r['tribute_round_decisions']}; explicit-vs-model state error "
+                  f"{_fmt(r['mechanism']['state_error_max'])}.", "",
+                  "| head | one-hot share | max p q01 | min gap | top-1 abs score | BOS | "
+                  "earlier round | current round | distinct/match | mean-q same | q cos | "
+                  "q grad (median, zero share) | k grad (median, zero share) |",
+                  "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|"]
+        for h, s in enumerate(heads):
+            q, k = g.get(f"q_proj.head{h}", {}), g.get(f"k_proj.head{h}", {})
+            lines.append(
+                f"| {h} | {_fmt(s['one_hot_share'])} | {_fmt(s['max_prob_q01'])} | "
+                f"{_fmt(s['gap_min'])} | {_fmt(s['top1_abs_median'])} | {_fmt(s['bos_share'])} | "
+                f"{_fmt(s['earlier_round_share'])} | {_fmt(s['current_round_share'])} | "
+                f"{_fmt(r['distinct_per_match_median'][h])} | {_fmt(s['mean_q_same_share'])} | "
+                f"{_fmt(r['mechanism']['q_cos_median_by_head'][h])} | "
+                f"{_fmt(q.get('median', float('nan')))}, {_fmt(q.get('zero_share', float('nan')))} | "
+                f"{_fmt(k.get('median', float('nan')))}, {_fmt(k.get('zero_share', float('nan')))} |")
+        lines += ["", "| stratum | decisions | heads one-hot (>99% rows) | heads on BOS (>99%) | "
+                  "min / max one-hot share |", "|---|---:|---:|---:|---|"]
+        for name, stratum in r["strata"].items():
+            share = [s["one_hot_share"] for s in stratum]
+            lines.append(f"| {name} | {stratum[0]['decisions']} | "
+                         f"{sum(x > 0.99 for x in share)} | "
+                         f"{sum(s['bos_share'] > 0.99 for s in stratum)} | "
+                         f"{_fmt(min(share))} / {_fmt(max(share))} |")
+        if r["sensitivity"]:
+            lines += ["", "| perturbation | decisions | TV median / q95 / max | greedy changes | "
+                      "argmax moved (non-BOS) | attention output rel. change | round-0 TV max |",
+                      "|---|---:|---|---:|---:|---:|---:|"]
+            for kind, s in r["sensitivity"].items():
+                lines.append(f"| {kind} | {s['decisions']} | {_fmt(s['tv_median'])} / "
+                             f"{_fmt(s['tv_q95'])} / {_fmt(s['tv_max'])} | {s['greedy_changes']} | "
+                             f"{_fmt(s['moved_share_non_bos'])} | {_fmt(s['attended_rel_median'])} | "
+                             f"{_fmt(s['round0_tv_max'])} |")
+        lines += ["", "Dead ReLU units (never active / active < 1%): " + ", ".join(
+            f"{name} {_fmt(d['dead_share'])} / {_fmt(d['rare_share'])}"
+            for name, d in r["dead_relu"].items()) + "."]
+        if r["adam"]:
+            floor = [r["adam"].get(f"q_proj.head{h}", {}).get("floor_share", float("nan"))
+                     for h in range(len(heads))]
+            lines.append("Adam sqrt(v) below 1e-20, q_proj per head: "
+                         + ", ".join(_fmt(x) for x in floor) + ".")
+        if "adam_probe" in r:
+            change = r["adam_probe"]["relative_change"]
+            lines.append(f"Adam probe ({r['adam_probe']['steps']} steps, lr "
+                         f"{r['adam_probe']['lr']}): relative change " + ", ".join(
+                             f"{n} {_fmt(change[n])}" for n in
+                             ("q_proj", "k_proj", "v_proj", "out_proj", "qk_norm") if n in change)
+                         + ".")
+        lines.append("")
+    return "\n".join(lines)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -652,7 +737,8 @@ def main(argv: list[str] | None = None) -> int:
         torch.save(batches, args.save_sample)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    results = {"args": vars(args), "torch": torch.__version__, "actors": {}}
+    results = {"args": vars(args), "torch": torch.__version__, "encoder": "causal_sdpa",
+               "private_attention_backward": "math", "actors": {}}
     for spec in args.actors:
         actor, optimizer = load_actor(spec, fresh, stress)
         result = audit_actor(actor, batches, optimizer, args.seed,
@@ -667,6 +753,7 @@ def main(argv: list[str] | None = None) -> int:
                           "bos_share": [round(h["bos_share"], 4) for h in worst],
                           "state_error": result["mechanism"]["state_error_max"]}))
     (out / "audit.json").write_text(json.dumps(results, indent=1, default=float))
+    (out / "summary.md").write_text(markdown_summary(results))
     return 0
 
 

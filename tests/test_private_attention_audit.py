@@ -112,3 +112,16 @@ def test_cli_writes_json(tmp_path, sample):
     result = json.loads((tmp_path / "out" / "audit.json").read_text())
     assert set(result["actors"]) == {"fresh:1", "fresh:1:qk"}
     assert "adam_probe" in result["actors"]["fresh:1:qk"]
+    summary = (tmp_path / "out" / "summary.md").read_text()
+    assert "## fresh:1:qk" in summary and "Adam probe" in summary
+
+
+@pytest.mark.parametrize("chunk", [1, 3])
+def test_chunked_encoding_matches_one_batch(sample, chunk):
+    actor, _ = fresh_player(CONFIG, 6)
+    streams = audit.batch_inputs(sample[0]).streams
+    with torch.no_grad():
+        whole = actor.encode_batch(streams)
+        chunked = audit.encode(actor, streams, chunk)
+    valid = torch.arange(whole.shape[1])[None] <= streams.lengths[:, None]
+    torch.testing.assert_close(chunked[valid], whole[valid], rtol=1e-5, atol=1e-5)
