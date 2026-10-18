@@ -44,8 +44,10 @@ caller's contract:
 - Triton with CUDA tensors, or Triton's CPU interpreter. Triton fixes the
   interpreter choice when it is first imported, so ``TRITON_INTERPRET=1`` must
   be set before that (tests run their interpreter cases in a subprocess).
-- Head depth ``D`` and ``page_tokens`` powers of two, ``16 <= D <= 256`` and
-  ``16 <= page_tokens <= 256`` (``tl.dot`` tile minimum; production D=16, P=64).
+- Head depth ``D`` and ``page_tokens`` powers of two (``tl.dot`` tile minimum
+  16), ``D <= 64``, ``page_tokens <= 128`` and ``D * page_tokens <= 4096`` so
+  the tiles fit sm_89 shared memory (production D=16, P=64); other shapes take
+  the reference path.
 - Integer ``table``/``starts``/``ends`` on the device of ``q``.
 - ``0 <= start_b``, ``1 <= end_b`` and the table covers ``ceil(end_b / P)``
   pages; ``B <= 65535`` (grid dimension). The kernel clamps page walks to the
@@ -299,12 +301,17 @@ def kernel_supported(device: str | torch.device, dtype: torch.dtype, depth: int,
                      page_tokens: int) -> bool:
     """The static part of ``kernel_eligible``: Triton usable for ``device``
     (CUDA, or anything under the interpreter), FP32, and a head depth and
-    page size the kernel tiles (powers of two in [16, 256])."""
+    page size the kernel tiles: powers of two, depth in [16, 64], page size in
+    [16, 128] and depth x page size at most 4096, so a 64-row query tile's K/V
+    page tiles stay well inside sm_89's per-block shared memory (production:
+    depth 16, 64-token pages). Larger shapes take the reference path."""
     if not KERNEL_AVAILABLE or dtype != torch.float32:
         return False
     if torch.device(device).type != "cuda" and not INTERPRETED:
         return False
-    return all(16 <= n <= 256 and not n & (n - 1) for n in (depth, page_tokens))
+    if any(n < 16 or n & (n - 1) for n in (depth, page_tokens)):
+        return False
+    return depth <= 64 and page_tokens <= 128 and depth * page_tokens <= 4096
 
 
 def kernel_eligible(q: Tensor, kv: Tensor, table: Tensor, starts: Tensor, ends: Tensor,
@@ -336,6 +343,9 @@ def paged_append_attention_triton(q: Tensor, kv: Tensor, table: Tensor, starts: 
         raise RuntimeError("Triton is unavailable or was imported in a different interpreter mode")
     _check_inference(q, kv)
     B, H, W, D = _check(q, kv, table, starts, ends, page_tokens)
+    # The kernel indexes starts/ends with unit stride (views of a wider tensor
+    # would otherwise be read at the wrong elements).
+    starts, ends = starts.contiguous(), ends.contiguous()
     out = torch.empty(B, W, H, D, device=q.device, dtype=q.dtype).transpose(1, 2)
     if B == 0 or W == 0:
         return out

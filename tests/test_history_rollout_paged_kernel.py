@@ -309,11 +309,14 @@ def test_paged_attention_kernel_default_off_and_configuration():
     for bad in (dict(kv_cache=True), dict(kv_cache=False, paged_cache=False)):
         with pytest.raises(ValueError, match="paged attention kernel"):
             HistoryCollector(None, actor, store, buffer, paged_attention_kernel=True, **bad)
-    # Geometry: the kernel tiles head depths and pages of 16-256 (powers of two).
+    # Geometry: powers of two, depth 16-64, pages 16-128, depth x page <= 4096.
     assert not kernel.kernel_supported("cpu", torch.float32, 8, 64)
     assert not kernel.kernel_supported("cpu", torch.float32, 16, 8)
     assert not kernel.kernel_supported("cpu", torch.float64, 16, 64)
     assert kernel.kernel_supported("cpu", torch.float32, 16, 64) == kernel.INTERPRETED
+    assert not kernel.kernel_supported("cpu", torch.float32, 128, 64)     # shared memory
+    assert not kernel.kernel_supported("cpu", torch.float32, 16, 256)
+    assert not kernel.kernel_supported("cpu", torch.float32, 64, 128)
     if not kernel.INTERPRETED:
         assert not PagedHistoryCache(actor, attention_kernel=True).kernel_active
 
