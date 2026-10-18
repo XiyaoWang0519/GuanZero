@@ -477,6 +477,28 @@ def test_causal_prefill_matches_chunked_prefill(device, private, monkeypatch):
     print(f"causal prefill (private={private}): pool rows and memory max |diff| {worst[0]:.2e}")
 
 
+def test_causal_prefill_pads_each_budget_pass_to_its_own_longest(monkeypatch):
+    """Budget-split passes of one length group are padded to their own longest
+    member, not the group's (fewer padded tokens; the written rows are unchanged)."""
+    monkeypatch.setattr(paged, "CAUSAL_PREFILL_TOKENS", 640)
+    actor = fresh_player(CONFIG, 13)[0].train()
+    cache = PagedHistoryCache(actor, KVPagePool.for_actor(actor, page_tokens=16), chunk_size=32,
+                              page_span=True, causal_prefill=True)
+    passes = []
+    original = cache._causal_pass
+
+    def record(entries, targets, span):
+        passes.append((int(targets.max()), span, len(entries)))
+        return original(entries, targets, span)
+    monkeypatch.setattr(cache, "_causal_pass", record)
+    streams = make_streams([0, 3, 40, 150, 7, 90, 260, 12, 1, 31, 120, 64, 33])
+    cache.prefill([(i, i) for i in range(len(streams))], streams)
+    assert len(passes) > 2
+    for longest, span, count in passes:
+        assert span == -(-longest // 16) * 16
+        assert count == 1 or count * span <= 640
+
+
 @pytest.mark.parametrize("device", devices())
 @pytest.mark.parametrize("options", ["causal", "all"])
 def test_collector_causal_prefill(device, options, eager_groups, monkeypatch):

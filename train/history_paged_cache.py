@@ -708,12 +708,16 @@ class PagedHistoryCache(BatchedHistoryCache):
         groups = min(CAUSAL_PREFILL_GROUPS, -(-int(targets.max()) // self.chunk_size))
         for part in length_groups(targets - 1, groups, self.actor.config.width):
             part = part[np.argsort(-targets[part], kind="stable")]
-            span = -(-int(targets[part[0]]) // P) * P
-            count = max(1, CAUSAL_PREFILL_TOKENS // span)
-            for begin in range(0, len(part), count):
+            begin = 0
+            while begin < len(part):
+                # Longest first: each budget-limited pass pads only to its own
+                # longest member, so later passes of shorter streams are narrower.
+                span = -(-int(targets[part[begin]]) // P) * P
+                count = max(1, CAUSAL_PREFILL_TOKENS // span)
                 members = part[begin:begin + count]
                 self._causal_pass([entries[i] for i in members], targets[members], span)
                 self.appends += 1
+                begin += count
 
     def _causal_pass(self, entries: list[PagedEntry], targets: np.ndarray, span: int) -> None:
         actor, cfg, pool = self.actor, self.actor.config, self.pool
