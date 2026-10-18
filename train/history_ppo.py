@@ -40,7 +40,7 @@ import signal
 from pathlib import Path
 import sys
 import time
-from typing import Any, Iterator
+from typing import Any, Iterator, Sequence
 import uuid
 
 import gd
@@ -1392,9 +1392,11 @@ class HistoryTrainer:
                        config_changes=self.config_changes)
         return payload
 
-    def save(self, path: str | Path | None = None) -> Path:
+    def save(self, path: str | Path | None = None, copies: Sequence[str | Path] = ()) -> Path:
+        """Write the checkpoint to ``path`` (default ``latest.pt``) and the same
+        bytes, from one payload and one serialization, to each of ``copies``."""
         path = Path(path) if path is not None else self.output / "latest.pt"
-        save_history_checkpoint(path, self.payload())
+        save_history_checkpoint(path, self.payload(), copies)
         return path
 
     def run(self) -> None:
@@ -1406,8 +1408,7 @@ class HistoryTrainer:
                                                     "decisions_per_sec", "mean_prefix")}),
                   flush=True)
             if self.progress["updates"] % self.config.checkpoint_updates == 0:
-                self.save()
-                self.save(self.output / f"update-{self.progress['updates']:06d}.pt")
+                self.save(copies=[self.output / f"update-{self.progress['updates']:06d}.pt"])
         self.save()
 
 

@@ -375,8 +375,7 @@ class HistoryDDPTrainer(HistoryTrainer):
                                                         "policy_loss", "entropy",
                                                         "global_decisions_per_sec", "mean_prefix")}), flush=True)
                 if self.progress["updates"] % self.config.checkpoint_updates == 0:
-                    self.save()
-                    self.save(self.output / f"update-{self.progress['updates']:06d}.pt")
+                    self.save(copies=[self.output / f"update-{self.progress['updates']:06d}.pt"])
         if self.rank == 0:
             self.save()
         dist.barrier()

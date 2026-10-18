@@ -1,9 +1,10 @@
 """Atomic checkpoints with the model, optimizer, schedules and all learner RNGs."""
+import io
 import os
 from pathlib import Path
 import random
 import tempfile
-from typing import Any
+from typing import Any, BinaryIO, Callable
 
 import numpy as np
 import torch
@@ -30,12 +31,32 @@ def restore_rng(state: dict[str, Any], rng: np.random.Generator) -> None:
 
 
 def save_checkpoint(path: str | Path, payload: dict[str, Any]) -> None:
+    _atomic_write(path, lambda stream: torch.save({**payload, "schema_version": SCHEMA_VERSION},
+                                                  stream))
+
+
+def checkpoint_bytes(payload: dict[str, Any]) -> bytes:
+    """The bytes ``save_checkpoint`` writes for ``payload`` (``torch.save`` into a
+    stream either way), so one serialization can go to several files."""
+    buffer = io.BytesIO()
+    torch.save({**payload, "schema_version": SCHEMA_VERSION}, buffer)
+    return buffer.getvalue()
+
+
+def write_checkpoint_bytes(path: str | Path, data: bytes) -> None:
+    """Write ``checkpoint_bytes`` output with ``save_checkpoint``'s atomicity."""
+    _atomic_write(path, lambda stream: stream.write(data))
+
+
+def _atomic_write(path: str | Path, write: Callable[[BinaryIO], Any]) -> None:
+    """``write(stream)`` into a temporary file beside ``path``, fsync, then
+    ``os.replace`` it into place and fsync the directory."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(fd, "wb") as stream:
-            torch.save({**payload, "schema_version": SCHEMA_VERSION}, stream)
+            write(stream)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)

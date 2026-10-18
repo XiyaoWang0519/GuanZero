@@ -29,7 +29,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field, replace
 import math
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import gd
 import numpy as np
@@ -37,7 +37,7 @@ import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
-from train.ckpt import load_checkpoint, save_checkpoint
+from train.ckpt import checkpoint_bytes, load_checkpoint, save_checkpoint, write_checkpoint_bytes
 from train.logs import TOKEN_DIM, public_token
 from train.model import mlp
 from train.history_response import RESPONSE_CLASSES
@@ -889,10 +889,18 @@ def checkpoint_payload(actor: HistoryActor, critic: HistoryCritic, *, lineage: s
     }
 
 
-def save_history_checkpoint(path: str | Path, payload: dict[str, Any]) -> None:
+def save_history_checkpoint(path: str | Path, payload: dict[str, Any],
+                            copies: Sequence[str | Path] = ()) -> None:
+    """Atomically write ``payload`` to ``path`` and, serialized once, the same
+    bytes to each of ``copies`` (each file atomically, in that order)."""
     if payload.get("stage") != STAGE:
         raise ValueError("only history_ppo payloads are written by this helper")
-    save_checkpoint(path, payload)
+    if not copies:
+        save_checkpoint(path, payload)
+        return
+    data = checkpoint_bytes(payload)
+    for target in (path, *copies):
+        write_checkpoint_bytes(target, data)
 
 
 def load_history_checkpoint(path: str | Path, device: str | torch.device = "cpu"
