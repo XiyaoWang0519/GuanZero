@@ -160,13 +160,13 @@ class BatchedHistoryCache:
         order. Host values and tensor metadata are checked without a CUDA read;
         the returned metadata shares the supplied tensor's storage.
         """
-        targets = self._targets(keys, streams, preuploaded_lengths, host_lengths)
+        targets = self._encode_targets(keys, streams, preuploaded_lengths, host_lengths)
         entries = self._extend(keys, streams, targets)
         # Power-of-two shapes reduce allocator churn without truncating history.
         memory = self._gather_memory(entries, self._memory_size(max(targets)))
-        return self._metadata(targets, preuploaded_lengths, memory.device), memory
+        return self._stream_metadata(targets, preuploaded_lengths, memory.device), memory
 
-    def _targets(self, keys: list[tuple[int, int]], streams: list[PublicStream],
+    def _encode_targets(self, keys: list[tuple[int, int]], streams: list[PublicStream],
                  preuploaded_lengths: Tensor | None, host_lengths: tuple[int, ...] | None
                  ) -> list[int]:
         """Validated ``encode`` arguments; each stream's positions, BOS included."""
@@ -185,7 +185,8 @@ class BatchedHistoryCache:
         return targets
 
     @staticmethod
-    def _metadata(targets: list[int], preuploaded_lengths: Tensor | None, device) -> StreamBatch:
+    def _stream_metadata(targets: list[int], preuploaded_lengths: Tensor | None, device
+                         ) -> StreamBatch:
         """Token-free stream metadata: the lengths the decisions read."""
         count = len(targets)
         return StreamBatch(torch.empty(count, 0, TOKEN_DIM, dtype=torch.uint8, device=device),

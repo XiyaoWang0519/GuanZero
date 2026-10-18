@@ -304,9 +304,10 @@ class PagedHistoryCache(BatchedHistoryCache):
         self.private_kv = bool(private_kv)
         self.causal_prefill = bool(causal_prefill)
         # Host counters of attention key rows: gathered (padded) and valid, for
-        # appends and returned memory; and how many appends ran in groups.
+        # appends and returned memory; how many appends ran in groups; padded
+        # positions of causal prefill passes.
         self.span_rows = dict(append=0, append_valid=0, memory=0, memory_valid=0,
-                              grouped_appends=0)
+                              grouped_appends=0, causal_padded=0)
 
     def _span(self, longest: int) -> int:
         """Attention keys and memory positions to materialize for ``longest``."""
@@ -439,7 +440,7 @@ class PagedHistoryCache(BatchedHistoryCache):
         projection the memory is exactly ``encode``'s."""
         if projected and not self.private_kv:
             raise ValueError("projected rollout memory needs a private_kv cache")
-        targets = self._targets(keys, streams, preuploaded_lengths, host_lengths)
+        targets = self._encode_targets(keys, streams, preuploaded_lengths, host_lengths)
         entries = self._extend(keys, streams, targets)
         source = self.pool.private if projected else self.pool.memory
         lengths = np.asarray(targets, np.int64)
@@ -454,7 +455,7 @@ class PagedHistoryCache(BatchedHistoryCache):
                            self._gather_table(source, uploaded[index], span)))
             self.span_rows["memory"] += (b - a) * span
         self.span_rows["memory_valid"] += int(lengths.sum())
-        return (self._metadata(targets, preuploaded_lengths, source.device),
+        return (self._stream_metadata(targets, preuploaded_lengths, source.device),
                 RolloutMemory(groups, projected))
 
     @staticmethod
@@ -614,6 +615,7 @@ class PagedHistoryCache(BatchedHistoryCache):
         actor, cfg, pool = self.actor, self.actor.config, self.pool
         device, dtype = actor.bos.device, actor.bos.dtype
         batch, P = len(entries), pool.page_tokens
+        self.span_rows["causal_padded"] += batch * span
         tokens = np.zeros((batch, span, TOKEN_DIM), np.uint8)
         rounds, phases = np.zeros((batch, span), np.int64), np.zeros((batch, span), np.int64)
         for i, (entry, target) in enumerate(zip(entries, targets.tolist())):
