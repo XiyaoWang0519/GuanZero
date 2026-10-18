@@ -1006,9 +1006,11 @@ class HistoryTrainer:
                 logits = self.actor.next_logits(encoded[:, :count])
                 parts.append((logits.reshape(-1, logits.shape[-1]), tokens.reshape(-1, tokens.shape[-1]),
                               valid.reshape(-1)))
-            stats.update(next_token_loss(torch.cat([p[0] for p in parts]),
-                                         torch.cat([p[1] for p in parts]),
-                                         torch.cat([p[2] for p in parts])))
+            # A single encoded group is already flat and contiguous. Avoid
+            # cloning its logits, labels and mask just to concatenate one part.
+            next_inputs = (parts[0] if len(parts) == 1 else
+                           tuple(torch.cat([part[i] for part in parts]) for i in range(3)))
+            stats.update(next_token_loss(*next_inputs))
             total = total + stats["next_loss"]
         if "belief" in heads:
             stats.update(belief_loss(self.actor.belief_logits(state), row["hidden"]))
@@ -1091,7 +1093,8 @@ class HistoryTrainer:
                 if key not in ("actor_grad_norm", "encoder_grad_norm", "critic_grad_norm")]
         totals = {key: 0.0 for key in self.STAT_KEYS}
         count = steps = 0
-        encoder_parameters = list(self.actor.stream.parameters())
+        from train.history_gradients import ActorGradientClipper
+        clip_actor = ActorGradientClipper(self.actor.parameters(), self.actor.stream.parameters())
         for _ in range(cfg.epochs):
             for rows in self.epoch_batches(samples):
                 self.actor_optimizer.zero_grad(set_to_none=True)
@@ -1102,12 +1105,9 @@ class HistoryTrainer:
                 mark("gradient_reduce")
                 if reduced == 0:
                     continue
-                # Per-tensor encoder norms in one foreach call rather than a few
-                # kernels per tensor; squared and summed as before.
-                grads = [p.grad.detach().float() for p in encoder_parameters
-                         if p.grad is not None]
-                encoder = (torch.stack(torch._foreach_norm(grads)) ** 2).unbind() if grads else ()
-                actor = torch.nn.utils.clip_grad_norm_(self.actor.parameters(), cfg.grad_clip)
+                # Reuse the actor's tensor norms for encoder diagnostics; retain
+                # their original order and the existing FP32 overflow guard.
+                actor, encoder = clip_actor(cfg.grad_clip)
                 critic = torch.nn.utils.clip_grad_norm_(self.critic.parameters(), cfg.grad_clip)
                 present = [key for key in keys if terms is not None and key in terms]
                 # clip_grad_norm_ returns a CPU zero when a module has no gradient.

@@ -602,6 +602,39 @@ PYBIND11_MODULE(_gd_core, m) {
         const auto events = e.drain_public_actions();
         return std::vector<PublicActionEvent>(events.begin(), events.end());
       })
+      .def("drain_public_batch", [](VecEnv& e) {
+        // The history actor needs only public token fields. Copy them once into
+        // owned arrays instead of allocating a Python event and action array
+        // for every play/pass. Keep the scalar event API for loggers and tools.
+        const auto events = e.drain_public_actions();
+        constexpr int kPublicTokenDim = 4 + kActDim + kHandSize + 1;
+        const auto n = static_cast<py::ssize_t>(events.size());
+        py::array_t<int64_t> env_id(n), match_id(n), round_index(n), phase(n);
+        py::array_t<uint8_t> tokens({n, py::ssize_t(kPublicTokenDim)});
+        auto* token_data = tokens.mutable_data();
+        if (n) std::memset(token_data, 0, size_t(n) * kPublicTokenDim);
+        for (py::ssize_t i = 0; i < n; ++i) {
+          const auto& event = events[size_t(i)];
+          env_id.mutable_data()[i] = event.env_id;
+          match_id.mutable_data()[i] = event.match_id;
+          round_index.mutable_data()[i] = event.round_index;
+          phase.mutable_data()[i] = static_cast<int64_t>(event.phase);
+          auto* token = token_data + size_t(i) * kPublicTokenDim;
+          token[event.seat] = 1;
+          // Do not expose the private tribute flags, even if an older event
+          // producer populated them. No forced-pass flag or hidden state is read.
+          for (int j = 0; j < kActTributeFlags; ++j)
+            token[4 + j] = static_cast<uint8_t>(event.encoded_action[j]);
+          token[4 + kActDim + event.cards_left] = 1;
+        }
+        py::dict batch;
+        batch["env_id"] = std::move(env_id);
+        batch["match_id"] = std::move(match_id);
+        batch["round_index"] = std::move(round_index);
+        batch["phase"] = std::move(phase);
+        batch["tokens"] = std::move(tokens);
+        return batch;
+      })
       .def("set_styles", [](VecEnv& e, py::array_t<float, py::array::c_style> styles) {
         if (styles.ndim() != 3 || styles.shape(1) != 4 ||
             styles.shape(2) != StyleParams::kDim)

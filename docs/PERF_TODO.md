@@ -20,6 +20,22 @@ claim that every option is enabled by default or beneficial on every device.
 | Host-side training work | [October 1 training stack](reports/training-stack-2026-10-01.md), [deep dive](reports/speed-deep-dive-2026-10-01.md) | Host changes alone do not prove remote end-to-end speedup |
 | History-aware batched frozen evaluation | [Operator/evidence record](TRAINING_EVIDENCE.md#verified-bounded-t4-workload) | Recorded MPS parity is fixture-specific; validate a new backend/policy combination |
 
+October 18, 2026 implementation update:
+[throughput refactor](reports/training-throughput-refactor-2026-10-18.md) adds
+batched public-event drain/ingestion, one KV-pool reservation per append batch,
+shared actor/encoder gradient reductions and single-part auxiliary input reuse.
+It also centralizes the existing CUDA private math-SDPA guard across all private
+training routes. FP32, full public history, PPO objectives and checkpoint schemas
+are preserved. Local CPU suites and original-revision dense/paged/snapshot PPO
+plus resume fingerprints passed; measured complete CPU update gains are small
+and variable. Target CUDA acceptance and throughput remain pending. No production
+deployment is recorded. Keep cold, warm, released and restored allocator cases
+separate, including the measured
+released-page regression; see the report for results and
+[the operator guide](TRAINING.md#runtime-refactor-2026-10-18) for rebuild,
+compatibility and benchmark commands. Earlier negative results below remain
+applicable to their original candidates.
+
 ## Follow-up queue
 
 These are verification targets, not an authorization or fixed experiment order.
@@ -27,6 +43,7 @@ Inspect code and recent receipts first to avoid repeating completed work.
 
 | Work | Evidence required |
 |---|---|
+| October 18 refactor on the target CUDA layout | Matching rebuilt extension; public/cache/gradient and checkpoint-resume parity; alternating complete-PPO collect/learn/wall measurements, including warm and reused caches |
 | Production end-to-end profile after new changes | Same-host collect/learn split, CPU quota/load, prefix/candidate distribution, snapshot count and memory |
 | Long-match cache and learner sharing | Correct gradients, full-prefix parity and masks, no stale detached encodings; cache lifetime under updated weights |
 | Environment/chunk/rank tuning | Effective batch and staleness recorded; paired throughput at equal hardware shares and learning-quality comparison where semantics change |

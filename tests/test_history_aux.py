@@ -172,6 +172,45 @@ def test_length_groups_give_the_same_auxiliary_loss(tmp_path):
     assert torch.allclose(full["policy_loss"], grouped["policy_loss"], rtol=1e-4, atol=1e-6)
 
 
+@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="CUDA is unavailable"))])
+def test_single_group_without_concat_preserves_losses_and_gradients(tmp_path, monkeypatch, device):
+    from train import history_ppo
+
+    trainer = HistoryTrainer(small_config(aux_heads="next,belief,outcome", aux_coef=0.1),
+                             tmp_path, device=device)
+    trainer.collect()
+    trainer.buffer.finalize(trainer.refresh_values(), 1.0, 0.95)
+    rows = trainer.buffer.samples
+    assert len(rows) > 8
+
+    def evaluate():
+        trainer.actor.zero_grad(set_to_none=True)
+        stats = trainer.minibatch_loss(rows)
+        stats["policy_total"].backward()
+        gradients = {name: p.grad.detach().clone() for name, p in trainer.actor.named_parameters()
+                     if p.grad is not None}
+        return {name: value.detach().clone() for name, value in stats.items()}, gradients
+
+    actual, actual_gradients = evaluate()
+    calls = []
+    original = history_ppo.next_token_loss
+
+    def with_original_copies(logits, tokens, valid):
+        calls.append(len(logits))
+        return original(torch.cat([logits]), torch.cat([tokens]), torch.cat([valid]))
+
+    monkeypatch.setattr(history_ppo, "next_token_loss", with_original_copies)
+    expected, expected_gradients = evaluate()
+    assert len(calls) == 1 and calls[0] > 0
+    assert actual.keys() == expected.keys() and actual_gradients.keys() == expected_gradients.keys()
+    for name in actual:
+        torch.testing.assert_close(actual[name], expected[name], rtol=0, atol=0, msg=name)
+    for name in actual_gradients:
+        torch.testing.assert_close(actual_gradients[name], expected_gradients[name],
+                                   rtol=0, atol=0, msg=name)
+
+
 def test_warmup_coefficient(tmp_path):
     trainer = HistoryTrainer(small_config(aux_heads="belief", aux_coef=0.2, aux_warmup_updates=4),
                              tmp_path)

@@ -14,6 +14,7 @@ Historical records stay at their existing paths to preserve references.
 
 ## Current summaries, deployment and research proposals
 
+- [Opt-in FP32 paged rollout-attention prototype (October 18, 2026)](paged-attention-prototype-2026-10-18.md) — implementation and local CPU checks; CUDA compilation, integration and speed unverified
 - [主线长跑指标复核（2026-10-06）](training-review-2026-10-06.md)
 - [主线 Transformer 打法演变（2026-10-06）](style-evolution-2026-10-06.md)
 - [对 DanLM 的对局复盘（2026-10-06）](danlm-game-review-2026-10-06.md)
@@ -80,6 +81,7 @@ Historical records stay at their existing paths to preserve references.
 
 ## Performance and compute
 
+- [Training throughput refactor — October 18, 2026](training-throughput-refactor-2026-10-18.md)
 - [非有限梯度与归约等待诊断（2026-10-13）](training-gradient-diagnosis-2026-10-13.md)
 - [Page-span 基线上的投影优化（2026-10-13，候选验证）](training-stack-next-2026-10-13.md)
 - [主线启动 ECC 故障与 page-span 隔离复测（2026-10-13）](training-startup-ecc-2026-10-13.md)

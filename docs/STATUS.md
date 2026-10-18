@@ -24,6 +24,13 @@ code, checkpoint identity and external state for the task at hand.
 - [Botzone search deployment](reports/botzone-search-2026-10-04.md) records a
   separate platform package and deadline-limited search. Its ladder sample
   and budget cannot be substituted for offline search evidence.
+- October 18, 2026 [training throughput refactor](reports/training-throughput-refactor-2026-10-18.md):
+  public-event batching, batch KV reservation and shared gradient reductions
+  have local CPU component measurements and exact original-revision PPO/resume
+  fingerprints. The private CUDA math-SDPA safeguard now covers every private
+  route. Full Python/native/oracle suites passed; complete CPU update gains are
+  small and variable. Target CUDA acceptance/throughput and production adoption
+  remain unrecorded. See the report's committed evidence and limitations.
 
 ## Research directions and unresolved work
 
