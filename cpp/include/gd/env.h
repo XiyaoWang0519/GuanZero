@@ -19,6 +19,10 @@ struct EnvConfig {
   bool encode = true;       // fill obs and cand buffers
   bool log_public_actions = false;  // opt-in ordered events, forced passes included
   int log_env_limit = -1;   // log only env_id < limit; -1 logs all environments
+  // Search rollouts: an environment whose round ends records its RoundResult
+  // and then goes idle (no tribute, no next round, no new match) until the
+  // next reset() or load(). Idle environments never appear in pending().
+  bool stop_at_round_end = false;
 };
 
 // Flat buffers describing every environment that currently needs a decision.
@@ -67,6 +71,12 @@ class VecEnv {
   // Optional explicit match seeds preserve the serial evaluation seed schedule.
   // Mutually exclusive with deals; one seed per slot. Training omits these.
   void reset(std::span<const DealSpec> deals = {}, std::span<const uint64_t> match_seeds = {});
+  // Replace every slot with the given states (one environment each; the slot
+  // count becomes states.size()). Used to start search branches from sampled
+  // worlds. Styles are cleared, match ids restart at zero, logs are emptied.
+  void load(std::span<const MatchState> states);
+  // Environments that are idle after their round ended (stop_at_round_end).
+  int idle_count() const;
   // Advance every environment until it needs a decision or its match ends,
   // then describe the pending decisions.
   DecisionBatch pending();

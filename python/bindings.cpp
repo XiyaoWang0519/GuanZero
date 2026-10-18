@@ -571,19 +571,20 @@ PYBIND11_MODULE(_gd_core, m) {
   py::class_<VecEnv>(m, "VecEnv")
       .def(py::init([](int num_envs, int num_threads, uint64_t seed,
                        RuleConfig rules, ActionConfig actions, bool encode,
-                       bool log_public_actions, int log_env_limit) {
+                       bool log_public_actions, int log_env_limit, bool stop_at_round_end) {
              EnvConfig cfg;
              cfg.rules = rules;
              cfg.actions = actions;
              cfg.encode = encode;
              cfg.log_public_actions = log_public_actions;
              cfg.log_env_limit = log_env_limit;
+             cfg.stop_at_round_end = stop_at_round_end;
              return new VecEnv(num_envs, num_threads, cfg, seed);
            }),
            py::arg("num_envs"), py::arg("num_threads") = 1, py::arg("seed") = 0,
            py::arg("rules") = RuleConfig::house(), py::arg("actions") = ActionConfig{},
            py::arg("encode") = true, py::arg("log_public_actions") = false,
-           py::arg("log_env_limit") = -1)
+           py::arg("log_env_limit") = -1, py::arg("stop_at_round_end") = false)
       .def("reset", [](VecEnv& e, const std::vector<DealSpec>& deals,
                        const std::vector<uint64_t>& match_seeds) {
         e.reset(std::span<const DealSpec>(deals.data(), deals.size()), match_seeds);
@@ -597,6 +598,29 @@ PYBIND11_MODULE(_gd_core, m) {
       .def("drain_finished_rounds", [](VecEnv& e) {
         const auto s = e.drain_finished_rounds();
         return std::vector<RoundResult>(s.begin(), s.end());
+      })
+      .def("load", [](VecEnv& e, const std::vector<MatchState>& states) {
+        e.load(std::span<const MatchState>(states.data(), states.size()));
+      }, py::arg("states"))
+      .def("idle_count", &VecEnv::idle_count)
+      // Drained public actions as arrays, for vectorized history streams:
+      // (env_id, seat, phase, round_index, cards_left, forced) int32 [n] and
+      // encoded_action float32 [n, ACT_DIM] with private tribute flags zeroed.
+      .def("drain_public_arrays", [](VecEnv& e) {
+        const auto events = e.drain_public_actions();
+        const py::ssize_t n = static_cast<py::ssize_t>(events.size());
+        py::array_t<int32_t> env(n), seat(n), phase(n), round(n), left(n), forced(n);
+        py::array_t<float> enc({n, py::ssize_t(kActDim)});
+        auto* pe = env.mutable_data(); auto* ps = seat.mutable_data(); auto* pp = phase.mutable_data();
+        auto* pr = round.mutable_data(); auto* pl = left.mutable_data(); auto* pf = forced.mutable_data();
+        float* pa = enc.mutable_data();
+        for (py::ssize_t k = 0; k < n; ++k) {
+          const auto& ev = events[size_t(k)];
+          pe[k] = ev.env_id; ps[k] = ev.seat; pp[k] = static_cast<int32_t>(ev.phase);
+          pr[k] = ev.round_index; pl[k] = ev.cards_left; pf[k] = ev.forced ? 1 : 0;
+          std::memcpy(pa + k * kActDim, ev.encoded_action.data(), sizeof(float) * kActDim);
+        }
+        return py::make_tuple(env, seat, phase, round, left, forced, enc);
       })
       .def("drain_public_actions", [](VecEnv& e) {
         const auto events = e.drain_public_actions();
