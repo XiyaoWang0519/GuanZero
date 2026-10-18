@@ -81,6 +81,21 @@ threading (`torch_num_threads`, `torch_interop_threads`, `omp_num_threads` and
 leaves torch's default in every rank, sized from the cores the process sees
 rather than divided among ranks, so check it against the ranks per host and
 the CPU quota.
+Rollout sampling (October 18, 2026). Always on, tier 1: the collector plans
+each own-call group's candidate counts and flat sampling-table cells on the
+host with the step's upload; the no-grad segment log-softmax, Gumbel draw and
+merged snapshot mask shed kernels; `behaviour_logp` is not downloaded twice
+without exploration. CPU tests against frozen pre-change copies, and a
+3-update production-option replay against the pre-change tree, are bitwise
+(`tests/test_history_sampler_trims.py`): 18 fewer aten ops and 2 fewer
+downloaded tensors per vector step. Opt-in, tier 2 (snapshot seats only):
+`rollout_merged_head_prefold` (`--rollout-merged-head-prefold`, with merged
+snapshot policies; resume-settable, recorded, switchable between
+`bench.history_arms` arms) stores each stacked snapshot head's query/key and
+value/output projections pre-multiplied (8 fewer ops per merged call; CPU
+deviation equals the unfolded merged call's). With the merged snapshot
+encoder, `rollout_span_groups` > 1 now also splits the merged snapshot call's
+memory into the caches' span groups. GPU speed of all three is unmeasured.
 `bench.history_stack` alternates dense/SDPA/KV cases with fixed learning rules
 and records full-update throughput/memory. CPU mode requires `--collect-only`
 and charges a learner-cache rebuild each chunk unless explicitly disabled for
