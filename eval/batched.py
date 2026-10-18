@@ -16,7 +16,8 @@ import numpy as np
 import torch
 
 from .duplicate import DuplicateScore, RoundScore
-from .history_policy import HistoryPolicy, HistoryStreamStore, needs_history
+from .history_events import HistoryStreamStore, needs_history
+from .history_policy import HistoryPolicy
 from .policies import GreedyPolicy, ModelPolicy, Policy, PrunedPolicy, RandomPolicy, StyledPolicy
 from train.model import select_actions
 from train.policy import sample_segments, segment_log_softmax

@@ -20,8 +20,8 @@ import numpy as np
 import torch
 
 from train.history_inference import Entry
-from train.history_model import HistoryPolicyConfig, PublicStream, StreamBatch
-from train.logs import TOKEN_DIM
+from train.history_model import HistoryPolicyConfig, StreamBatch
+from train.public_history import TOKEN_DIM, PublicStream
 
 
 def token(i: int) -> np.ndarray:

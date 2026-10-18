@@ -21,7 +21,7 @@ No production CLI, checkpoint schema, or research boundary is changed.
 
 | Task | Owning module / document |
 |---|---|
-| Sequence self-play PPO | `train.history_ppo`, `train.history_rollout`, `train.history_population` |
+| Sequence self-play PPO | `train.history_config`, `train.history_ppo`, `train.history_rollout`, `train.history_population` |
 | Multiple training ranks | `train.history_ddp`; check the run's actor/rank and batch semantics |
 | Load a history checkpoint for evaluation | `eval.history_policy`, `eval.policies` (`history_ppo` checkpoint marker) |
 | Frozen development evaluation | `eval.history_frozen`; scalar / batched backend parity is workload-specific |
@@ -37,6 +37,15 @@ launching. `scripts/preflight.sh` is the legacy MLP preflight. The old
 `infra/run_train.sh` wiring must be checked before reusing it for a sequence
 trainer. Local artifact paths and approved budgets in old reports do not
 identify today's checkpoint or authorize a new rental.
+
+Run configuration and CLI parsing live in `train.history_config`, which uses
+only the standard library; `train.history_ppo` owns the training lifecycle.
+`train.public_history` owns the NumPy public token schema and raw match streams,
+shared by training, caches, evaluators and historical log writers.
+`eval.history_events` captures engine actions and manages evaluator streams;
+`eval.history_policy` runs the actor. `train.advantages` supplies the shared GAE
+calculation; history rollout keeps its round-terminal, zero-bootstrap interface.
+The original module imports remain available as compatibility exports.
 
 ## Local development checks
 

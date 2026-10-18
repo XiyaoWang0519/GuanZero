@@ -53,12 +53,12 @@ from torch.nn import functional as F
 
 from train.history_attention import finish
 from train.history_inference import BatchedHistoryCache, bucket
-from train.history_model import HistoryActor, PublicStream
+from train.history_model import HistoryActor
 from train.history_paged_attention import (
     PagedAttentionLayout, paged_attention, require_triton, resolve_backend,
 )
 from train.history_transfers import upload_arrays
-from train.logs import TOKEN_DIM
+from train.public_history import TOKEN_DIM, PublicStream
 
 PAGE_TOKENS = 64
 

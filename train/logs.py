@@ -5,8 +5,8 @@ from pathlib import Path
 import numpy as np
 
 from train.buffer import Decision
+from train.public_history import TOKEN_DIM, public_token
 
-TOKEN_DIM = 4 + 154 + 28
 SCHEMA_VERSION = 2
 # Schema 3 adds the candidate set of every decision and per-token metadata
 # (abstract id, forced flag, phase) so that behaviour probes can be trained.
@@ -14,16 +14,6 @@ CANDIDATE_SCHEMA_VERSION = 3
 # Per-decision driver codes: which player chose the action at that row.
 DRIVER_POLICY = 0
 DRIVER_BOT = 1
-
-
-def public_token(event: object) -> np.ndarray:
-    token = np.zeros(TOKEN_DIM, dtype=np.uint8)
-    token[int(event.seat)] = 1
-    token[4:158] = event.encoded_action
-    # Tribute structure is private, even if an older engine emits those flags.
-    token[4 + 146:4 + 154] = 0
-    token[158 + int(event.cards_left)] = 1
-    return token
 
 
 def token_meta(event: object) -> tuple[int, int, int]:

@@ -15,7 +15,7 @@ from typing import Iterable
 import gd
 
 from .duplicate import evaluate_duplicates, generate_deals, play_round
-from .history_policy import history_listeners, needs_history
+from .history_events import history_listeners, needs_history
 from .policies import ModelPolicy, Policy, load_policy
 from .probes import evaluate_probes
 

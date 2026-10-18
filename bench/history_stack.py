@@ -19,7 +19,8 @@ import torch
 
 from infra.cpu_budget import host_facts
 from infra.history_artifacts import source_identity
-from train.history_ppo import HistoryPPOConfig, HistoryTrainer
+from train.history_config import HistoryPPOConfig
+from train.history_ppo import HistoryTrainer
 
 
 def summarize(lines: list[dict]) -> dict:

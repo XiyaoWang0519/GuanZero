@@ -11,7 +11,7 @@ import torch
 from torch import nn
 
 from train.belief_probe import FlatBelief, count_parameters
-from train.logs import TOKEN_DIM
+from train.public_history import TOKEN_DIM
 from train.model import mlp
 
 

@@ -112,7 +112,7 @@ def run_script(budget_usd: float, max_hours: float, command: str, hourly_usd: fl
 
 def prepare(root: Path) -> dict:
     """Freeze the screen kits, the continuation kit and the preflight; approval pending."""
-    from train.history_ppo import HistoryPPOConfig
+    from train.history_config import HistoryPPOConfig
 
     if root.exists():
         raise ValueError("refusing to overwrite an existing experiment")
@@ -339,7 +339,8 @@ def require_pod() -> None:
 
 def build_trainer(job: dict, output: Path, payload_dir: Path, target: int | None = None):
     import torch
-    from train.history_ppo import HistoryPPOConfig, HistoryTrainer
+    from train.history_config import HistoryPPOConfig
+    from train.history_ppo import HistoryTrainer
 
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA training requested but CUDA is unavailable")
