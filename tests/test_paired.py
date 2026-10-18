@@ -136,6 +136,8 @@ def test_paired_lineage_reports_against_one_baseline(tmp_path):
         [expected.mean(), expected.mean()])
     same = paired.compare(paired.deal_scores(x), paired.deal_scores(x))
     assert same["difference"]["mean"] == 0 and same["deals_with_different_score"] == 0
+    assert same["score_correlation"] == pytest.approx(1.0)
+    assert same["difference"]["standard_error"] == 0 < same["unpaired_standard_error"]
     # A run against another baseline is a different yardstick.
     other = dict(y, baseline_sha256="0" * 64)
     with pytest.raises(ValueError, match="same deals"):

@@ -81,6 +81,12 @@ def _interval(values: np.ndarray, seed: int, samples: int) -> dict:
             "bootstrap_95_ci": list(bootstrap_interval(values, seed, samples))}
 
 
+def _correlation(x: np.ndarray, y: np.ndarray) -> float | None:
+    if x.std() == 0 or y.std() == 0:
+        return None
+    return float(np.corrcoef(x, y)[0, 1])
+
+
 def compare(a: DealScores, b: DealScores, seed: int = 0, samples: int = 5000) -> dict:
     """A - B on the deals both scored, resampling whole deals."""
     if a.kind != b.kind:
@@ -109,6 +115,11 @@ def compare(a: DealScores, b: DealScores, seed: int = 0, samples: int = 5000) ->
             "deals": total, "common_deals": len(common), "seed": seed, "bootstrap_samples": samples,
             "a_levels_per_round": float(score_a.mean()), "b_levels_per_round": float(score_b.mean()),
             "difference": _interval(diff, seed, samples),
+            # What pairing buys: the standard error two independent samples of
+            # these deals would give, and the per-deal score correlation.
+            "unpaired_standard_error": float(math.sqrt(
+                (score_a.var(ddof=1) + score_b.var(ddof=1)) / len(common))),
+            "score_correlation": _correlation(score_a, score_b),
             "round_win_rate_difference": _interval(win_diff, seed, samples),
             "deals_with_different_score": int(np.count_nonzero(diff)),
             "excluded": {"a_only": sorted(set(a.excluded) - set(b.excluded)),
@@ -138,7 +149,9 @@ def main(argv: list[str] | None = None) -> int:
     d = result["difference"]
     lo, hi = d["bootstrap_95_ci"]
     print(f"{result['a']} - {result['b']}: {d['mean']:+.3f} [{lo:+.3f}, {hi:+.3f}] "
-          f"(normal [{d['normal_95_ci'][0]:+.3f}, {d['normal_95_ci'][1]:+.3f}]) over "
+          f"(normal [{d['normal_95_ci'][0]:+.3f}, {d['normal_95_ci'][1]:+.3f}]; se "
+          f"{d['standard_error']:.3f} paired vs {result['unpaired_standard_error']:.3f} "
+          f"unpaired) over "
           f"{result['common_deals']}/{result['deals']} common deals; excluded "
           f"{len(result['excluded']['reasons'])}")
     return 0
