@@ -79,6 +79,7 @@ Historical records stay at their existing paths to preserve references.
 
 ## Performance and compute
 
+- [Training throughput refactor — October 18, 2026](training-throughput-refactor-2026-10-18.md)
 - [非有限梯度与归约等待诊断（2026-10-13）](training-gradient-diagnosis-2026-10-13.md)
 - [Page-span 基线上的投影优化（2026-10-13，候选验证）](training-stack-next-2026-10-13.md)
 - [主线启动 ECC 故障与 page-span 隔离复测（2026-10-13）](training-startup-ecc-2026-10-13.md)

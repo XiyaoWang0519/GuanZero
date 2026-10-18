@@ -114,6 +114,55 @@ The Transformer-specific readiness checks must cover:
 8. Scalar/batched/external evaluators feed every available public event and
    reset history correctly; unsupported history policies fail explicitly.
 
+### Runtime refactor (2026-10-18)
+
+The [October 18 implementation and measurements](reports/training-throughput-refactor-2026-10-18.md)
+cover these changes:
+
+- `VecEnv.drain_public_batch` returns owned public-token arrays for batch
+  validation and stream ingestion. Rebuild the matching C++ extension with
+  `cmake --build build -j` in an already configured build to enable it. Older
+  extensions, custom environments and specialized event stores retain the
+  scalar drain/ingest path. Event order and public/private boundaries remain
+  the same.
+- Ordinary and merged snapshot KV appends reserve their combined missing pages
+  once. Existing pages, zero padding and the pool's reset/high-water policy are
+  preserved; new physical page IDs are internal allocator metadata.
+- The learner reuses actor gradient norms for encoder diagnostics and skips
+  copying a next-token auxiliary input through a one-part concatenation.
+  Clipping, FP32 overflow checks and auxiliary objectives remain the same.
+- Every private-attention route now shares the existing math-SDPA guard for
+  grad-enabled CUDA calls, including default, singleton and windowed batches.
+  This extends the recorded backward safety fix; CPU, inference and public
+  attention retain their previous backend dispatch.
+
+Architecture, FP32, full match history, complete legal support, PPO/population
+semantics and checkpoint/token schemas are unchanged. Local CPU verification
+matched the original revision's byte fingerprints across dense, paged and
+merged-snapshot cases for two PPO updates plus checkpoint resume. The report
+contains suite results, component measurements and their limitations. Target
+CUDA acceptance and throughput remain pending; no production deployment or
+playing-strength result is recorded for this refactor.
+
+From the repository root, use fresh output paths:
+
+```sh
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 PYTHONPATH=python:oracle:.
+.venv/bin/python -m bench.training_revision --verify --device cpu \
+  --case paged --updates 2 --output .work/throughput-check/verify-paged
+.venv/bin/python -m bench.history_public_events --output .work/throughput-check/events.json
+.venv/bin/python -m bench.history_page_pool --device cpu --output .work/throughput-check/pages.json
+.venv/bin/python -m bench.history_gradients --device cpu
+```
+
+Repeat verification with `--case dense` and `--case snapshots`, each in its own
+output directory. For revision comparisons, run the same harness file against
+each checkout's source and matching extension. `--verify` includes instrumented
+state/trajectory hashing and a resumed update; omit it for separate alternating
+timing trials with identical settings and warmup. Component scripts isolate
+event ingestion, page allocation and gradient diagnostics, respectively; their
+ratios do not substitute for complete-PPO collect/learn/wall measurements.
+
 ## Freeze the run manifest before the remote pilot
 
 These are required manifest contents, not a ready-to-use config schema:

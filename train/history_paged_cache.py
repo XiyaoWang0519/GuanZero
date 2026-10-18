@@ -222,6 +222,25 @@ class PagedHistoryCache(BatchedHistoryCache):
             table[i, :len(pages)] = pages
         return table
 
+    def _allocate_pages(self, entries: list[PagedEntry], ends: np.ndarray) -> None:
+        """Cover an append's known lengths with at most one pool reallocation.
+
+        Reserving entry by entry can repeatedly copy every layer's live KV
+        storage during a large prefill. All requested lengths are on the host,
+        so reserve their combined shortfall before assigning the pages. Page
+        ids are internal; existing entries retain their pages and contents.
+        """
+        pool, P = self.pool, self.pool.page_tokens
+        requests = []
+        for entry, end in zip(entries, ends.tolist()):
+            count = -(-end // P) - len(entry.pages)
+            if count > 0:
+                requests.append((entry, count))
+        if requests:
+            pool.reserve(sum(count for _, count in requests))
+            for entry, count in requests:
+                entry.pages.extend(pool.allocate(count))
+
     def _rows(self, table: Tensor, lengths: Tensor, positions: Tensor) -> Tensor:
         """Pool row of every position in ``positions`` (an ``arange``) for each table
         row; row 0 (the zero page) at or past that row's length."""
@@ -249,10 +268,7 @@ class PagedHistoryCache(BatchedHistoryCache):
         capacity = bucket(int(ends.max()))
         span = self._span(int(ends.max()))
         P = pool.page_tokens
-        for entry, end in zip(entries, ends.tolist()):
-            missing = -(-end // P) - len(entry.pages)
-            if missing > 0:
-                entry.pages.extend(pool.allocate(missing))
+        self._allocate_pages(entries, ends)
         # Upload only new raw events, not the complete historical prefix.
         tokens = np.zeros((batch, width, TOKEN_DIM), np.uint8)
         rounds, phases = np.zeros((batch, width), np.int64), np.zeros((batch, width), np.int64)
@@ -384,10 +400,7 @@ def _merged_append(cache: PagedHistoryCache, entries: list[PagedEntry], counts: 
     capacity = bucket(int(ends.max()))
     span = cache._span(int(ends.max()))
     P = pool.page_tokens
-    for entry, end in zip(entries, ends.tolist()):
-        missing = -(-end // P) - len(entry.pages)
-        if missing > 0:
-            entry.pages.extend(pool.allocate(missing))
+    cache._allocate_pages(entries, ends)
     tokens = np.zeros((R, width, TOKEN_DIM), np.uint8)
     rounds, phases = np.zeros((R, width), np.int64), np.zeros((R, width), np.int64)
     starts_pad = np.zeros(R, np.int64)

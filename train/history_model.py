@@ -35,7 +35,6 @@ import gd
 import numpy as np
 import torch
 from torch import Tensor, nn
-from torch.nn import functional as F
 
 from train.ckpt import load_checkpoint, save_checkpoint
 from train.logs import TOKEN_DIM, public_token
@@ -43,6 +42,7 @@ from train.model import mlp
 from train.history_response import RESPONSE_CLASSES
 from train.history_aux import (HIDDEN_SEATS, NEXT_LOGITS, NUM_CARDS, canonical_aux_heads,
                                parse_aux_heads)
+from train.history_attention import private_sdpa
 
 STAGE = "history_ppo"
 TOKEN_SCHEMA_VERSION = 1      # 186 public dims + round index + phase; no forced bit
@@ -148,6 +148,18 @@ class PublicStream:
     def append(self, event: Any) -> None:
         self.append_token(public_token(event), int(event.round_index), int(event.phase))
 
+    def _reserve(self, length: int) -> None:
+        if length <= len(self._rounds):
+            return
+        n = self._length
+        capacity = max(self._INITIAL_CAPACITY, 2 * len(self._rounds), length)
+        tokens, rounds, phases = self._tokens, self._rounds, self._phases
+        self._new_buffers(capacity)
+        self._tokens[:n] = tokens[:n]
+        self._rounds[:n] = rounds[:n]
+        self._phases[:n] = phases[:n]
+        self._length = n
+
     def append_token(self, token: np.ndarray, round_index: int, phase: int) -> None:
         token = np.asarray(token, dtype=np.uint8)
         if token.shape != (TOKEN_DIM,):
@@ -159,17 +171,47 @@ class PublicStream:
         if round_index < 0 or phase < 0:
             raise ValueError("round index and phase must not be negative")
         n = self._length
-        if n == len(self._rounds):
-            capacity = max(self._INITIAL_CAPACITY, 2 * n)
-            tokens, rounds, phases = self._tokens, self._rounds, self._phases
-            self._new_buffers(capacity)
-            self._tokens[:n] = tokens[:n]
-            self._rounds[:n] = rounds[:n]
-            self._phases[:n] = phases[:n]
+        self._reserve(n + 1)
         self._tokens[n] = token
         self._rounds[n] = int(round_index)
         self._phases[n] = int(phase)
         self._length = n + 1
+
+    @staticmethod
+    def _validated_batch(tokens: np.ndarray, rounds: np.ndarray, phases: np.ndarray
+                         ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Validate public arrays once before distributing them among streams."""
+        tokens = np.asarray(tokens, dtype=np.uint8)
+        rounds = np.asarray(rounds, dtype=np.int64)
+        phases = np.asarray(phases, dtype=np.int64)
+        if tokens.ndim != 2 or tokens.shape[1] != TOKEN_DIM:
+            raise ValueError(f"public tokens must have shape [events, {TOKEN_DIM}]")
+        if rounds.shape != (len(tokens),) or phases.shape != (len(tokens),):
+            raise ValueError("rounds and phases need one entry per public token")
+        if ((tokens[:, :4].sum(1) != 1).any()
+                or (tokens[:, 158:].sum(1) != 1).any()):
+            raise ValueError("public token needs exactly one seat and one cards-left bit")
+        if tokens[:, 4 + 146:4 + 154].any():
+            raise ValueError("private tribute flags must not enter the public stream")
+        if (rounds < 0).any() or (phases < 0).any():
+            raise ValueError("round index and phase must not be negative")
+        return tokens, rounds, phases
+
+    def _extend_validated(self, tokens: np.ndarray, rounds: np.ndarray,
+                          phases: np.ndarray) -> None:
+        """Append a slice of arrays already checked by ``_validated_batch``."""
+        if not len(tokens):
+            return
+        start, end = self._length, self._length + len(tokens)
+        self._reserve(end)
+        self._tokens[start:end] = tokens
+        self._rounds[start:end] = rounds
+        self._phases[start:end] = phases
+        self._length = end
+
+    def extend_tokens(self, tokens: np.ndarray, rounds: np.ndarray, phases: np.ndarray) -> None:
+        """Append public token arrays, preserving old views and owning the new data."""
+        self._extend_validated(*self._validated_batch(tokens, rounds, phases))
 
     @staticmethod
     def _view(array: np.ndarray, length: int) -> np.ndarray:
@@ -530,11 +572,11 @@ class HistoryActor(nn.Module):
         k = keys.view(keys.shape[0], keys.shape[1], heads, depth)
         v = values.view(values.shape[0], values.shape[1], heads, depth)
         if keys.shape[0] == 1:
-            out = F.scaled_dot_product_attention(
+            out = private_sdpa(
                 q.transpose(0, 1)[None], k[0].transpose(0, 1)[None], v[0].transpose(0, 1)[None],
                 attn_mask=allowed[None, None])[0].transpose(0, 1)
         else:
-            out = F.scaled_dot_product_attention(
+            out = private_sdpa(
                 q[:, :, None], k.transpose(1, 2), v.transpose(1, 2),
                 attn_mask=allowed[:, None, None])[:, :, 0]
         return self.out_proj(out.reshape(-1, width))
@@ -571,7 +613,7 @@ class HistoryActor(nn.Module):
         q = q.view(count, heads, depth)[:, :, None]
         k = keys.view(count, keys.shape[1], heads, depth).transpose(1, 2)
         v = values.view(count, values.shape[1], heads, depth).transpose(1, 2)
-        out = F.scaled_dot_product_attention(q, k, v, attn_mask=allowed[:, None, None])
+        out = private_sdpa(q, k, v, attn_mask=allowed[:, None, None])
         out = out[:, :, 0].reshape(count, width)
         return project(self.out_proj, out)
 
@@ -601,16 +643,7 @@ class HistoryActor(nn.Module):
         allowed = torch.arange(keys.shape[1], device=keys.device)[None, None] <= visible[..., None]
         k = keys.view(matches, keys.shape[1], heads, depth).transpose(1, 2)
         v = values.view(matches, values.shape[1], heads, depth).transpose(1, 2)
-        # Oct 15 2026: masked efficient SDPA backward amplified gradients on L40S / torch 2.11
-        # (training-fixture-backward report); grad-enabled CUDA calls use the math kernel.
-        from torch.nn.attention import SDPBackend, sdpa_kernel
-        if query.is_cuda and torch.is_grad_enabled():
-            with sdpa_kernel(SDPBackend.MATH):
-                out = F.scaled_dot_product_attention(padded.transpose(1, 2), k, v,
-                                                     attn_mask=allowed[:, None])
-        else:
-            out = F.scaled_dot_product_attention(padded.transpose(1, 2), k, v,
-                                                 attn_mask=allowed[:, None])
+        out = private_sdpa(padded.transpose(1, 2), k, v, attn_mask=allowed[:, None])
         out = out.transpose(1, 2)[match_index, rank].reshape(count, width)
         return self.out_proj(out)
 

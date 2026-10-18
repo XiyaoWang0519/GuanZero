@@ -30,6 +30,63 @@ def check_pool(pool, caches):
 
 
 @pytest.mark.parametrize("device", devices())
+@pytest.mark.parametrize("merged", [False, True])
+def test_batched_page_reservation_grows_once_and_reuses_storage(device, merged):
+    """Cold/restore batches allocate once; warm/released pages allocate nothing.
+
+    Exercise both append paths with more pages than the initial pool can hold.
+    Re-encoding the same data after release/reset must preserve exact values,
+    including zero padding, even when the allocator chooses different page ids.
+    """
+    skip_without(device)
+    from train.history_paged_cache import merged_encode
+    from train.history_snapshot_batch import SnapshotHeads
+
+    config = HistoryPolicyConfig(width=32, layers=2, heads=4)
+    actors = [fresh_player(config, seed)[0].to(device).train()
+              for seed in range(1, 3 if merged else 2)]
+    pool = KVPagePool.for_actor(actors[0], page_tokens=8, pages=2)
+    caches = [PagedHistoryCache(actor, pool, chunk_size=64) for actor in actors]
+    streams = [PublicStream(i) for i in range(6)]
+    for stream, n in zip(streams, [0, 3, 7, 19, 31, 45]):
+        append(stream, n)
+    keys = [(i, i) for i in range(len(streams))]
+    heads = SnapshotHeads(encoder=True)
+    slots = [heads.slot(i + 1, actor) for i, actor in enumerate(actors)]
+
+    def encode():
+        if not merged:
+            return caches[0].encode(keys, streams)[1]
+        return merged_encode([(caches[0], keys[:4], streams[:4], slots[0]),
+                              (caches[1], keys[4:], streams[4:], slots[1])], heads, 64)
+
+    grows = pool.grows
+    expected = encode()
+    assert pool.grows == grows + 1
+    check_pool(pool, caches)
+    used = pool.used_pages
+    grows = pool.grows
+    assert torch.equal(encode(), expected)
+    assert pool.grows == grows and pool.used_pages == used
+
+    for reset in (False, True):
+        for cache in caches:
+            cache.clear()
+        assert pool.used_pages == 0
+        if reset:
+            pool.reset()
+            assert pool.reserved_bytes == 0
+        grows = pool.grows
+        actual = encode()
+        assert pool.grows == grows + int(reset)
+        assert pool.used_pages == used
+        if reset:
+            assert pool.pages == used + used // 8 + 1
+        assert torch.equal(actual, expected)
+        check_pool(pool, caches)
+
+
+@pytest.mark.parametrize("device", devices())
 @pytest.mark.parametrize("chunk", [16, 128])
 def test_paged_cache_matches_per_entry_cache_bitwise(device, chunk):
     skip_without(device)
