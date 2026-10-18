@@ -18,6 +18,7 @@ claim that every option is enabled by default or beneficial on every device.
 | Learner groups, page cache and attention layout | [Refactor](reports/training-stack-refactor-2026-09-29.md), [learner CUDA](reports/history-learner-cuda-2026-09-30.md) | Learner/component gains do not establish meaningful complete-PPO improvement |
 | Page-span complete PPO comparison (October 13) | [Isolated stack A/B](reports/training-stack-ab-2026-10-13.md): 2 L40S / 8 ranks, throughput +10.28%; real-rollout parity passed | Reproduce on production's 4 GPU layout before adopting; main configuration unchanged. Learner rollout projection failed its numerical gate |
 | Host-side training work | [October 1 training stack](reports/training-stack-2026-10-01.md), [deep dive](reports/speed-deep-dive-2026-10-01.md) | Host changes alone do not prove remote end-to-end speedup |
+| October 18 speed pass (no GPU) | [Report](reports/training-speed-cpu-2026-10-18.md): bitwise default-path trims (event drain, collector, buffer, learn step, learner forward, sampler, KV cache) and nine opt-in switches, CPU-verified | GPU A/B in the production layout and, for tier 2, the real-rollout gate before any switch is adopted |
 | History-aware batched frozen evaluation | [Operator/evidence record](TRAINING_EVIDENCE.md#verified-bounded-t4-workload) | Recorded MPS parity is fixture-specific; validate a new backend/policy combination |
 
 ## Follow-up queue
@@ -31,6 +32,7 @@ Inspect code and recent receipts first to avoid repeating completed work.
 | Long-match cache and learner sharing | Correct gradients, full-prefix parity and masks, no stale detached encodings; cache lifetime under updated weights |
 | Environment/chunk/rank tuning | Effective batch and staleness recorded; paired throughput at equal hardware shares and learning-quality comparison where semantics change |
 | Looped decision-module cost curve (T6) | Separate implementation/readiness receipt, latency/FLOPs, memory and strength at supported depths; not established by the standard Transformer |
+| October 18 switches on GPU | `bench/paged_attention_bench.py`, CUDA test parameters, then one-variable `bench.history_arms --spread-gpus` arms: `ddp_reduce=shm`, `rollout_span_groups=2`, `rollout_private_kv_pages`, `rollout_causal_prefill`, `rollout_paged_attention_kernel`, `learner_compact_next`, `adam_fused`, `rollout_trim_slack_mb` |
 | Search cost reduction | [Fused-search proposal](reports/fused-search-design-2026-10-05.md), then matched search quality/latency evidence before claiming a gain |
 
 Do not retain a frozen MLP forward just because an old optimization shares it

@@ -129,7 +129,41 @@ metrics line (`ddp_reduce`) say which transport ran. It needs about
 needs the usual in-run A/B before adoption. Optimizer state loads in either
 direction; resumed runs now keep the default path's Adam step counters on the
 CPU instead of where `map_location` put them (bitwise; it removes per-step
-`.item()` reads of GPU counters).
+`.item()` reads of GPU counters). The learn step itself (one actor norm pass
+for clip and encoder diagnostic, one backward call, asynchronous per-epoch
+advantage-moment all-reduces, the next minibatch collated and uploaded while
+this one's backward runs, no mid-forward host-to-device copy) is bitwise and
+always on. `--learner-compact-next` (`learner_compact_next`, default off; needs
+`--learner-length-groups`; resume-settable, recorded, switchable in
+`bench.history_arms`) runs the next-token head and a fused loss on the valid
+positions only: tier 2 (CPU relative difference 2.5e-7 in the loss, 5.1e-7 in
+gradients), 168 fewer ops per minibatch than before this pass.
+
+Rollout KV-cache options (October 18, 2026; CPU-verified, GPU speed
+unmeasured; all default off, resume-settable, recorded in the manifest and
+switchable between `bench.history_arms` arms; each needs `--rollout-paged-cache`
+and no private graphs). `--rollout-span-groups N` (`rollout_span_groups`,
+1-4, tier 2) sorts each cache append by stream end and gathers and attends in
+up to N groups, each padded only to its own longest stream; the learner's
+one-decision-per-stream private attention and, with the merged snapshot
+encoder, the merged snapshot call read memory grouped the same way. A group is
+added only if it saves at least 10% and 2,048 rows. On a recorded
+production-shape workload it cut padded key/value rows read by 31-33%.
+`--rollout-private-kv-pages` (`rollout_private_kv_pages`, tier 2; needs
+`--rollout-batched-attention`) stores the learner's private-attention keys and
+values (`kv_proj` of each token's memory) in the page pool when the token is
+encoded, instead of projecting the whole gathered history at every step.
+`--rollout-causal-prefill` (`rollout_causal_prefill`, tier 2; needs
+`--rollout-prefill-learner-cache`) encodes streams rebuilt from BOS in one
+causal pass per length group under a token budget instead of one masked pass
+per 128-token chunk. Real-rollout CPU parity: identical choices and generator
+state, learner log-probabilities within 4.8e-7 with all three on; replaying a
+recorded production-shape update's cache and attention work took 8.8 instead
+of 16.1 CPU seconds.
+Default-path cache trims (one float mask per append, page-granular gathers,
+uninitialized pool growth with new pages zeroed) are bitwise and always on.
+Evidence and the GPU validation plan:
+[speed pass report](reports/training-speed-cpu-2026-10-18.md).
 
 Rollout paged attention kernel (October 18, 2026; verified under Triton's CPU
 interpreter, GPU unmeasured). `rollout_paged_attention_kernel`
@@ -144,8 +178,10 @@ of the padded gather, mask and SDPA; span groups then no longer apply to
 appends. With `--rollout-private-kv-pages` the learner's one-query private
 attention also reads its stored keys/values in place. Tier 2 (FP32
 online-softmax order). CUDA only: without Triton, off CUDA, or for a head depth
-or page size that is not a power of two in 16-256 the switch is a no-op, bitwise
-the default path (CPU test). Under the interpreter, short real VecEnv rollouts
+or page size outside the kernel's tiles (powers of two, depth 16-64, pages
+16-128, depth x page at most 4096; production is depth 16 with 64-token pages)
+the switch is a no-op, bitwise the default path (CPU test); the manifest's
+`rollout_paged_attention_kernel_active` says whether it ran. Under the interpreter, short real VecEnv rollouts
 with every paged option made identical choices with learner log-probabilities
 within 5e-7 of the default path (`tests/test_history_rollout_paged_kernel.py`).
 Before any run uses it, on the target GPU: `bench/paged_attention_bench.py`

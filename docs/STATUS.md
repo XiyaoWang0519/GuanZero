@@ -164,3 +164,16 @@ source identity rebuilt with `--allow-source-change`. Measured vs DanLM (4,000 d
 m8 u81344 −0.376 [−0.414, −0.340], u86800 −0.312 [−0.350, −0.277] (m7 −0.334);
 the model recovered, no rollback, and u86800 versus m7 is within error. This
 supersedes the "production unchanged / not restarted" statements above for the main run.
+
+October 18 speed pass without a GPU: [report](reports/training-speed-cpu-2026-10-18.md).
+Implemented and CPU-verified; GPU throughput not measured; main lineage untouched.
+Default path (bitwise on CPU, active after a restart on the new source): array
+event drain, collector host trims, growable rollout buffer, learn-step trims with
+the next minibatch collated during backward, no mid-forward host copy, Adam step
+counters back on the CPU after a resume, sampler and KV-cache trims. Opt-in
+switches awaiting a GPU A/B (`bench.history_arms --spread-gpus`) and, for tier 2,
+the real-rollout log-probability gate: `--ddp-reduce shm` (bitwise with gloo,
+self-checked), `--rollout-span-groups`, `--rollout-private-kv-pages`,
+`--rollout-causal-prefill`, `--rollout-paged-attention-kernel` (Triton),
+`--learner-compact-next`, `--adam-fused`, `--rollout-trim-slack-mb`,
+`--rollout-merged-head-prefold`. Configuration unchanged until those pass.
