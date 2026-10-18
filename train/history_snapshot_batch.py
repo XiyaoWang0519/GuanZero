@@ -44,7 +44,7 @@ import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
-from train.history_model import HistoryActor, segment_log_softmax
+from train.history_model import HistoryActor, arange_view, neg_gumbel_, segment_log_softmax
 
 # Per-slot tensor names and the order of the uploaded layout fields.
 LAYOUT_FIELDS = ("obs", "seat", "prefix", "cand", "row_pad", "seat_pad", "stream",
@@ -474,8 +474,8 @@ def merged_log_probs(heads: SnapshotHeads, layout: MergedLayout, fields: dict[st
     folded = folded.transpose(1, 2).reshape(S * M, heads_n, width)[fields["row_pad"]]
     own = memory if layout.identity_streams else memory[fields["stream"]]
     scores = torch.bmm(folded, own.transpose(1, 2))                  # [rows, heads, T]
-    allowed = torch.arange(own.shape[1], device=own.device)[None] <= fields["prefix"][:, None]
-    scores = scores.masked_fill(~allowed[:, None], float("-inf"))
+    masked = arange_view(own.shape[1], own.device)[None] > fields["prefix"][:, None]
+    scores = scores.masked_fill(masked[:, None], float("-inf"))
     context = torch.bmm(torch.softmax(scores, dim=-1), own)           # [rows, heads, width]
     context = _pad(context, fields["row_pad"], S * M).view(S, M, heads_n, width).transpose(1, 2)
     attended = torch.matmul(context, tensors["v_w"][:S])               # [S, heads, M, depth]
@@ -514,8 +514,7 @@ def merged_sample(log_probs: Tensor, layout: MergedLayout, fields: dict[str, Ten
         uniform[begin:end].uniform_(generator=generator)
     # Row r's cell c reads its identity's [n_g, K_g] draw at (r, min(c, K_g - 1));
     # cells past K_g hold -inf log-probabilities and can never be chosen.
-    columns = torch.arange(K, device=log_probs.device)[None]
+    columns = arange_view(K, log_probs.device)[None]
     index = fields["uniform_base"][:, None] + torch.minimum(columns, fields["uniform_last"][:, None])
-    uniform = uniform[index].clamp_min(1e-12)
-    choice = (table + -(-uniform.log()).log()).argmax(1)
+    choice = (table - neg_gumbel_(uniform[index])).argmax(1)
     return choice, table.gather(1, choice[:, None])[:, 0]

@@ -57,6 +57,8 @@ from train.logs import TOKEN_DIM, public_tokens
 
 LEARNER = 0     # policy identity of the collecting learner in a seat assignment
 NUM_SEATS = 4
+# Uploaded host fields per own-call identity group (``HistoryCollector._plan``).
+GROUP_FIELDS = 9
 
 
 # ---- event store ---------------------------------------------------------------
@@ -1161,10 +1163,10 @@ class HistoryCollector:
 
     @torch.no_grad()
     def _merged_snapshot_step(self, plan: _StepPlan, fields: dict[str, torch.Tensor],
-                              prefix: np.ndarray, mark: _PhaseTimer):
+                              prefix: np.ndarray, mark: _PhaseTimer) -> dict[str, torch.Tensor]:
         """Per-identity public encodes into one padded memory (or one merged
         encode), then one merged actor call and one Gumbel-max draw per row
-        (uniforms per identity)."""
+        (uniforms per identity); the ``choice`` and ``logp`` to download."""
         from train.history_snapshot_batch import merged_log_probs, merged_sample
         layout, groups, actors = plan.layout, plan.merged, plan.merged_actors
         width = self.actor.config.width
@@ -1193,7 +1195,7 @@ class HistoryCollector:
         log_probs = merged_log_probs(self.snapshot_heads, layout, fields, memory)
         choice, chosen_logp = merged_sample(log_probs, layout, fields, self.generator)
         mark("actor_and_sampling", "snapshot")
-        return choice, chosen_logp.float()
+        return dict(choice=choice, logp=chosen_logp.float())
 
     # -- one vector step, in phases ---------------------------------------------
 
@@ -1324,14 +1326,19 @@ class HistoryCollector:
             else:
                 index = {key: i for i, key in enumerate(unique)}
                 match_index = np.asarray([index[k] for k in keys], np.int64)
-            src = ragged_index(r.offsets[rows], r.counts[rows])
-            local = np.concatenate(([0], np.cumsum(r.counts[rows])))
+            counts = r.counts[rows]
+            src = ragged_index(r.offsets[rows], counts)
+            local = np.concatenate(([0], np.cumsum(counts)))
+            cand_rows = np.repeat(np.arange(len(rows), dtype=np.int64), counts)
+            # Sampling-table cell of every candidate: row * width + position in row.
+            table_index = (cand_rows * max(group.max_candidates, 1)
+                           + np.arange(local[-1], dtype=np.int64) - local[:-1][cand_rows])
             plan.groups.append(group)
             plan.host_fields.extend((
                 match_index, r.prefix[rows],
                 r.obs[rows].astype(np.uint8, copy=False), r.seat[rows],
                 r.cand[src].astype(np.uint8, copy=False),
-                local, np.repeat(np.arange(len(rows), dtype=np.int64), r.counts[rows])))
+                local, cand_rows, counts, table_index))
         if plan.merged:
             from train.history_snapshot_batch import SnapshotHeads, merged_layout
             if self.snapshot_heads is None:
@@ -1346,8 +1353,10 @@ class HistoryCollector:
         return plan
 
     def _infer_group(self, group: _PolicyBatch, fields, r: _StepRows, stats: CollectStats,
-                     mark: _PhaseTimer) -> tuple:
-        """One identity's encode, actor call and sampling; the tensors to download."""
+                     mark: _PhaseTimer) -> dict[str, torch.Tensor]:
+        """One identity's encode, actor call and sampling; the tensors to download
+        by name (``choice`` and ``logp``; the learner adds ``entropy`` and, only
+        when they carry information, ``behaviour_logp`` and ``epsilon_picks``)."""
         identity = group.identity
         label = "learner" if identity == LEARNER else "snapshot"
         actor = self.actor if identity == LEARNER else self.resolve_policy(identity)
@@ -1357,7 +1366,9 @@ class HistoryCollector:
             streams=stream_batch,
             match_index=fields[0], prefix=fields[1], obs=fields[2], seat=fields[3],
             cand=fields[4], offsets=fields[5], candidate_rows=fields[6],
-            one_decision_per_stream=group.one_decision_per_stream)
+            one_decision_per_stream=group.one_decision_per_stream,
+            candidate_counts=fields[7], table_index=fields[8],
+            table_width=max(group.max_candidates, 1))
         if actor.config.style_input:
             inputs.style = torch.as_tensor(
                 np.asarray([self.row_style(e, m) for e, m in
@@ -1370,12 +1381,18 @@ class HistoryCollector:
             sample = actor.explore(inputs, self.generator, temperature=self.temperature,
                                    epsilon=self.epsilon, encoded=encoded,
                                    max_candidates=group.max_candidates, **inference)
-            downloads = (sample.choice, sample.logp.float(), sample.behaviour_logp.float(),
-                         sample.uniform_pick.sum(), sample.behaviour_entropy.double().sum())
+            downloads = dict(choice=sample.choice, logp=sample.logp.float(),
+                             entropy=sample.behaviour_entropy.double().sum())
+            # Without exploration behaviour_logp is the logp tensor and no row
+            # takes the uniform branch: neither is downloaded (nor summed).
+            if sample.behaviour_logp is not sample.logp:
+                downloads["behaviour_logp"] = sample.behaviour_logp.float()
+            if self.epsilon > 0:
+                downloads["epsilon_picks"] = sample.uniform_pick.sum()
         else:
             choice, chosen_logp = actor.act(inputs, self.generator, encoded=encoded,
                                            max_candidates=group.max_candidates, **inference)
-            downloads = (choice, chosen_logp.float())
+            downloads = dict(choice=choice, logp=chosen_logp.float())
         mark("actor_and_sampling", label)
         self._count_call(stats, label, [group])
         return downloads
@@ -1394,17 +1411,19 @@ class HistoryCollector:
         # Policies do not depend on one another's actions until env.step().
         # Preserve their sampling order, then synchronize once for the whole
         # vector step instead of stalling after each identity's inference.
-        downloaded = _download_tensors(tuple(t for _, _, tensors in pending for t in tensors),
-                                       packed=self.device.type == "cuda")
+        downloaded = _download_tensors(
+            tuple(t for _, _, tensors in pending for t in tensors.values()),
+            packed=self.device.type == "cuda")
         cursor = 0
         for identity, rows, tensors in pending:
-            values = downloaded[cursor:cursor + len(tensors)]
+            values = dict(zip(tensors, downloaded[cursor:cursor + len(tensors)]))
             cursor += len(tensors)
-            picked_choice, picked_logp = values[:2]
+            picked_choice, picked_logp = values["choice"], values["logp"]
             if identity == LEARNER:
-                r.behaviour_logp[rows] = values[2]
-                stats.epsilon_picks += int(values[3])
-                stats.behaviour_entropy_sum += float(values[4])
+                r.behaviour_logp[rows] = values.get("behaviour_logp", picked_logp)
+                if "epsilon_picks" in values:
+                    stats.epsilon_picks += int(values["epsilon_picks"])
+                stats.behaviour_entropy_sum += float(values["entropy"])
             if not (np.isfinite(picked_logp).all() and np.isfinite(r.behaviour_logp[rows]).all()):
                 raise FloatingPointError("non-finite behaviour probability")
             r.choices[rows] = picked_choice.astype(np.int32)
@@ -1442,16 +1461,18 @@ class HistoryCollector:
         plan = self._plan(rows)
         mark("input_indexing")
         # All groups' decision inputs are known before inference. One aligned
-        # upload preserves group/row order and avoids seven transfers per group.
+        # upload preserves group/row order and avoids nine transfers per group.
         uploaded = upload_arrays(plan.host_fields, self.device)
         mark("decision_upload")
+        width = GROUP_FIELDS
         pending = [(group.identity, group.rows,
-                    self._infer_group(group, uploaded[7 * i:7 * (i + 1)], rows, stats, mark))
+                    self._infer_group(group, uploaded[width * i:width * (i + 1)], rows, stats,
+                                      mark))
                    for i, group in enumerate(plan.groups)]
         if plan.layout is not None:
             # After the learner, as the per-identity calls were: identical
             # generator order. One merged actor call for every snapshot row.
-            fields = dict(zip(LAYOUT_FIELDS, uploaded[7 * len(plan.groups):]))
+            fields = dict(zip(LAYOUT_FIELDS, uploaded[width * len(plan.groups):]))
             downloads = self._merged_snapshot_step(plan, fields, rows.prefix, mark)
             pending.append((-1, plan.layout.rows, downloads))
             self._count_call(stats, "snapshot", plan.merged)
