@@ -293,3 +293,117 @@ def test_spread_gpus_assigns_ranks_round_robin_and_keeps_explicit_index():
     assert [rank_cuda_index("cpu", r, True, 2) for r in range(2)] == [None, None]
     from train.history_ddp import build_parser
     assert build_parser().parse_args(["--output", "x", "--spread-gpus"]).spread_gpus is True
+
+
+def _transport_worker(rank, world, port, root, transport, queue):
+    os.environ.update(MASTER_ADDR="127.0.0.1", MASTER_PORT=str(port))
+    dist.init_process_group("gloo", rank=rank, world_size=world)
+    torch.set_num_threads(1)
+    try:
+        config = small_config(epochs=2, minibatch_matches=1, ddp_global_minibatch=True,
+                              response_mode="auxiliary", aux_heads="next,belief,outcome",
+                              ddp_reduce=transport)
+        trainer = HistoryDDPTrainer(config, os.path.join(root, f"{transport}-{rank}"),
+                                    rank=rank, world_size=world)
+        params = trainer.parameters_all()
+        flat = lambda tensors: torch.cat([t.detach().reshape(-1) for t in tensors]).numpy().copy()
+        # Direct reduce with random gradients; rank 1 has no real minibatch.
+        g = torch.Generator().manual_seed(rank)
+        local = [torch.randn(p.shape, generator=g) for p in params]
+        for p, x in zip(params, local):
+            p.grad = x.clone()
+        count = trainer.reduce_gradients(rank != 1)
+        mixed = flat(p.grad for p in params)
+        # No rank has a real minibatch: no step, gradients untouched.
+        for p, x in zip(params, local):
+            p.grad = x.clone()
+        none = trainer.reduce_gradients(False)
+        untouched = all(torch.equal(p.grad, x) for p, x in zip(params, local))
+        lines, snapshots = [], []
+        for _ in range(2):
+            lines.append(trainer.update())
+            snapshots.append(flat(params))
+        trainer.close()
+        queue.put(dict(rank=rank, count=count, none=none, untouched=untouched,
+                       local=flat(local), mixed=mixed, params=snapshots,
+                       policy_loss=[l["policy_loss"] for l in lines],
+                       minibatches=[l["minibatches"] for l in lines],
+                       local_minibatches=[l["local_minibatches"] for l in lines]))
+    finally:
+        dist.destroy_process_group()
+
+
+def _run_transport(tmp_path, transport: str, world: int) -> list[dict]:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    context = mp.get_context("spawn")
+    queue = context.Queue()
+    processes = [context.Process(target=_transport_worker,
+                                 args=(r, world, port, str(tmp_path), transport, queue))
+                 for r in range(world)]
+    for p in processes:
+        p.start()
+    results = sorted((queue.get(timeout=600) for _ in processes), key=lambda r: r["rank"])
+    for p in processes:
+        p.join(timeout=60)
+        assert p.exitcode == 0
+    return results
+
+
+def test_shm_reduce_three_ranks_identical_and_close_to_gloo(tmp_path):
+    """Three ranks: the shared-memory reduce is a fixed rank-order sum, so every
+    rank holds the same parameters; it differs from gloo's ring only in FP32
+    order (tier 2). Ranks without a real minibatch contribute zeros; a step with
+    no real minibatch is skipped."""
+    gloo = _run_transport(tmp_path, "gloo", 3)
+    shm = _run_transport(tmp_path, "shm", 3)
+    expected = (shm[0]["local"] + shm[2]["local"]) / np.float32(2)   # rank 1 not real
+    for results in (gloo, shm):
+        assert all(r["count"] == 2 and r["none"] == 0 and r["untouched"] for r in results)
+        assert all(r["minibatches"] == results[0]["minibatches"] for r in results)
+    for r in shm:
+        assert np.array_equal(r["mixed"].view(np.int32), expected.view(np.int32))
+        for update in range(2):
+            assert np.array_equal(r["params"][update], shm[0]["params"][update])
+    np.testing.assert_allclose(gloo[0]["mixed"], expected, rtol=1e-6, atol=1e-7)
+    # After one update both transports learned from the same data. Adam turns FP32
+    # noise on near-zero gradient elements into steps of up to about lr, so a few
+    # elements differ by that much; nearly all agree to 1e-6.
+    diff = np.abs(shm[0]["params"][0] - gloo[0]["params"][0])
+    lr = small_config().lr
+    assert np.mean(diff <= 1e-6) > 0.999 and diff.max() <= 2 * lr * shm[0]["minibatches"][0]
+    assert abs(shm[0]["policy_loss"][0] - gloo[0]["policy_loss"][0]) < 1e-6
+
+
+def test_launcher_shm_reduce_matches_gloo_bitwise_at_two_ranks(tmp_path):
+    """Two ranks: a two-term sum commutes, so the shared-memory reduce gives
+    gloo's parameters, optimizer state and losses bit for bit."""
+    import json
+    from train.history_ddp import main
+    common = ["--world-size", "2", "--ddp-global-minibatch", "--num-envs", "3",
+              "--steps-per-update", "90", "--width", "32", "--layers", "1", "--heads", "4",
+              "--updates", "2", "--epochs", "2", "--minibatch-matches", "1",
+              "--snapshot-updates", "1", "--seed", "5", "--torch-threads", "1",
+              "--response-mode", "auxiliary", "--aux-heads", "next,belief,outcome"]
+    payloads, metrics = {}, {}
+    for transport in ("gloo", "shm"):
+        output = tmp_path / transport
+        assert main(["--output", str(output), "--ddp-reduce", transport, *common]) == 0
+        payloads[transport] = torch.load(output / "latest.pt", map_location="cpu",
+                                         weights_only=False)
+        metrics[transport] = [json.loads(l) for l in
+                              (output / "metrics.jsonl").read_text().splitlines()]
+        manifest = json.loads((output / "manifest.json").read_text())
+        assert manifest["inference"]["ddp_reduce"] == transport
+    a, b = payloads["gloo"], payloads["shm"]
+    for key in ("model", "critic"):
+        assert a[key].keys() == b[key].keys()
+        assert all(torch.equal(a[key][name], b[key][name]) for name in a[key])
+    for name in ("actor", "critic"):
+        for x, y in zip(a["optimizer"][name]["state"].values(),
+                        b["optimizer"][name]["state"].values()):
+            assert all(torch.equal(x[k], y[k]) for k in x)
+    for key in ("policy_loss", "value_loss", "actor_grad_norm", "encoder_grad_norm"):
+        assert [l[key] for l in metrics["gloo"]] == [l[key] for l in metrics["shm"]]
+    assert [l["update"] for l in metrics["shm"]] == [1, 2]

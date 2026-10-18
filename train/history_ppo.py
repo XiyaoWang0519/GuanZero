@@ -185,6 +185,15 @@ class HistoryPPOConfig:
     # data parallel (train/history_ddp.py): normalize advantages and weight the
     # loss over the union of the ranks' minibatches, as one minibatch would be
     ddp_global_minibatch: bool = False
+    # Gradient all-reduce transport of the data-parallel ranks: "gloo" (TCP ring)
+    # or "shm" (same-node /dev/shm mapping, fixed rank-order sum,
+    # train/history_shm_reduce.py). shm equals gloo bitwise at two ranks; with
+    # more ranks the FP32 summation order differs (tier 2).
+    ddp_reduce: str = "gloo"
+    # torch.optim.Adam(fused=True) for both optimizers: one fused kernel per step
+    # with device-resident step counters; FP32 arithmetic differs from the
+    # foreach path (tier 2). Checkpoint optimizer state loads either way.
+    adam_fused: bool = False
     # Planted-habit diagnostic (train/history_habit.py; approved exceptions, never
     # the main lineage). habit_pack: frozen base checkpoint of the styled opponent
     # pack (empty: off). habit_init: checkpoint the learner continues from.
@@ -225,6 +234,8 @@ class HistoryPPOConfig:
                              'snapshot policies')
         if self.rollout_wide_projection and not self.rollout_batched_attention:
             raise ValueError('rollout_wide_projection requires rollout_batched_attention')
+        if self.ddp_reduce not in ("gloo", "shm"):
+            raise ValueError("ddp_reduce must be gloo or shm")
         if self.rollout_device not in (None, 'cpu', 'cuda'):
             raise ValueError('rollout_device must be cpu, cuda, or None')
         if self.learner_length_groups < 0 or (self.learner_length_groups and self.window):
@@ -371,10 +382,12 @@ def parse_arm_schedule(schedule: str) -> list[tuple[int, bool]]:
 # batched learner cache prefill are tier 2), the learn-phase profile (timing only),
 # the learner's length-grouped
 # encode and chosen-only auxiliary response head (tier 2: same loss, learner
-# float-order noise), plus snapshot_updates,
+# float-order noise), the data-parallel gradient transport and fused Adam (tier 2:
+# FP32 order), plus snapshot_updates,
 # which changes dynamics.
 RESUME_OVERRIDES = frozenset({"num_envs", "num_threads", "minibatch_matches", "torch_threads",
-                              "checkpoint_updates", "ddp_global_minibatch",
+                              "checkpoint_updates", "ddp_global_minibatch", "ddp_reduce",
+                              "adam_fused",
                               "rollout_graph_budget_mb", "rollout_graph_policy_budget_mb",
                               "rollout_triton_min_batch", "snapshot_updates",
                               "profile_collection", "profile_collection_warmup",
@@ -778,6 +791,8 @@ class HistoryTrainer:
                           "learner_batched_attention": self.actor.batched_match_attention,
                           "learner_length_groups": self.config.learner_length_groups,
                           "learner_chosen_response": self.config.learner_chosen_response,
+                          "ddp_reduce": self.config.ddp_reduce,
+                          "adam_fused": self.config.adam_fused,
                           "rollout_graph_budget_mb": self.config.rollout_graph_budget_mb,
                           "rollout_graph_policy_budget_mb": self.config.rollout_graph_policy_budget_mb,
                           "rollout_triton_cache": self.collector.triton_cache,
@@ -1426,6 +1441,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--learner-chosen-response", action="store_true",
                         help="learner, auxiliary response mode: run the response head on "
                              "executed candidates only, the rows its loss reads (FP32; not bitwise)")
+    parser.add_argument("--adam-fused", action="store_true",
+                        help="fused Adam kernels for both optimizers (FP32; not bitwise)")
     parser.add_argument("--rollout-graph-budget-mb", type=int, default=512)
     parser.add_argument("--rollout-graph-policy-budget-mb", type=int, default=128,
                         help="per-policy private-graph cap within the total budget")

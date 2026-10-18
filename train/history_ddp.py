@@ -25,6 +25,10 @@ samplers) and that each minibatch draws the same number of matches from every
 rank's shard; the data distribution is the same. Collectives run on host copies
 over gloo, so any number of ranks may share a GPU. ``python -m train.history_ddp
 --world-size W ...`` launches the ranks; rank 0 writes checkpoints to ``--output``.
+
+``ddp_reduce="shm"`` (opt-in, tier 2 beyond two ranks) moves the gradient
+all-reduce from gloo to a same-node shared-memory mapping
+(``train/history_shm_reduce.py``); the small collectives stay on gloo.
 """
 from __future__ import annotations
 
@@ -46,6 +50,7 @@ import torch.multiprocessing as mp
 
 from train import history_ppo
 from train.history_ppo import HistoryPPOConfig, HistoryTrainer, config_from_args
+from train.history_shm_reduce import ShmAllReduce
 
 RANK_SEED_STRIDE = 7919
 RANK_ENV_STRIDE = 10_000_000
@@ -58,6 +63,7 @@ class HistoryDDPTrainer(HistoryTrainer):
                  resume_overrides: dict[str, Any] | None = None) -> None:
         if world_size > 1 and not dist.is_initialized():
             raise RuntimeError("initialize torch.distributed before building a multi-rank trainer")
+        self.shm: ShmAllReduce | None = None
         super().__init__(config, output, device=device, resume=resume,
                          allow_source_change=allow_source_change,
                          resume_overrides=resume_overrides)
@@ -89,6 +95,14 @@ class HistoryDDPTrainer(HistoryTrainer):
         self.population_event(dict(event="ddp", rank=self.rank, world_size=self.world_size,
                                    lineage=self.lineage, resumed=resume is not None))
         self.check_synchronized()
+        if self.config.ddp_reduce == "shm":
+            self.shm_reducer()       # fail at start-up if /dev/shm is too small
+
+    def close(self) -> None:
+        """Release the shared-memory mapping (if any); idempotent."""
+        if self.shm is not None:
+            self.shm.close()
+            self.shm = None
 
     # -- collectives --------------------------------------------------------------
 
@@ -103,31 +117,72 @@ class HistoryDDPTrainer(HistoryTrainer):
         if not torch.equal(high, low):
             raise RuntimeError("data-parallel ranks diverged: parameter checksum mismatch")
 
+    def shm_reducer(self) -> ShmAllReduce:
+        """The shared-memory gradient reducer, created on first use (collective:
+        every rank reaches it at the same step, also after a live switch)."""
+        numel = sum(p.numel() for p in self.parameters_all()) + 1
+        if self.shm is None:
+            self.shm = ShmAllReduce(self.rank, self.world_size, numel)
+        elif self.shm.numel != numel:
+            raise RuntimeError("the parameter count changed under the shared-memory reducer")
+        return self.shm
+
     def reduce_gradients(self, real: bool) -> int:
-        """Average the gradients of ranks that had a real minibatch; returns that count."""
+        """Average the gradients of ranks that had a real minibatch; returns that count.
+
+        One flat vector per rank: every gradient (zeros on a rank without a real
+        minibatch), then the real flag, so the sum's last element is the count.
+        """
         if self.world_size == 1:
             return super().reduce_gradients(real)
         params = self.parameters_all()
-        flat = torch.cat([(p.grad if (real and p.grad is not None) else torch.zeros_like(p)).reshape(-1)
-                          for p in params] + [torch.ones(1, dtype=params[0].dtype, device=params[0].device)
-                                              * float(real)])
-        # Reduced on a host copy: gloo on CUDA tensors is not relied upon, so
-        # several ranks can share one GPU.
-        host = flat.cpu()
-        dist.all_reduce(host)
-        count = int(round(float(host[-1])))
+        device = params[0].device
+        if self.config.ddp_reduce == "shm":
+            total = self.shm_reducer().all_reduce(
+                lambda slot: self.fill_gradient_slot(slot, params, real))
+        else:
+            if real:
+                flat = torch.cat([(p.grad if p.grad is not None else torch.zeros_like(p)).reshape(-1)
+                                  for p in params]
+                                 + [torch.ones(1, dtype=params[0].dtype, device=device)])
+            else:
+                flat = torch.zeros(sum(p.numel() for p in params) + 1, dtype=params[0].dtype,
+                                   device=device)
+            # Reduced on a host copy: gloo on CUDA tensors is not relied upon, so
+            # several ranks can share one GPU.
+            total = flat.cpu()
+            dist.all_reduce(total)
+        count = int(round(float(total[-1])))
         if count == 0:
             return 0
-        # The division allocates a fresh tensor, so each gradient can be a view
-        # of its slice instead of a per-parameter copy; clip_grad_norm_ scales
-        # the views in place over disjoint slices.
-        flat = host[:-1].to(flat.device) / count
+        # The division allocates a fresh tensor (never a view of the host or
+        # shared buffer), so each gradient can be a view of its slice instead of
+        # a per-parameter copy; clipping scales the views in place over disjoint
+        # slices.
+        flat = total[:-1].to(device) / count
         begin = 0
         for p in params:
             n = p.numel()
             p.grad = flat[begin:begin + n].view_as(p)
             begin += n
         return count
+
+    @staticmethod
+    def fill_gradient_slot(slot: torch.Tensor, params: list[torch.nn.Parameter],
+                           real: bool) -> None:
+        """This rank's flat gradient and real flag, written straight into its slot
+        of the shared mapping (one device-to-host copy, no host staging tensor)."""
+        if not real:
+            slot.zero_()
+            return
+        parts = [(p.grad if p.grad is not None else torch.zeros_like(p)).reshape(-1)
+                 for p in params]
+        n = slot.numel() - 1
+        if parts[0].device.type == "cpu":
+            torch.cat(parts, out=slot[:n])
+        else:
+            slot[:n].copy_(torch.cat(parts))
+        slot[n] = 1.0
 
     def global_minibatch(self, rows: np.ndarray | None) -> float:
         """With ``ddp_global_minibatch``, treat the union of this step's rank
@@ -288,7 +343,10 @@ def _rank_main(rank: int, world: int, port: int, argv: list[str]) -> None:
             trainer.stop_requested = True
         signal.signal(signal.SIGTERM, stop)
         signal.signal(signal.SIGINT, stop)
-        history_ppo.run_profiled(trainer, rank)
+        try:
+            history_ppo.run_profiled(trainer, rank)
+        finally:
+            trainer.close()
     finally:
         dist.destroy_process_group()
 
@@ -304,6 +362,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ddp-global-minibatch", action="store_true",
                         help="normalize advantages and weight the loss over the union of "
                              "the ranks' minibatches, as one minibatch would be")
+    parser.add_argument("--ddp-reduce", choices=("gloo", "shm"), default="gloo",
+                        help="gradient all-reduce transport: gloo, or a same-node /dev/shm "
+                             "mapping with a fixed rank-order sum (bitwise equal to gloo at "
+                             "two ranks; FP32 order differs beyond)")
     return parser
 
 
