@@ -117,6 +117,12 @@ Additional executable CUDA gates are supplied for:
   kernel was closer to FP64 than SDPA in 3 of 4 probed shapes (worst ratio 2.2x).
   The high-scale gate now requires max |kernel - FP64| <= 4 x max |SDPA - FP64|
   + 1e-5. The factor 4 was chosen after seeing these numbers, not in advance.
+  The self-play gate's learner-gradient check (merged mode) also failed 3 of ~10
+  full-suite runs on `fusion.1.bias` (diff 1.13e-5 vs atol 1e-5) and failed
+  identically with **torch scope in both arms**: CUDA learner backward is not
+  bitwise repeatable, and the kernel is not involved. That check now asserts zero
+  kernel dispatches during learner recomputation and uses atol
+  max(1e-5, 1e-2 x max |grad|) (max |grad| ~3.3e-3 there).
 - Real ordinary and merged cache prefill/append, page growth and reuse,
   reset/prune/weight invalidation, snapshot slot gaps and shared-pool isolation.
 - Real random-player self-play in ordinary/merged modes: exact choices and
