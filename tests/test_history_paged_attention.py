@@ -269,11 +269,14 @@ def test_wider_heads_and_int32_indices(device):
 def test_strided_start_and_end_views(device):
     """starts/ends given as columns of one [B, 2] tensor (stride 2) still match
     the reference: the kernel entry makes them contiguous."""
-    q, kv, table, starts, ends = make_case([5, 70, 130, 300], [5, 2, 3, 4], seed=9)
-    both = torch.stack([starts, ends], 1)
-    case = (q, kv, table, both[:, 0], both[:, 1])
-    assert case[3].stride(0) == 2
-    check_kernel(case, device)
+    q, kv, table, starts, ends = (t.to(device) for t in
+                                  make_case([5, 70, 130, 300], [5, 2, 3, 4], seed=9))
+    both = torch.stack([starts, ends], 1)       # on the device: the views stay strided
+    starts, ends = both[:, 0], both[:, 1]
+    assert starts.stride(0) == 2 and ends.stride(0) == 2
+    reference = paged_append_attention_reference(q, kv, table, starts, ends, PAGE)
+    out = paged_append_attention_triton(q, kv, table, starts, ends, PAGE)
+    assert_close(out, reference)
 
 
 def test_output_layout_and_launch_hints(device):

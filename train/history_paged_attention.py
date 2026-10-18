@@ -66,6 +66,8 @@ Python launch overhead per layer.
 """
 from __future__ import annotations
 
+from contextlib import nullcontext
+
 from dataclasses import dataclass
 from functools import lru_cache
 import inspect
@@ -364,17 +366,22 @@ def paged_append_attention_triton(q: Tensor, kv: Tensor, table: Tensor, starts: 
     else:
         part_acc = part_ml = out     # unused: the SPLITS == 1 branch stores straight to out
     grid = (H, B, _cdiv(W, config.block_q) * S)
-    _paged_attention_kernel[grid](
-        q, kv, table, starts, ends, out, part_acc, part_ml,
-        *q.stride(), *kv.stride(), *table.stride(), *out.stride(),
-        W, blocks, config.pages_per_split, D ** -0.5 * LOG2E,
-        H=H, D=D, PAGE=page_tokens, BLOCK_Q=config.block_q, SPLITS=S, IEEE=_ieee_dot(),
-        num_warps=config.num_warps)
-    if S > 1:
-        _combine_kernel[(B * H, _cdiv(W, COMBINE_BLOCK_W))](
-            part_acc, part_ml, out, *out.stride(), W,
-            H=H, D=D, SPLITS=S, SPLITS_P2=triton.next_power_of_2(S), BLOCK_W=COMBINE_BLOCK_W,
-            num_warps=4)
+    # Triton launches on the current CUDA device and its current stream; make
+    # that the tensors' device, so a non-default device (cuda:1 without
+    # set_device) is neither a wrong-context launch nor unordered with the
+    # stream that wrote the pool.
+    with (torch.cuda.device(q.device) if q.device.type == "cuda" else nullcontext()):
+        _paged_attention_kernel[grid](
+            q, kv, table, starts, ends, out, part_acc, part_ml,
+            *q.stride(), *kv.stride(), *table.stride(), *out.stride(),
+            W, blocks, config.pages_per_split, D ** -0.5 * LOG2E,
+            H=H, D=D, PAGE=page_tokens, BLOCK_Q=config.block_q, SPLITS=S, IEEE=_ieee_dot(),
+            num_warps=config.num_warps)
+        if S > 1:
+            _combine_kernel[(B * H, _cdiv(W, COMBINE_BLOCK_W))](
+                part_acc, part_ml, out, *out.stride(), W,
+                H=H, D=D, SPLITS=S, SPLITS_P2=triton.next_power_of_2(S),
+                BLOCK_W=COMBINE_BLOCK_W, num_warps=4)
     return out
 
 
