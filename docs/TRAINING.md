@@ -114,6 +114,20 @@ The Transformer-specific readiness checks must cover:
 8. Scalar/batched/external evaluators feed every available public event and
    reset history correctly; unsupported history policies fail explicitly.
 
+Private cross-attention audit and Q/K normalization (October 18, 2026;
+[report](reports/private-attention-audit-2026-10-18.md)).
+`python -m eval.private_attention_audit --out DIR CKPT...` collects one CPU
+self-play sample of whole matches (`--sampler`, `--save-sample`/`--load-sample`
+reuse it across checkpoints) and writes `audit.json` and `summary.md`:
+saturation, landing, history-swap sensitivity, math-SDPA q/k gradients, Adam
+state and dead ReLU units, stratified by round and tribute round. It is CPU
+only and launches no training. `--private-qk-norm none|query|qk`
+(`HistoryPolicyConfig.private_qk_norm`, default `none`) is an architecture
+arm for a fresh lineage: `none` keeps the current lineage's architecture
+record, state dict and outputs; a resume cannot change it; merged snapshot
+inference (`--batch-snapshot-policies`) and the Botzone NumPy actor refuse
+the other arms.
+
 ## Freeze the run manifest before the remote pilot
 
 These are required manifest contents, not a ready-to-use config schema:
