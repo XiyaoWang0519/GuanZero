@@ -1,5 +1,6 @@
 """Opt-in rollout public-memory layouts (acceptance tier 2, all default off):
-span groups (``rollout_span_groups``).
+span groups (``rollout_span_groups``) and the learner's private K/V pages
+(``rollout_private_kv_pages``).
 
 Each is checked at the cache level against the default layout and at the
 collector level on real VecEnv rollouts with snapshot seats: the same choices
@@ -282,6 +283,125 @@ def test_collector_span_groups(device, groups, eager_groups):
     assert learner["grouped_appends"] > 0 and learner["memory"] < plain.caches[0].span_rows["memory"]
     assert sum(c.span_rows["grouped_appends"] for k, c in fast.caches.items() if k) > 0
     print(f"collector span groups {groups}: learner log-prob max |diff| {worst:.2e}")
+
+
+# ---- private K/V pages -----------------------------------------------------------
+
+def live(cache):
+    P = cache.pool.page_tokens
+    return torch.as_tensor([entry.pages[t // P] * P + t % P for entry in cache.entries.values()
+                            for t in range(entry.length)], dtype=torch.long)
+
+
+@pytest.mark.parametrize("device", devices())
+def test_private_kv_pages_hold_the_projected_memory(device, eager_groups):
+    """Every live pool row's private K/V is ``kv_proj`` of its memory (to the GEMM
+    row count); projected rollout memory equals ``kv_proj`` of ``encode``'s memory,
+    grouped or not; a ``kv_proj`` update rebuilds them; a pool reset frees them."""
+    skip_without(device)
+    actor = fresh_player(CONFIG, 9)[0].to(device).train()
+    actor.batched_private_attention = True
+    cache = PagedHistoryCache(actor, chunk_size=32, page_span=True, span_groups=2,
+                              private_kv=True)
+    pool = cache.pool
+    assert pool.private_width == 2 * CONFIG.width
+    assert pool.page_bytes == pool.page_tokens * (2 * 2 * 32 + 32 + 64) * 4
+    streams = make_streams([0, 3, 40, 150, 7, 90])
+    keys = [(i, i) for i in range(len(streams))]
+    worst = 0.0
+    for step in range(10):
+        _, memory = cache.encode(keys, streams)
+        _, projected = cache.encode_rollout(keys, streams, projected=True)
+        assert projected.projected
+        rows = live(cache).to(device)
+        with torch.no_grad():
+            expected_rows = actor.kv_proj(pool.memory[rows])
+            expected = actor.kv_proj(memory)
+        torch.testing.assert_close(pool.private[rows], expected_rows, rtol=2e-6, atol=2e-6)
+        worst = max(worst, float((pool.private[rows] - expected_rows).abs().max()))
+        lengths = [s.prefix + 1 for s in streams]
+        for group_rows, part in projected.groups:
+            index = range(len(streams)) if group_rows is None else group_rows.tolist()
+            for j, i in enumerate(index):
+                torch.testing.assert_close(part[j, :lengths[i]], expected[i, :lengths[i]],
+                                           rtol=2e-6, atol=2e-6)
+                assert not part[j, lengths[i]:].any()
+        for i, stream in enumerate(streams):
+            append(stream, (3 * step + i) % 7, offset=step)
+        if step == 5:
+            with torch.no_grad():
+                actor.kv_proj.weight.mul_(1.5)
+    print(f"stored private K/V against kv_proj(memory): max |diff| {worst:.2e}")
+    with pytest.raises(ValueError, match="private_kv"):
+        PagedHistoryCache(actor).encode_rollout(keys, streams, projected=True)
+    with pytest.raises(ValueError, match="private_width"):
+        PagedHistoryCache(actor, KVPagePool.for_actor(actor), private_kv=True)
+    cache.clear()
+    pool.reset()
+    assert pool.private.numel() == 0 and pool.reserved_bytes == 0
+    _, projected = cache.encode_rollout(keys, streams, projected=True)    # regrows
+    assert pool.private.shape == (pool.pages * pool.page_tokens, 64)
+    assert not pool.private[:pool.page_tokens].any()
+
+
+@pytest.mark.parametrize("device", devices())
+def test_projected_rollout_memory_attention_is_the_padded_attention(device):
+    """With the same keys/values (one ``kv_proj`` over the padded memory), attention
+    over projected rollout memory is the padded path bit for bit."""
+    skip_without(device)
+    from train.history_model import DecisionInputs
+    actor = fresh_player(CONFIG, 4)[0].to(device).train()
+    actor.batched_private_attention = True
+    streams = make_streams([5, 300, 64, 0, 129])
+    _, padded = PagedHistoryCache(actor, page_span=True).encode(
+        [(i, i) for i in range(len(streams))], streams)
+    n = len(streams)
+    obs = torch.as_tensor(np.random.default_rng(2).integers(0, 2, (n, CONFIG.obs_dim)),
+                          dtype=torch.uint8, device=device)
+    inputs = DecisionInputs(streams=None, match_index=torch.arange(n, device=device),
+                            prefix=torch.as_tensor([s.prefix for s in streams], device=device),
+                            obs=obs, seat=torch.arange(n, device=device) % 4, cand=None,
+                            offsets=None, one_decision_per_stream=True)
+    with torch.no_grad():
+        projected = RolloutMemory([(None, actor.kv_proj(padded))], projected=True)
+        for wide in (False, True):
+            actor.wide_private_projection = wide
+            assert torch.equal(actor.decision_states(projected, inputs),
+                               actor.decision_states(padded, inputs))
+        single = DecisionInputs(streams=None, match_index=inputs.match_index[:1],
+                                prefix=inputs.prefix[:1], obs=obs[:1], seat=inputs.seat[:1],
+                                cand=None, offsets=None, one_decision_per_stream=True)
+        one = RolloutMemory([(None, actor.kv_proj(padded[:1]))], projected=True)
+        assert torch.equal(actor.decision_states(one, single),
+                           actor.decision_states(padded[:1], single))
+
+
+@pytest.mark.parametrize("device", devices())
+@pytest.mark.parametrize("groups", [1, 3])
+def test_collector_private_kv_pages(device, groups, eager_groups):
+    skip_without(device)
+    plain, fast, worst = compare_rollouts(device, dict(private_kv_pages=True, span_groups=groups))
+    assert fast.learner_pool.private is not None and fast.kv_pool.private is None
+    assert plain.learner_pool.private is None
+    print(f"collector private K/V pages (span groups {groups}): learner log-prob "
+          f"max |diff| {worst:.2e}")
+
+
+def test_private_kv_pages_default_off_and_configuration():
+    from train.history_ppo import HistoryPPOConfig, build_parser, config_from_args
+    from train.history_rollout import HistoryCollector
+    import inspect
+    assert HistoryPPOConfig().rollout_private_kv_pages is False
+    assert not config_from_args(build_parser().parse_args(["--output", "x"])).rollout_private_kv_pages
+    assert build_parser().parse_args(["--output", "x", "--rollout-private-kv-pages"]
+                                     ).rollout_private_kv_pages
+    base = dict(rollout_kv_cache=True, rollout_paged_cache=True, rollout_batched_attention=True)
+    HistoryPPOConfig(rollout_private_kv_pages=True, **base)
+    for drop in ("rollout_paged_cache", "rollout_batched_attention"):
+        with pytest.raises(ValueError, match="private_kv_pages"):
+            HistoryPPOConfig(rollout_private_kv_pages=True, **{**base, drop: False})
+    assert inspect.signature(HistoryCollector).parameters["private_kv_pages"].default is False
+    assert inspect.signature(PagedHistoryCache).parameters["private_kv"].default is False
 
 
 def test_span_groups_default_off_and_configuration():

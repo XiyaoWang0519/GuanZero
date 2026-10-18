@@ -68,18 +68,24 @@ PAGE_TOKENS = 64
 class KVPagePool:
     """Token-major page storage: per layer ``[rows, 2, heads, depth]`` keys and
     values, plus ``[rows, width]`` top-layer memory; ``rows = pages * page_tokens``.
+    ``private_width`` > 0 adds ``[rows, private_width]`` per-token private
+    attention keys/values (``PagedHistoryCache(private_kv=True)``).
     """
 
     def __init__(self, layers: int, heads: int, width: int, device, dtype=torch.float32, *,
-                 page_tokens: int = PAGE_TOKENS, pages: int = 16) -> None:
-        if min(layers, heads, width, page_tokens) < 1 or width % heads or pages < 2:
+                 page_tokens: int = PAGE_TOKENS, pages: int = 16, private_width: int = 0) -> None:
+        if (min(layers, heads, width, page_tokens) < 1 or width % heads or pages < 2
+                or private_width < 0):
             raise ValueError("positive pool dimensions and at least two pages required")
         self.layers, self.heads, self.width = layers, heads, width
         self.depth = width // heads
         self.page_tokens = page_tokens
+        self.private_width = private_width
         self.device, self.dtype = torch.device(device), dtype
         self.kv: list[Tensor] = []
         self.memory = torch.zeros(0, width, device=self.device, dtype=dtype)
+        self.private = (torch.zeros(0, private_width, device=self.device, dtype=dtype)
+                        if private_width else None)
         # Within-page row offsets, for page-major row expansion (``PagedHistoryCache._rows``).
         self.offsets = torch.arange(page_tokens, device=self.device)
         self.pages = 0
@@ -103,7 +109,8 @@ class KVPagePool:
     @property
     def page_bytes(self) -> int:
         element = torch.empty((), dtype=self.dtype).element_size()
-        return self.page_tokens * (self.layers * 2 * self.width + self.width) * element
+        return (self.page_tokens * (self.layers * 2 * self.width + self.width + self.private_width)
+                * element)
 
     @property
     def reserved_bytes(self) -> int:
@@ -119,19 +126,21 @@ class KVPagePool:
 
     def _grow(self, pages: int) -> None:
         # Uninitialized beyond the copied rows: no row is read before it is
-        # written, except page 0 (zeroed here once) and the memory rows of
-        # newly allocated pages (zeroed by ``zero_memory``).
+        # written, except page 0 (zeroed here once) and the memory and private
+        # rows of newly allocated pages (zeroed by ``zero_pages``).
         rows, old_rows = pages * self.page_tokens, self.pages * self.page_tokens
         kv = [self._storage(rows, 2, self.heads, self.depth) for _ in range(self.layers)]
         memory = self._storage(rows, self.width)
+        private = self._storage(rows, self.private_width) if self.private_width else None
+        new = (*kv, memory, *(() if private is None else (private,)))
         if old_rows:
-            for new, old in zip(kv, self.kv):
-                new[:old_rows].copy_(old)
-            memory[:old_rows].copy_(self.memory)
+            old = (*self.kv, self.memory, *(() if private is None else (self.private,)))
+            for storage, previous in zip(new, old, strict=True):
+                storage[:old_rows].copy_(previous)
         else:
-            for storage in (*kv, memory):
+            for storage in new:
                 storage[:self.page_tokens].zero_()
-        self.kv, self.memory = kv, memory
+        self.kv, self.memory, self.private = kv, memory, private
         # Page 0 stays unallocated: the zero rows every padded gather reads.
         self.free.extend(range(pages - 1, max(self.pages, 1) - 1, -1))
         self.pages = pages
@@ -166,17 +175,21 @@ class KVPagePool:
         self._peak_used = 0
         self.kv = []
         self.memory = torch.zeros(0, self.width, device=self.device, dtype=self.dtype)
+        if self.private is not None:
+            self.private = torch.zeros(0, self.private_width, device=self.device, dtype=self.dtype)
         self.pages = 0
         self.free = []
 
     def release(self, pages: list[int]) -> None:
         self.free.extend(pages)
 
-    def zero_memory(self, pages: Tensor) -> None:
-        """Zero the memory rows of ``pages`` (int64, on the pool's device): a newly
-        allocated page holds no position yet, so whole-page memory gathers read
-        zeros past each stream's length, as the zero page gives."""
+    def zero_pages(self, pages: Tensor) -> None:
+        """Zero the memory (and private) rows of ``pages`` (int64, on the pool's
+        device): a newly allocated page holds no position yet, so whole-page
+        gathers read zeros past each stream's length, as the zero page gives."""
         self.memory.view(self.pages, -1).index_fill_(0, pages, 0.0)
+        if self.private is not None:
+            self.private.view(self.pages, -1).index_fill_(0, pages, 0.0)
 
 
 @dataclass
@@ -245,17 +258,30 @@ class PagedHistoryCache(BatchedHistoryCache):
     over the batch, whose order is invisible to the pool. ``encode_rollout``
     groups the returned memory the same way. FP32 reduction shapes change
     (acceptance tier 2); with one group everything is as without it.
+
+    ``private_kv`` (opt-in; the pool needs ``private_width = 2 * width``)
+    also stores every new token's ``actor.kv_proj(memory)`` when it is
+    appended, so ``encode_rollout(projected=True)`` returns the private
+    attention keys/values instead of memory for the actor to project again
+    at every step. Same dot products; only the projection's GEMM row count
+    differs (acceptance tier 2). The parameter signature covers ``kv_proj``,
+    so a weight change rebuilds them with the rest of the cache.
     """
 
     def __init__(self, actor: HistoryActor, pool: KVPagePool | None = None,
-                 chunk_size: int = 128, *, page_span: bool = False, span_groups: int = 1) -> None:
+                 chunk_size: int = 128, *, page_span: bool = False, span_groups: int = 1,
+                 private_kv: bool = False) -> None:
         super().__init__(actor, chunk_size)
-        self.pool = pool if pool is not None else KVPagePool.for_actor(actor)
+        self.pool = pool if pool is not None else KVPagePool.for_actor(
+            actor, private_width=2 * actor.config.width if private_kv else 0)
         self.pool.check(actor)
         self.page_span = page_span
         if span_groups < 1:
             raise ValueError("span groups must be positive")
         self.span_groups = int(span_groups)
+        if private_kv and self.pool.private_width != 2 * actor.config.width:
+            raise ValueError("private K/V pages need a pool with private_width = 2 * width")
+        self.private_kv = bool(private_kv)
         # Host counters of attention key rows: gathered (padded) and valid, for
         # appends and returned memory; and how many appends ran in groups.
         self.span_rows = dict(append=0, append_valid=0, memory=0, memory_valid=0,
@@ -341,7 +367,7 @@ class PagedHistoryCache(BatchedHistoryCache):
 
     def _allocate(self, entries: list[PagedEntry], ends: np.ndarray) -> np.ndarray:
         """Extend every entry's pages to cover ``ends``; returns the new page ids,
-        whose memory rows the caller zeroes (``KVPagePool.zero_memory``)."""
+        whose memory rows the caller zeroes (``KVPagePool.zero_pages``)."""
         P, new = self.pool.page_tokens, []
         for entry, end in zip(entries, ends.tolist()):
             missing = -(-end // P) - len(entry.pages)
@@ -372,16 +398,20 @@ class PagedHistoryCache(BatchedHistoryCache):
 
     @torch.no_grad()
     def encode_rollout(self, keys: list[tuple[int, int]], streams: list[PublicStream], *,
-                       preuploaded_lengths: Tensor | None = None,
+                       projected: bool = False, preuploaded_lengths: Tensor | None = None,
                        host_lengths: tuple[int, ...] | None = None
                        ) -> tuple[StreamBatch, RolloutMemory]:
         """``encode`` for one decision per stream (decision ``i`` reads stream
         ``i``), returned as a ``RolloutMemory``: the streams in up to
         ``span_groups`` end-sorted span groups, each padded only to its own
-        longest stream. With one group the memory is exactly ``encode``'s."""
+        longest stream, of top-layer memory or, ``projected``, the stored
+        private attention keys/values (``private_kv``). With one group and no
+        projection the memory is exactly ``encode``'s."""
+        if projected and not self.private_kv:
+            raise ValueError("projected rollout memory needs a private_kv cache")
         targets = self._targets(keys, streams, preuploaded_lengths, host_lengths)
         entries = self._extend(keys, streams, targets)
-        source, projected = self.pool.memory, False
+        source = self.pool.private if projected else self.pool.memory
         lengths = np.asarray(targets, np.int64)
         order, plan = self._groups(lengths)
         ordered = entries if order is None else [entries[i] for i in order]
@@ -477,7 +507,7 @@ class PagedHistoryCache(BatchedHistoryCache):
             (tokens, rounds, phases, starts, ends, table, write_batch, write_slot, write_rows,
              fresh, new_pages), device)
         if len(new_pages):
-            pool.zero_memory(new_pages_d)
+            pool.zero_pages(new_pages_d)
         state = (actor.public(t.to(dtype)) + actor.round_embedding(r.clamp(0, cfg.max_rounds - 1))
                  + actor.phase_embedding(p.clamp(0, 3)))
         if len(fresh):
@@ -500,10 +530,18 @@ class PagedHistoryCache(BatchedHistoryCache):
         if actor.stream.norm is not None:
             state = actor.stream.norm(state)
         state = actor.stream_norm(state)
-        pool.memory[write_rows_d] = state[write_batch_d, write_slot_d]
+        self._write_memory(state[write_batch_d, write_slot_d], write_rows_d)
         for entry, end in zip(entries, ends.tolist()):
             entry.length = end
         self.encoded_tokens += int(count_array.sum())
+
+    def _write_memory(self, memory: Tensor, rows: Tensor) -> None:
+        """Store new tokens' top-layer memory at pool ``rows``, and with
+        ``private_kv`` their private attention keys/values."""
+        self.pool.memory[rows] = memory
+        if self.private_kv:
+            projection = self.actor.kv_proj
+            self.pool.private[rows] = F.linear(memory, projection.weight, projection.bias)
 
 
 # ---- merged snapshot encoding ----------------------------------------------------
@@ -531,6 +569,8 @@ def merged_encode(parts: list[tuple[PagedHistoryCache, list[tuple[int, int]], li
             raise ValueError("merged encoding needs one page pool and one prefill chunk")
         if not keys or len(keys) != len(streams) or len(set(keys)) != len(keys):
             raise ValueError("one distinct match key per public stream required")
+        if cache.private_kv:
+            raise ValueError("merged encoding does not store private K/V pages")
         cache.refresh_weights()
         for key, stream in zip(keys, streams):
             entries.append(cache._entry(key, stream))
@@ -615,7 +655,7 @@ def _merged_append(cache: PagedHistoryCache, entries: list[PagedEntry], counts: 
          write_slot, write_rows, pad[fresh], np.asarray(slots, np.int64)[fresh], new_pages),
         device)
     if len(new_pages):
-        pool.zero_memory(new_pages_d)
+        pool.zero_pages(new_pages_d)
     W, H = cfg.width, cfg.heads
     depth = W // H
     flat = lambda x: x.reshape(S, M * width, x.shape[-1])
