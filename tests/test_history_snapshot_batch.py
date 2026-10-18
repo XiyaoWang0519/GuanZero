@@ -514,3 +514,90 @@ def test_trainer_with_merged_snapshots_trains_identically(tmp_path):
         assert torch.equal(a, b)
     assert torch.equal(trainers["plain"].generator.get_state(),
                        trainers["merged"].generator.get_state())
+
+
+# ---- prefolded attention projections (rollout_merged_head_prefold) --------------------
+
+@pytest.mark.parametrize("name", ["one-per-stream", "multi-decision", "mixed"])
+def test_prefolded_head_matches_each_identity(device, name):
+    # Tier 2: the query/key and value/output products are formed once per slot
+    # write (FP64, rounded to FP32); the merged call is the same function.
+    step = Step(SPECS[name], seed=list(SPECS).index(name) + 30,
+                shorter_prefix=name == "multi-decision")
+    policies = players({i for i, _, _ in SPECS[name]}, device)
+    groups, layout, fields, plain = merged(step, policies, device)
+    folded_heads = SnapshotHeads(prefold=True)
+    _, _, _, folded = merged(step, policies, device, heads=folded_heads)
+    expected = reference(step, policies, groups, device)
+    difference = float((folded - expected).abs().max())
+    print(f"max |prefolded merged - per-identity| log-prob {device} {name}: {difference:.3e} "
+          f"(unfolded {float((plain - expected).abs().max()):.3e})")
+    assert difference < ATOL and float((folded - plain).abs().max()) < ATOL
+    assert {"qk_w", "qk_b", "vo_w", "vo_b"} <= set(folded_heads.tensors)
+    assert not {"q_w", "k_w", "v_w", "o_w"} & set(folded_heads.tensors)
+    # Slot (re)writes fold the live weights.
+    with torch.no_grad():
+        policies[groups[0].identity].q_proj.weight.mul_(1.5)
+        policies[groups[0].identity].out_proj.bias.add_(0.2)
+    _, _, _, changed = merged(step, policies, device, heads=folded_heads)
+    expected = reference(step, policies, groups, device)
+    assert float((changed - expected).abs().max()) < ATOL
+    assert float((changed - folded).abs().max()) > 1e-4
+
+
+def test_prefolded_production_size_step_matches_each_identity(device):
+    rng = np.random.default_rng(8)
+    spec = [(i, int(rows), int(rows)) for i, rows in
+            zip(range(1, 13), [31, 1, 16, 8, 2, 12, 5, 1, 20, 9, 3, 7])]
+    step = Step(spec, seed=8, max_candidates=int(rng.integers(150, 300)), longest=700)
+    production = HistoryPolicyConfig(width=128, layers=4, heads=8, response_mode="auxiliary")
+    policies = {i: fresh_player(production, 60 + i)[0].to(device) for i, _, _ in spec}
+    groups, layout, fields, log_probs = merged(step, policies, device,
+                                               heads=SnapshotHeads(prefold=True))
+    difference = float((log_probs - reference(step, policies, groups, device)).abs().max())
+    print(f"max |prefolded merged - per-identity| log-prob {device} production-size: "
+          f"{difference:.3e}")
+    assert difference < ATOL
+
+
+def test_prefolded_collector_rollout(device):
+    # Snapshot seats only; on these seeds no snapshot choice flips, so the whole
+    # rollout equals the per-identity one. Switching the option between collects
+    # rebuilds the stacked heads in the other layout.
+    plain = run_collector(device, False, kv_cache=True)[0]
+
+    def between(chunk, policies, collector):
+        collector.merged_head_prefold = chunk != 0          # on, off, on
+    folded = run_collector(device, True, kv_cache=True, merged_head_prefold=True,
+                           between=between)[0]
+    assert_same_collection(plain, folded)
+    assert folded.snapshot_heads.prefold and "qk_w" in folded.snapshot_heads.tensors
+
+
+def test_prefold_defaults_off_and_configuration(tmp_path):
+    import inspect
+    assert HistoryPPOConfig().rollout_merged_head_prefold is False
+    assert SnapshotHeads().prefold is False
+    assert inspect.signature(rollout.HistoryCollector).parameters[
+        "merged_head_prefold"].default is False
+    assert not config_from_args(build_parser().parse_args(["--output", "x"])
+                                ).rollout_merged_head_prefold
+    args = build_parser().parse_args(["--output", "x", "--batch-snapshot-policies",
+                                      "--rollout-merged-head-prefold"])
+    assert config_from_args(args).rollout_merged_head_prefold
+    with pytest.raises(ValueError, match="merged snapshot policies"):
+        HistoryPPOConfig(rollout_merged_head_prefold=True)
+    HistoryPPOConfig(rollout_merged_head_prefold=True, batch_snapshot_policies_schedule="1:on")
+    assert parse_resume_overrides(["rollout_merged_head_prefold=true"]) == {
+        "rollout_merged_head_prefold": True}
+    from bench.history_arms import SWITCHABLE
+    assert "rollout_merged_head_prefold" in SWITCHABLE
+    base = dict(width=16, layers=1, heads=4, num_envs=2, steps_per_update=20, epochs=1,
+                minibatch_matches=1, snapshot_updates=1, seed=5, causal_sdpa=True,
+                rollout_kv_cache=True, batch_snapshot_policies=True,
+                rollout_merged_head_prefold=True)
+    trainer = HistoryTrainer(HistoryPPOConfig(**base), tmp_path / "run")
+    assert trainer.collector.merged_head_prefold
+    trainer.update()
+    manifest = (tmp_path / "run" / "manifest.json").read_text()
+    assert '"rollout_merged_head_prefold": true' in manifest

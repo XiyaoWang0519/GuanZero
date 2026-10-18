@@ -384,6 +384,14 @@ class DecisionInputs:
     # ones. Planned on the host: the same mask the device would build.
     next_weight: Tensor | None = None
     next_positions: int = 0
+    # Collector only, planned on the host with the step's upload: each
+    # decision's candidate count (int64 [n]) and every candidate's flat cell
+    # ``row * table_width + local`` in the ``[n, table_width]`` sampling table
+    # (int64 [sum_k]). The same integers ``counts`` and the table scatter
+    # would compute on the device.
+    candidate_counts: Tensor | None = None
+    table_index: Tensor | None = None
+    table_width: int = 0
 
     @property
     def decisions(self) -> int:
@@ -464,10 +472,44 @@ def position_table(length: int, width: int, device, dtype) -> Tensor:
     return table[:length]
 
 
+# One int64 ``arange`` per device, grown on demand: slices are exactly
+# ``torch.arange(length)``. Read-only by contract (callers only compare).
+_ARANGES: dict[torch.device, Tensor] = {}
+
+
+def arange_view(length: int, device) -> Tensor:
+    """``torch.arange(length, device=device)`` as a slice of a cached buffer
+    (no kernel per call). Under CUDA graph capture always a fresh tensor: a
+    captured graph must never read a buffer that a later growth frees."""
+    device = torch.device(device)
+    if device.type == "cuda" and torch.cuda.is_current_stream_capturing():
+        return torch.arange(length, device=device)
+    values = _ARANGES.get(device)
+    if values is None or len(values) < length:
+        with torch.inference_mode(False):
+            values = torch.arange(max(int(length), 2 * len(values) if values is not None else 4096),
+                                  device=device)
+        _ARANGES[device] = values
+    return values[:length]
+
+
 def segment_log_softmax(scores: Tensor, rows: Tensor, count: int) -> Tensor:
-    """Log-softmax of ``scores`` within the segments named by ``rows``."""
+    """Log-softmax of ``scores`` within the segments named by ``rows``.
+
+    Without autograd (grad mode off, or ``scores`` not requiring grad) the
+    shift ``scores - top[rows]`` is formed once and the log is taken per
+    segment before it is indexed: the same elementwise operations on the same
+    values, so the result is bit for bit the expression below with two
+    kernels fewer. With autograd the original expression (and so its backward
+    graph and gradient accumulation order) is kept.
+    """
     top = torch.full((count,), float("-inf"), device=scores.device, dtype=scores.dtype)
     top = top.scatter_reduce(0, rows, scores, reduce="amax")
+    if not (torch.is_grad_enabled() and scores.requires_grad):
+        shifted = scores - top[rows]
+        total = torch.zeros(count, device=scores.device, dtype=scores.dtype).index_add_(
+            0, rows, shifted.exp())
+        return shifted - total.log()[rows]
     shifted = (scores - top[rows]).exp()
     total = torch.zeros(count, device=scores.device, dtype=scores.dtype).index_add_(0, rows, shifted)
     return scores - top[rows] - total[rows].log()
@@ -479,7 +521,8 @@ class ExplorationSample:
 
     ``logp`` is the target (temperature 1, no epsilon) log-probability that
     PPO's ratio uses; ``behaviour_logp`` is the log-probability of the
-    distribution the choice was actually drawn from.
+    distribution the choice was actually drawn from (the very ``logp`` tensor
+    when that distribution is the target one).
     """
     choice: Tensor            # int64 [n], relative to each decision's candidates
     logp: Tensor              # [n] log softmax(logits)[choice]
@@ -714,7 +757,7 @@ class HistoryActor(nn.Module):
             n, span = part.shape[:2]
             own, visible = (q, prefix) if rows is None else (q.index_select(0, rows),
                                                               prefix.index_select(0, rows))
-            allowed = torch.arange(span, device=part.device)[None] <= visible[:, None]
+            allowed = arange_view(span, part.device)[None] <= visible[:, None]
             k = keys.view(n, span, heads, depth).transpose(1, 2)
             v = values.view(n, span, heads, depth).transpose(1, 2)
             attended = F.scaled_dot_product_attention(own[:, :, None], k, v,
@@ -816,7 +859,7 @@ class HistoryActor(nn.Module):
             keys, values = encoded.keys_values(self.kv_proj)
         else:
             keys, values = self.kv_proj(encoded).chunk(2, dim=-1)
-        positions = torch.arange(keys.shape[1], device=keys.device)
+        positions = arange_view(keys.shape[1], keys.device)
         if self.batched_private_attention and one_decision_per_stream and len(query) > 1:
             allowed = positions[None] <= prefix[:, None]
             return self._attend_independent(query, keys, values, allowed)
@@ -928,7 +971,11 @@ class HistoryActor(nn.Module):
     def _log_prob_table(self, inputs: DecisionInputs, encoded: Tensor | None,
                         max_candidates: int | None,
                         inference_log_probs: Tensor | None = None) -> Tensor:
-        """``[n, width]`` candidate log-probabilities, ``-inf`` past each count."""
+        """``[n, width]`` candidate log-probabilities, ``-inf`` past each count.
+
+        With the collector's host-planned ``table_index`` (and ``max_candidates``
+        giving its width) the table is one flat scatter of the same values into
+        the same cells as the device-built row/column scatter: bitwise equal."""
         # A collector-owned inference cache may supply the same complete
         # candidate vector. Sampling and its generator order remain here.
         log_probs = (self.candidate_log_probs(inputs, encoded=encoded)
@@ -937,6 +984,12 @@ class HistoryActor(nn.Module):
                 log_probs.shape != (len(inputs.cand),) or log_probs.device != inputs.obs.device
                 or log_probs.dtype != torch.float32):
             raise ValueError("cached inference must supply FP32 log probabilities for every candidate")
+        if (inputs.table_index is not None and max_candidates is not None
+                and max(max_candidates, 1) == inputs.table_width):
+            n, width = inputs.decisions, inputs.table_width
+            table = torch.full((n * width,), float("-inf"), device=log_probs.device,
+                               dtype=log_probs.dtype)
+            return table.index_put_((inputs.table_index,), log_probs).view(n, width)
         counts = inputs.counts
         offsets = inputs.offsets
         longest = max_candidates if max_candidates is not None else (int(counts.max()) if len(counts) else 0)
@@ -960,13 +1013,15 @@ class HistoryActor(nn.Module):
         ``generator``, the same choice, and ``behaviour_logp`` is the very
         ``logp`` tensor. With ``epsilon > 0`` two extra ``[n]`` uniform draws
         follow the Gumbel draw (the epsilon coin, then the uniform index), so
-        the generator stream advances further than ``act`` would.
+        the generator stream advances further than ``act`` would. Host-planned
+        ``inputs.candidate_counts`` replace the device count difference (the
+        same integers).
         """
         if not temperature > 0 or not 0 <= epsilon <= 1:
             raise ValueError("temperature must be positive and epsilon in [0, 1]")
         table = self._log_prob_table(inputs, encoded, max_candidates, inference_log_probs)
-        counts = inputs.counts
-        valid = torch.arange(table.shape[1], device=table.device)[None] < counts[:, None]
+        counts = inputs.candidate_counts if inputs.candidate_counts is not None else inputs.counts
+        valid = arange_view(table.shape[1], table.device)[None] < counts[:, None]
         behaviour = table if temperature == 1 else torch.log_softmax(table / temperature, 1)
         choice = _gumbel_argmax(behaviour, generator)
         uniform_pick = torch.zeros(len(choice), dtype=torch.bool, device=choice.device)
@@ -983,8 +1038,8 @@ class HistoryActor(nn.Module):
                                     (math.log(epsilon) - counts.to(table.dtype).log())[:, None])
             behaviour = torch.where(valid, mixed, table)
         logp = table.gather(1, choice[:, None])[:, 0]
-        behaviour_logp = behaviour.gather(1, choice[:, None])[:, 0]
-        terms = torch.where(valid, behaviour.exp() * behaviour, torch.zeros_like(behaviour))
+        behaviour_logp = logp if behaviour is table else behaviour.gather(1, choice[:, None])[:, 0]
+        terms = torch.where(valid, behaviour.exp() * behaviour, 0.0)
         return ExplorationSample(choice, logp, behaviour_logp, uniform_pick, -terms.sum(1))
 
 
@@ -1006,12 +1061,19 @@ class _ZeroBridge(torch.autograd.Function):
         return grad, torch.zeros_like(weight) if ctx.needs_input_grad[1] else None
 
 
+def neg_gumbel_(uniform: Tensor) -> Tensor:
+    """``log(-log(max(u, 1e-12)))`` in place on a fresh uniform tensor: the
+    negated Gumbel noise. ``table - neg_gumbel_(u)`` is bit for bit the former
+    ``table + -(-u.clamp_min(1e-12).log()).log()``: the same clamp and logs on
+    the same values, and IEEE ``a + (-b) == a - b`` (negation is exact)."""
+    return uniform.clamp_min_(1e-12).log_().neg_().log_()
+
+
 def _gumbel_argmax(table: Tensor, generator: torch.Generator | None) -> Tensor:
     """One categorical draw per row of a log-probability table (one uniform per cell)."""
     uniform = torch.rand(table.shape, generator=generator, device=table.device,
-                         dtype=table.dtype).clamp_min(1e-12)
-    gumbel = -(-uniform.log()).log()
-    return (table + gumbel).argmax(1)
+                         dtype=table.dtype)
+    return (table - neg_gumbel_(uniform)).argmax(1)
 
 
 # ---- critic -------------------------------------------------------------------

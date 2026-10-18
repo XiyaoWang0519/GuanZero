@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from train.history_snapshot_batch import LAYOUT_FIELDS, merged_layout
+from train.history_snapshot_batch import LAYOUT_FIELDS, SPAN_FIELDS, merged_layout
 
 
 def fixture(seed, unique, input_dtype):
@@ -86,7 +86,8 @@ def scalar_reference(groups, slots, prefix, obs, seat, cand, offsets, counts,
         draws=draws, slots=S, rows_per_slot=M, cands_per_slot=Cm, table_width=K,
         length=max(s.prefix for g in groups for s in g.streams) + 1,
         streams=stream_base,
-        identity_streams=np.array_equal(out["stream"], np.arange(len(rows))))
+        identity_streams=np.array_equal(out["stream"], np.arange(len(rows))),
+        span_order=None, span_groups=None)     # no span planner
 
 
 @pytest.mark.parametrize("seed", range(12))
@@ -110,3 +111,39 @@ def test_merged_layout_matches_scalar_placement(seed, unique, input_dtype, singl
             np.testing.assert_array_equal(actual, reference)
         else:
             assert actual == reference, field.name
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_span_planner_orders_rows_by_their_stream_lengths(seed):
+    """With a span planner (the snapshot caches' ``_groups``) a one-decision-per-
+    stream layout keeps every field and appends ``row_pad`` and ``prefix`` in the
+    planner's order; each group is padded to its own longest stream."""
+    args = fixture(seed, True, np.uint8)
+    base = merged_layout(*args)
+    assert base.identity_streams
+    lengths = np.asarray([s.prefix + 1 for g in args[0] for s in g.streams], np.int64)
+    order = np.argsort(-lengths, kind="stable")
+    seen = []
+
+    def planner(values):
+        seen.append(values.copy())
+        return order, [(0, 7, 4096), (7, 20, 2048), (20, len(values), 1024)]
+
+    layout = merged_layout(*args, planner)
+    np.testing.assert_array_equal(seen[0], lengths)
+    np.testing.assert_array_equal(layout.span_order, order)
+    assert layout.span_groups == [(0, 7, int(lengths[order[0]])), (7, 20, int(lengths[order[7]])),
+                                  (20, len(lengths), int(lengths[order[20]]))]
+    assert len(layout.arrays) == len(LAYOUT_FIELDS) + len(SPAN_FIELDS)
+    for name, array, wanted in zip(LAYOUT_FIELDS, layout.arrays, base.arrays):
+        np.testing.assert_array_equal(array, wanted, err_msg=name)
+    fields_ = dict(zip(LAYOUT_FIELDS + SPAN_FIELDS, layout.arrays))
+    np.testing.assert_array_equal(fields_["span_pad"], fields_["row_pad"][order])
+    np.testing.assert_array_equal(fields_["span_prefix"], fields_["prefix"][order])
+    # One group (no reordering), or rows sharing streams: the plain layout.
+    single = merged_layout(*args, lambda values: (None, [(0, len(values), 64)]))
+    shared = fixture(seed, False, np.uint8)
+    for plain, planned in ((base, single),
+                           (merged_layout(*shared), merged_layout(*shared, planner))):
+        assert planned.span_order is None and planned.span_groups is None
+        assert len(planned.arrays) == len(plain.arrays) == len(LAYOUT_FIELDS)

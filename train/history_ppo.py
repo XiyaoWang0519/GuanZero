@@ -132,9 +132,10 @@ class HistoryPPOConfig:
     # stream by stream as learner rows first read them. Tier 2 (learner seats'
     # FP32 reduction order: the same tokens are encoded in different batches).
     rollout_prefill_learner_cache: bool = False
-    # Paged cache: run each append's key/value gather and attention, and the
-    # learner's private attention over its memory, in up to N end-sorted span
-    # groups, each padded only to its own longest stream
+    # Paged cache: run each append's key/value gather and attention, the
+    # learner's private attention over its memory and (with the merged snapshot
+    # encoder) the merged snapshot call's attention over its memory, in up to N
+    # end-sorted span groups, each padded only to its own longest stream
     # (train/history_paged_cache.span_plan). 1 is off. Tier 2 (FP32 shapes change).
     rollout_span_groups: int = 1
     # Paged cache, batched rollout attention: store the learner's private-attention
@@ -165,6 +166,11 @@ class HistoryPPOConfig:
     # streams are encoded in one pass per step over stacked encoder weights
     # (train/history_paged_cache.merged_encode); tier 2, snapshot seats only.
     batch_snapshot_encoder: bool = False
+    # With merged snapshot inference: each stacked snapshot head stores its
+    # query/key and value/output projections pre-multiplied, so each attention
+    # side is one batched linear layer instead of four kernels
+    # (train/history_snapshot_batch._head_values). Tier 2, snapshot seats only.
+    rollout_merged_head_prefold: bool = False
     # Release the CUDA caching allocator's free blocks (torch.cuda.empty_cache)
     # after collect and after learn. Allocator timing only; no numeric change.
     # None follows the update's merged-snapshot arm: with the arm on, no snapshot
@@ -280,6 +286,9 @@ class HistoryPPOConfig:
                 and (self.batch_snapshot_policies or self.batch_snapshot_policies_schedule)):
             raise ValueError('batch_snapshot_encoder requires rollout_paged_cache and merged '
                              'snapshot policies')
+        if self.rollout_merged_head_prefold and not (self.batch_snapshot_policies
+                                                     or self.batch_snapshot_policies_schedule):
+            raise ValueError('rollout_merged_head_prefold requires merged snapshot policies')
         if self.rollout_wide_projection and not self.rollout_batched_attention:
             raise ValueError('rollout_wide_projection requires rollout_batched_attention')
         if self.ddp_reduce not in ("gloo", "shm"):
@@ -452,6 +461,7 @@ RESUME_OVERRIDES = frozenset({"num_envs", "num_threads", "minibatch_matches", "t
                               "rollout_page_span", "rollout_prefill_learner_cache",
                               "rollout_span_groups", "rollout_private_kv_pages",
                               "rollout_causal_prefill", "rollout_paged_attention_kernel",
+                              "rollout_merged_head_prefold",
                               "profile_learn",
                               "aux_heads", "aux_coef", "aux_warmup_updates",
                               "rollout_private_graphs",
@@ -730,7 +740,8 @@ class HistoryTrainer:
                                 span_groups=config.rollout_span_groups,
                                 private_kv_pages=config.rollout_private_kv_pages,
                                 causal_prefill=config.rollout_causal_prefill,
-                                paged_attention_kernel=config.rollout_paged_attention_kernel)
+                                paged_attention_kernel=config.rollout_paged_attention_kernel,
+                                merged_head_prefold=config.rollout_merged_head_prefold)
 
     def snapshot_batching(self) -> bool:
         """Merged snapshot inference for this update (the schedule's block, if any)."""
@@ -929,6 +940,7 @@ class HistoryTrainer:
                               self.collector.paged_attention_kernel,
                           "rollout_paged_attention_kernel_active":
                               self.collector.paged_attention_kernel_active(),
+                          "rollout_merged_head_prefold": self.collector.merged_head_prefold,
                           "batch_snapshot_policies": self.config.batch_snapshot_policies,
                           "batch_snapshot_policies_schedule":
                               self.config.batch_snapshot_policies_schedule,
@@ -1736,6 +1748,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="with --batch-snapshot-policies and --rollout-paged-cache: encode "
                              "all snapshot identities' public streams in one pass per step "
                              "(FP32; snapshot seats' reduction order differs)")
+    parser.add_argument("--rollout-merged-head-prefold", action="store_true",
+                        help="with --batch-snapshot-policies: pre-multiply each snapshot "
+                             "head's query/key and value/output projections (FP32; snapshot "
+                             "seats' reduction order differs)")
     parser.add_argument("--batch-snapshot-policies-schedule", default="",
                         help="diagnostic A/B: N:on|off blocks of this process's updates")
     parser.add_argument("--rollout-trim-cuda-cache", type=optional_bool, default=None,
@@ -1752,8 +1768,9 @@ def build_parser() -> argparse.ArgumentParser:
                              "reduction order differs)")
     parser.add_argument("--rollout-span-groups", type=int, default=1,
                         help="with --rollout-paged-cache: attend in up to N end-sorted span "
-                             "groups per cache append and learner decision step, each padded "
-                             "to its own longest stream (FP32; not bitwise); 1 is off")
+                             "groups per cache append, learner decision step and merged "
+                             "snapshot step, each padded to its own longest stream (FP32; "
+                             "not bitwise); 1 is off")
     parser.add_argument("--rollout-private-kv-pages", action="store_true",
                         help="with --rollout-paged-cache and --rollout-batched-attention: store "
                              "the learner's private-attention keys/values per token when "

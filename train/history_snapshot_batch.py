@@ -37,6 +37,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+from typing import Callable
 import weakref
 
 import numpy as np
@@ -44,12 +45,15 @@ import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
-from train.history_model import HistoryActor, segment_log_softmax
+from train.history_model import HistoryActor, arange_view, neg_gumbel_, segment_log_softmax
 
 # Per-slot tensor names and the order of the uploaded layout fields.
 LAYOUT_FIELDS = ("obs", "seat", "prefix", "cand", "row_pad", "seat_pad", "stream",
                  "cand_pad", "cand_state_pad", "cand_row", "cand_table", "uniform_base",
                  "uniform_last")
+# Appended to the layout fields when the snapshot memory is span grouped:
+# ``row_pad`` and ``prefix`` of the rows in span-group order.
+SPAN_FIELDS = ("span_pad", "span_prefix")
 
 
 def _mlp_linears(module: nn.Module, layers: int) -> tuple[nn.Linear, ...]:
@@ -113,9 +117,15 @@ def validate_actor(actor: HistoryActor) -> None:
                              "actors with forward hooks are refused")
 
 
-def _head_values(actor: HistoryActor) -> dict[str, Tensor]:
+def _head_values(actor: HistoryActor, prefold: bool = False) -> dict[str, Tensor]:
     """One identity's head in the stacked layout: Linear weights as [in, out],
-    biases as [1, out], key/value weights split per head."""
+    biases as [1, out], key/value weights split per head.
+
+    ``prefold``: the query projection is pre-multiplied with the per-head key
+    weights (and the attention scale), and the per-head value weights with the
+    output projection, so each side of the attention is one ``[width,
+    heads * width]`` (``[heads * width, width]``) linear layer. Products are
+    formed in FP64 and rounded once to FP32 (acceptance tier 2)."""
     cfg = actor.config
     width, heads = cfg.width, cfg.heads
     depth = width // heads
@@ -126,15 +136,31 @@ def _head_values(actor: HistoryActor) -> dict[str, Tensor]:
     f0, f1 = actor.feed_forward[0], actor.feed_forward[2]
     kv_w, kv_b = actor.kv_proj.weight, actor.kv_proj.bias
     linear = lambda layer, name: {f"{name}_w": layer.weight.t(), f"{name}_b": layer.bias[None]}
+    # query-side key weights: (W_k^T q) per head, [heads, depth, width]
+    k_w = kv_w[:width].reshape(heads, depth, width)
+    # value weights applied after attention, [heads, width, depth]
+    v_w = kv_w[width:].reshape(heads, depth, width).transpose(1, 2)
+    if prefold:
+        q_w, q_b = actor.q_proj.weight.double(), actor.q_proj.bias.double()
+        o_w, o_b = actor.out_proj.weight.double(), actor.out_proj.bias.double()
+        k64, v64, scale = k_w.double(), v_w.double(), depth ** -0.5
+        attention = {
+            # folded[h, j] = sum_d q[h, d] k_w[h, d, j] * scale, q = W_q x + b_q
+            "qk_w": (torch.einsum("hdi,hdj->ihj", q_w.view(heads, depth, width), k64)
+                     * scale).reshape(width, heads * width).float(),
+            "qk_b": (torch.einsum("hd,hdj->hj", q_b.view(heads, depth), k64)
+                     * scale).reshape(1, heads * width).float(),
+            # out = W_o (context v_w + v_b) + b_o, context [heads, width] per row
+            "vo_w": torch.einsum("hjd,ohd->hjo", v64, o_w.view(width, heads, depth))
+                         .reshape(heads * width, width).float(),
+            "vo_b": (kv_b[width:].double() @ o_w.t() + o_b)[None].float(),
+        }
+    else:
+        attention = {**linear(actor.q_proj, "q"), "k_w": k_w, "v_w": v_w,
+                     "v_b": kv_b[width:][None], **linear(actor.out_proj, "o")}
     return {
         **linear(p0, "p0"), **linear(p1, "p1"), "seat": actor.seat.weight,
-        **linear(actor.q_proj, "q"),
-        # query-side key weights: (W_k^T q) per head, [heads, depth, width]
-        "k_w": kv_w[:width].reshape(heads, depth, width),
-        # value weights applied after attention, [heads, width, depth]
-        "v_w": kv_w[width:].reshape(heads, depth, width).transpose(1, 2),
-        "v_b": kv_b[width:][None],
-        **linear(actor.out_proj, "o"),
+        **attention,
         "n1_w": actor.attention_norm.weight[None], "n1_b": actor.attention_norm.bias[None],
         **linear(f0, "f0"), **linear(f1, "f1"),
         "n2_w": actor.output_norm.weight[None], "n2_b": actor.output_norm.bias[None],
@@ -207,6 +233,8 @@ class SnapshotHeads:
     (re)writes the slot first, so a stale stacked copy is never read. Inside
     ``frozen_weights`` (the collector enters it with its own) that check runs
     once per identity and again at the interval's end instead of every step.
+    ``prefold`` (opt-in, tier 2) stores the attention's query/key and
+    value/output projections pre-multiplied (``_head_values``).
     ``retain`` frees the slots of identities no longer assigned to any match,
     driven by the collector's cache-pruning signal. Only the head is stacked
     unless ``encoder`` is set, which also stacks the public stream encoder for
@@ -214,11 +242,13 @@ class SnapshotHeads:
     ``bytes``. Collector-owned: never actor or checkpoint state.
     """
 
-    def __init__(self, capacity: int = 4, *, encoder: bool = False) -> None:
+    def __init__(self, capacity: int = 4, *, encoder: bool = False, prefold: bool = False
+                 ) -> None:
         if capacity < 1:
             raise ValueError("slot capacity must be positive")
         self.capacity = capacity
         self.encoder = encoder
+        self.prefold = bool(prefold)
         self.tensors: dict[str, Tensor] | None = None
         self.eps: float | None = None
         self.config = None
@@ -307,7 +337,7 @@ class SnapshotHeads:
         if self.config is not None and (actor.config != self.config or eps != self.eps
                                         or actor.output_norm.eps != eps):
             raise ValueError("stacked snapshot heads require one architecture")
-        values = _head_values(actor)
+        values = _head_values(actor, self.prefold)
         if self.encoder:
             values.update(_encoder_values(actor))
         index = record.index if record is not None else self._free_index()
@@ -348,15 +378,27 @@ class MergedLayout:
     length: int                 # T: longest public prefix + BOS
     streams: int
     identity_streams: bool      # every row reads its own stream, in row order
+    # Span groups of the merged memory (``span_planner``): the rows (= streams)
+    # in group order and ``(begin, end, span)`` per group, ``span`` the group's
+    # longest stream; None: one padded memory.
+    span_order: np.ndarray | None = None
+    span_groups: list[tuple[int, int, int]] | None = None
 
 
 def merged_layout(groups, slots: list[int], prefix: np.ndarray, obs: np.ndarray,
                   seat: np.ndarray, cand: np.ndarray, offsets: np.ndarray,
-                  counts: np.ndarray, env_id: np.ndarray, match_id: np.ndarray
+                  counts: np.ndarray, env_id: np.ndarray, match_id: np.ndarray,
+                  span_planner: Callable[[np.ndarray], tuple] | None = None
                   ) -> MergedLayout:
     """Index arrays placing every snapshot group's rows and candidates into the
     slot-padded layout. ``groups`` are the collector's per-identity groups in
-    identity order and ``slots`` their ``SnapshotHeads`` slots."""
+    identity order and ``slots`` their ``SnapshotHeads`` slots.
+
+    ``span_planner`` (the snapshot caches' ``PagedHistoryCache._groups``)
+    splits the memory of one-decision-per-stream steps into end-sorted span
+    groups over the streams' lengths; when it returns more than one group the
+    layout records them, each padded to its own longest stream (never past
+    the padded memory's ``length``), and appends the ``SPAN_FIELDS`` arrays."""
     from train.history_rollout import ragged_index
     rows = np.concatenate([g.rows for g in groups])
     n = len(rows)
@@ -431,8 +473,16 @@ def merged_layout(groups, slots: list[int], prefix: np.ndarray, obs: np.ndarray,
               cand[src].astype(np.uint8, copy=False),
               row_pad, seat_pad, stream, cand_pad, cand_state_pad, cand_row,
               cand_row * K + local_cand, uniform_base, uniform_width - 1)
+    identity_streams = bool(np.array_equal(stream, row_numbers))
+    span_order = span_groups = None
+    if span_planner is not None and identity_streams:
+        lengths = np.fromiter((s.prefix + 1 for g in groups for s in g.streams), np.int64, n)
+        span_order, plan = span_planner(lengths)
+        if span_order is not None:
+            span_groups = [(a, b, int(lengths[span_order[a]])) for a, b, _ in plan]
+            arrays += (row_pad[span_order], prefix[rows][span_order])
     return MergedLayout(rows, group_rows, group_streams, arrays, draws, S, M, Cm, K, length,
-                        stream_base, bool(np.array_equal(stream, row_numbers)))
+                        stream_base, identity_streams, span_order, span_groups)
 
 
 def _linear(x: Tensor, tensors: dict[str, Tensor], name: str, slots: int) -> Tensor:
@@ -449,14 +499,34 @@ def _pad(values: Tensor, index: Tensor, size: int) -> Tensor:
     return out.index_copy_(0, index, values)
 
 
+def _span_group_context(folded: Tensor, memory: list[Tensor], layout: MergedLayout,
+                        fields: dict[str, Tensor], size: int) -> Tensor:
+    """The decision rows' attention context, ``[size, heads, width]`` slot
+    padded, from span-grouped memory: rows are gathered once in group order,
+    each group attends over its own ``[n_g, span_g, width]`` memory only, and
+    one scatter returns them to their slots."""
+    rows = folded.index_select(0, fields["span_pad"])           # [rows, heads, width]
+    context = torch.empty_like(rows)
+    prefix = fields["span_prefix"]
+    for (begin, end, span), own in zip(layout.span_groups, memory):
+        scores = torch.bmm(rows[begin:end], own.transpose(1, 2))   # [n_g, heads, span_g]
+        masked = arange_view(span, own.device)[None] > prefix[begin:end, None]
+        scores.masked_fill_(masked[:, None], float("-inf"))
+        torch.bmm(torch.softmax(scores, dim=-1), own, out=context[begin:end])
+    return _pad(context, fields["span_pad"], size)
+
+
 @torch.no_grad()
 def merged_log_probs(heads: SnapshotHeads, layout: MergedLayout, fields: dict[str, Tensor],
-                     memory: Tensor) -> Tensor:
+                     memory: Tensor | list[Tensor]) -> Tensor:
     """Log-probability of every snapshot candidate, ``[sum_k]``, in merged order.
 
     ``memory`` is ``[layout.streams, T, width]``: each identity's encoded
     public streams (as ``cache.encode`` or ``encode_batch`` return them),
-    zero beyond each stream's length.
+    zero beyond each stream's length. With ``layout.span_groups`` it is one
+    ``[n_g, span_g, width]`` memory per group instead (``merged_encode``
+    with groups), and attention reads each group's own span only: the same
+    function, FP32 reduction shapes differ (acceptance tier 2).
     """
     tensors, cfg = heads.tensors, heads.config
     S, M, Cm = layout.slots, layout.rows_per_slot, layout.cands_per_slot
@@ -468,19 +538,32 @@ def merged_log_probs(heads: SnapshotHeads, layout: MergedLayout, fields: dict[st
     x = torch.relu(_linear(x, tensors, "p0", S))
     x = torch.relu(_linear(x, tensors, "p1", S))
     query = x + tensors["seat"][:S].reshape(S * 4, width)[fields["seat_pad"]].view(S, M, width)
-    q = _linear(query, tensors, "q", S).view(S, M, heads_n, depth).transpose(1, 2)
-    # Keys folded into the query: [S, heads, M, width], then one row per decision.
-    folded = torch.matmul(q, tensors["k_w"][:S]) * depth ** -0.5
-    folded = folded.transpose(1, 2).reshape(S * M, heads_n, width)[fields["row_pad"]]
-    own = memory if layout.identity_streams else memory[fields["stream"]]
-    scores = torch.bmm(folded, own.transpose(1, 2))                  # [rows, heads, T]
-    allowed = torch.arange(own.shape[1], device=own.device)[None] <= fields["prefix"][:, None]
-    scores = scores.masked_fill(~allowed[:, None], float("-inf"))
-    context = torch.bmm(torch.softmax(scores, dim=-1), own)           # [rows, heads, width]
-    context = _pad(context, fields["row_pad"], S * M).view(S, M, heads_n, width).transpose(1, 2)
-    attended = torch.matmul(context, tensors["v_w"][:S])               # [S, heads, M, depth]
-    attended = attended.transpose(1, 2).reshape(S, M, width) + tensors["v_b"][:S]
-    attended = _linear(attended, tensors, "o", S)
+    if heads.prefold:
+        # Query and key projections pre-multiplied: [S, M, heads * width].
+        folded = _linear(query, tensors, "qk", S).view(S * M, heads_n, width)
+    else:
+        q = _linear(query, tensors, "q", S).view(S, M, heads_n, depth).transpose(1, 2)
+        # Keys folded into the query: [S, heads, M, width], then one row per decision.
+        folded = torch.matmul(q, tensors["k_w"][:S]) * depth ** -0.5
+        folded = folded.transpose(1, 2).reshape(S * M, heads_n, width)
+    if layout.span_groups is not None:
+        context = _span_group_context(folded, memory, layout, fields, S * M)
+    else:
+        folded = folded[fields["row_pad"]]
+        own = memory if layout.identity_streams else memory[fields["stream"]]
+        scores = torch.bmm(folded, own.transpose(1, 2))              # [rows, heads, T]
+        masked = arange_view(own.shape[1], own.device)[None] > fields["prefix"][:, None]
+        scores = scores.masked_fill(masked[:, None], float("-inf"))
+        context = torch.bmm(torch.softmax(scores, dim=-1), own)       # [rows, heads, width]
+        context = _pad(context, fields["row_pad"], S * M)
+    if heads.prefold:
+        # Value and output projections pre-multiplied: [S, M, heads * width] in.
+        attended = _linear(context.view(S, M, heads_n * width), tensors, "vo", S)
+    else:
+        context = context.view(S, M, heads_n, width).transpose(1, 2)
+        attended = torch.matmul(context, tensors["v_w"][:S])           # [S, heads, M, depth]
+        attended = attended.transpose(1, 2).reshape(S, M, width) + tensors["v_b"][:S]
+        attended = _linear(attended, tensors, "o", S)
     state = _norm(query + attended, tensors, "n1", S, heads.eps)
     hidden = _linear(torch.relu(_linear(state, tensors, "f0", S)), tensors, "f1", S)
     state = _norm(state + hidden, tensors, "n2", S, heads.eps)
@@ -514,8 +597,7 @@ def merged_sample(log_probs: Tensor, layout: MergedLayout, fields: dict[str, Ten
         uniform[begin:end].uniform_(generator=generator)
     # Row r's cell c reads its identity's [n_g, K_g] draw at (r, min(c, K_g - 1));
     # cells past K_g hold -inf log-probabilities and can never be chosen.
-    columns = torch.arange(K, device=log_probs.device)[None]
+    columns = arange_view(K, log_probs.device)[None]
     index = fields["uniform_base"][:, None] + torch.minimum(columns, fields["uniform_last"][:, None])
-    uniform = uniform[index].clamp_min(1e-12)
-    choice = (table + -(-uniform.log()).log()).argmax(1)
+    choice = (table - neg_gumbel_(uniform[index])).argmax(1)
     return choice, table.gather(1, choice[:, None])[:, 0]
