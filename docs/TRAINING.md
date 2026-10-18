@@ -148,7 +148,11 @@ only and launches no training. `--private-qk-norm none|query|qk`
 arm for a fresh lineage: `none` keeps the current lineage's architecture
 record, state dict and outputs; a resume cannot change it; merged snapshot
 inference (`--batch-snapshot-policies`) and the Botzone NumPy actor refuse
-the other arms.
+the other arms. `--private-fusion sum|split`
+(`HistoryPolicyConfig.private_fusion`, default `sum`) is a sibling arm:
+`split` reuses `attention_norm` on the q_proj input and fuses the reader
+output under its own `reader_norm`, replacing the `query` arm (the two are
+mutually exclusive); it carries the same resume and guard restrictions.
 
 ### Runtime refactor (2026-10-18)
 

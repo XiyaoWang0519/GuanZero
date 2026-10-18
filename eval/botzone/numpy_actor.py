@@ -65,6 +65,8 @@ class NumpyHistoryActor(object):
             raise ValueError("style-input actors are not supported")
         if config.get("private_qk_norm", "none") != "none":
             raise ValueError("private Q/K norms are not supported")
+        if config.get("private_fusion", "sum") != "sum":
+            raise ValueError("private fusion modes other than 'sum' are not supported")
 
     @staticmethod
     def load(path: object) -> "NumpyHistoryActor":

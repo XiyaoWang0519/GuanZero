@@ -193,7 +193,8 @@ def capture(actor: HistoryActor, inputs: DecisionInputs, chunk: int = 32,
     heads, width = config.heads, config.width
     depth = width // heads
     with torch.no_grad():
-        query = actor.private(inputs.obs.float()) + actor.seat(inputs.seat)
+        query = actor.private_query(inputs)
+        reading = actor.reader_input(query)
         handles = []
         if hooks is not None:
             for index, layer in enumerate(actor.stream.layers):
@@ -208,7 +209,7 @@ def capture(actor: HistoryActor, inputs: DecisionInputs, chunk: int = 32,
             for handle in handles:
                 handle.remove()
         keys, values = actor.project_keys_values(encoded)
-        q = actor.project_query(query)
+        q = actor.project_query(reading)
         q_mean = q.mean(0, keepdim=True)
         k = keys.view(*keys.shape[:2], heads, depth)
         v = values.view(*values.shape[:2], heads, depth)
@@ -246,7 +247,9 @@ def capture(actor: HistoryActor, inputs: DecisionInputs, chunk: int = 32,
             probs32 = scores.float().softmax(-1)
             head_out[rows] = torch.einsum("chs,cshd->chd", probs32, v[match])
         attended = actor.out_proj(head_out.reshape(n, width))
-        state = actor.attention_norm(query + attended)
+        # actor.fuse(reading, attended), with ``state`` kept for the ReLU hook.
+        state = (actor.attention_norm(reading + attended) if actor.reader_norm is None
+                 else reading + actor.reader_norm(attended))
         hidden = actor.feed_forward[1](actor.feed_forward[0](state))
         state = actor.output_norm(state + actor.feed_forward[2](hidden))
         if hooks is not None:
@@ -254,7 +257,7 @@ def capture(actor: HistoryActor, inputs: DecisionInputs, chunk: int = 32,
         reference = actor.decision_states(encoded, inputs)
         logits = actor.candidate_logits(state, inputs.cand, inputs.offsets, rows=inputs.rows)
         log_probs = segment_log_softmax(logits, inputs.rows, n)
-        q_input = actor.query_norm(query) if actor.query_norm is not None else query
+        q_input = actor.query_norm(reading) if actor.query_norm is not None else reading
     out = {name: torch.cat(parts).numpy() for name, parts in rows_out.items()}
     q_unit = F.normalize(q, dim=-1)
     pick = torch.randperm(n, generator=torch.Generator().manual_seed(0))[:256]

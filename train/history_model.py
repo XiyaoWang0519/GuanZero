@@ -49,6 +49,7 @@ STAGE = "history_ppo"
 PLAY_PHASE = int(gd.Phase.Play)
 HIDDEN_DIM = 3 * 54
 PRIVATE_QK_NORMS = ("none", "query", "qk")
+PRIVATE_FUSIONS = ("sum", "split")
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,12 @@ class HistoryPolicyConfig:
     # and k per head (over the head depth) after projection. Recorded in
     # checkpoints only when not "none" (``config_record``).
     private_qk_norm: str = "none"
+    # Private-query/reader fusion (A/B arm, never the main lineage unless
+    # adopted): "sum" keeps ``state = attention_norm(query + attended)``;
+    # "split" LayerNorms the q_proj input with attention_norm and fuses the
+    # reader output under its own ``reader_norm``. Recorded in checkpoints
+    # only when not "sum" (``config_record``).
+    private_fusion: str = "sum"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "aux_heads", canonical_aux_heads(self.aux_heads))
@@ -98,6 +105,10 @@ class HistoryPolicyConfig:
             raise ValueError("response_mode must be none, auxiliary or explicit")
         if self.private_qk_norm not in PRIVATE_QK_NORMS:
             raise ValueError(f"private_qk_norm must be one of {PRIVATE_QK_NORMS}")
+        if self.private_fusion not in PRIVATE_FUSIONS:
+            raise ValueError(f"private_fusion must be one of {PRIVATE_FUSIONS}")
+        if self.private_fusion == "split" and self.private_qk_norm == "query":
+            raise ValueError('private_fusion "split" already normalizes the q_proj input')
 
     @property
     def aux_head_names(self) -> tuple[str, ...]:
@@ -106,8 +117,9 @@ class HistoryPolicyConfig:
 
 def config_record(config: HistoryPolicyConfig) -> dict[str, Any]:
     """``asdict(config)`` without ``style_input`` when it is off, without
-    ``aux_heads`` when empty and without ``private_qk_norm`` when "none", so
-    every other checkpoint keeps its exact architecture record."""
+    ``aux_heads`` when empty, without ``private_qk_norm`` when "none" and
+    without ``private_fusion`` when "sum", so every other checkpoint keeps
+    its exact architecture record."""
     record = asdict(config)
     if not record["style_input"]:
         del record["style_input"]
@@ -115,6 +127,8 @@ def config_record(config: HistoryPolicyConfig) -> dict[str, Any]:
         del record["aux_heads"]
     if record["private_qk_norm"] == "none":
         del record["private_qk_norm"]
+    if record["private_fusion"] == "sum":
+        del record["private_fusion"]
     return record
 
 
@@ -356,6 +370,11 @@ class HistoryActor(nn.Module):
             self.k_norm = nn.LayerNorm(width // config.heads)
         else:
             self.q_norm = self.k_norm = None
+        # "split" reads the attention_norm'd query and fuses the reader output
+        # under its own norm. Trailing relative to every pre-fusion parameter,
+        # so an optimizer carrying the source moments appends fresh slots.
+        self.reader_norm = (nn.LayerNorm(width) if config.private_fusion == "split"
+                            else None)
         # Auxiliary heads come last (``extend_actor`` and the optimizer remap rely
         # on it) and draw from a forked RNG stream, so the base actor and the
         # critic created after it are initialised exactly as without heads.
@@ -548,6 +567,29 @@ class HistoryActor(nn.Module):
         out = out.transpose(1, 2)[match_index, rank].reshape(count, width)
         return self.out_proj(out)
 
+    def private_query(self, inputs: DecisionInputs) -> Tensor:
+        """The private query ``private(obs) + seat [+ style_embedding]``, ``[n, w]``."""
+        query = self.private(inputs.obs.float()) + self.seat(inputs.seat)
+        if self.config.style_input:
+            if inputs.style is None:
+                raise ValueError("a style-input actor needs the opponents' style per decision")
+            query = query + self.style_embedding(inputs.style + 1)
+        return query
+
+    def reader_input(self, query: Tensor) -> Tensor:
+        """The reader's and ``q_proj``'s input: ``attention_norm(query)`` under
+        the "split" fusion, the query itself (same object) under "sum"."""
+        return self.attention_norm(query) if self.reader_norm is not None else query
+
+    def fuse(self, reading: Tensor, attended: Tensor) -> Tensor:
+        """Decision state from the attention input ``reading`` and the reader's
+        output: ``attention_norm(reading + attended)`` under "sum", the
+        separately normalized ``reading + reader_norm(attended)`` under
+        "split"; then the shared feed-forward block."""
+        state = (reading + self.reader_norm(attended) if self.reader_norm is not None
+                 else self.attention_norm(reading + attended))
+        return self.output_norm(state + self.feed_forward(state))
+
     def decision_states(self, encoded: Tensor | None, inputs: DecisionInputs,
                         collect: list | None = None) -> Tensor:
         """One state per decision from its private query and visible prefix.
@@ -559,28 +601,24 @@ class HistoryActor(nn.Module):
         call produced as ``(encoded, group)`` (``group`` None for the whole
         batch) for the next-token head; the computation itself is unchanged.
         """
-        query = self.private(inputs.obs.float()) + self.seat(inputs.seat)
-        if self.config.style_input:
-            if inputs.style is None:
-                raise ValueError("a style-input actor needs the opponents' style per decision")
-            query = query + self.style_embedding(inputs.style + 1)
+        query = self.private_query(inputs)
+        reading = self.reader_input(query)
         if self.config.window:
             stream, lengths = self._windowed(inputs)
             keys, values = self.project_keys_values(stream)
             allowed = torch.arange(stream.shape[1], device=stream.device)[None] <= lengths[:, None]
-            attended = self._attend(query, keys, values, allowed)
+            attended = self._attend(reading, keys, values, allowed)
         elif encoded is None and inputs.match_groups is not None:
-            attended = self._attend_length_groups(query, inputs, collect)
+            attended = self._attend_length_groups(reading, inputs, collect)
         else:
             if encoded is None:
                 encoded = self.encode_batch(inputs.streams)
             if collect is not None:
                 collect.append((encoded, None))
-            attended = self._attend_encoded(query, encoded, inputs.match_index, inputs.prefix,
+            attended = self._attend_encoded(reading, encoded, inputs.match_index, inputs.prefix,
                                             inputs.one_decision_per_stream,
                                             inputs.match_rank, inputs.match_slots)
-        state = self.attention_norm(query + attended)
-        return self.output_norm(state + self.feed_forward(state))
+        return self.fuse(reading, attended)
 
     def _attend_encoded(self, query: Tensor, encoded: Tensor, match_index: Tensor,
                         prefix: Tensor, one_decision_per_stream: bool,

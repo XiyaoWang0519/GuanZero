@@ -17,11 +17,12 @@ if TYPE_CHECKING:
 
 
 # Same sets as train.history_aux.AUX_HEADS, train.history_habit and
-# train.history_model.PRIVATE_QK_NORMS.
+# train.history_model.PRIVATE_QK_NORMS / PRIVATE_FUSIONS.
 _AUX_HEADS = ("next", "belief", "outcome")
 _STYLE_AXES = ("pass", "bomb", "lead_single")
 _HABIT_VIEWS = ("full", "round", "oracle")
 _PRIVATE_QK_NORMS = ("none", "query", "qk")
+_PRIVATE_FUSIONS = ("sum", "split")
 
 
 REWARD_SEMANTICS = {
@@ -67,6 +68,9 @@ class HistoryPPOConfig:
     # Private cross-attention Q/K normalization (HistoryPolicyConfig.private_qk_norm):
     # a fresh-lineage A/B arm only; a resume cannot change it.
     private_qk_norm: str = "none"
+    # Private-query/reader fusion (HistoryPolicyConfig.private_fusion): a
+    # fresh-lineage/habit-init A/B arm only; a resume cannot change it.
+    private_fusion: str = "sum"
     # rollout
     num_envs: int = 16
     num_threads: int = 1
@@ -181,6 +185,10 @@ class HistoryPPOConfig:
         if (self.batch_snapshot_policies or self.batch_snapshot_policies_schedule) and (
                 self.private_qk_norm != "none"):
             raise ValueError("batch_snapshot_policies does not implement private Q/K norms")
+        if (self.batch_snapshot_policies or self.batch_snapshot_policies_schedule) and (
+                self.private_fusion != "sum"):
+            raise ValueError("batch_snapshot_policies does not implement the split "
+                             "private fusion")
         if (self.rollout_private_graphs or self.rollout_triton_cache
                 or self.rollout_paged_cache) and not self.rollout_kv_cache:
             raise ValueError('KV cache layouts and CUDA rollout optimizations require rollout_kv_cache')
@@ -260,6 +268,7 @@ class HistoryPPOConfig:
                                    response_mode=self.response_mode,
                                    aux_heads=self.aux_heads,
                                    private_qk_norm=self.private_qk_norm,
+                                   private_fusion=self.private_fusion,
                                    style_input=bool(self.habit_pack)
                                    and self.habit_view == "oracle")
 
@@ -370,6 +379,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--private-qk-norm", choices=_PRIVATE_QK_NORMS, default="none",
                         help="private cross-attention normalization: LayerNorm the q_proj "
                              "input (query) or q and k per head (qk); fresh lineages only")
+    parser.add_argument("--private-fusion", choices=_PRIVATE_FUSIONS, default="sum",
+                        help="private-query/reader fusion: 'sum' LayerNorms their sum; "
+                             "'split' LayerNorms the q_proj input and fuses the reader "
+                             "under its own norm; fresh lineages/habit init only")
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--critic-lr", type=float, default=None)
     parser.add_argument("--clip", type=float, default=0.2)

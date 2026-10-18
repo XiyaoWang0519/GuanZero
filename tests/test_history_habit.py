@@ -230,15 +230,26 @@ CUDA_FLAGS = dict(PRODUCTION, rollout_wide_projection=True, rollout_triton_cache
                   rollout_triton_min_batch=4, rollout_device="cuda")
 
 
-@pytest.mark.parametrize("view", ["full", "round", "oracle"])
+@pytest.mark.parametrize("view", ["full", "round", "oracle", "full-split"])
 def test_cuda_habit_views_start_on_policy(base_checkpoint, tmp_path, view):
-    """CUDA gate for the phase-1 runs: the run's rollout flags (Triton KV cache,
+    """CUDA gate for the habit runs: the run's rollout flags (Triton KV cache,
     batched attention, length groups; no private graphs) keep collection and
-    the learner's recompute in agreement for every view, and an update runs."""
+    the learner's recompute in agreement for every view, and an update runs.
+    "full-split" is the FULL view on a split+qk learner converted from the
+    base checkpoint (the fusion A/B's migrated init)."""
     if not torch.cuda.is_available():
         pytest.skip("CUDA habit gate")
-    trainer = HistoryTrainer(habit_config(base_checkpoint, view, **CUDA_FLAGS), tmp_path,
-                             device="cuda")
+    if view == "full-split":
+        from train import history_fusion_migrate
+        source, _, payload = load_history_checkpoint(base_checkpoint)
+        split_path = tmp_path / "split-init.pt"
+        save_history_checkpoint(split_path,
+                                history_fusion_migrate.converted_payload(source, payload, 0.5))
+        config = habit_config(base_checkpoint, "full", habit_init=str(split_path),
+                              private_fusion="split", private_qk_norm="qk", **CUDA_FLAGS)
+    else:
+        config = habit_config(base_checkpoint, view, **CUDA_FLAGS)
+    trainer = HistoryTrainer(config, tmp_path, device="cuda")
     trainer.collect()
     rows = np.arange(len(trainer.buffer))
     log_prob, _ = trainer.recompute_log_probs(rows)

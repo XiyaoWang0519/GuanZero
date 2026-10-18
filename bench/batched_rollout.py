@@ -53,16 +53,31 @@ class SearchRequest:
 
 
 def query_heads(actor, query: Tensor) -> Tensor:
-    """``[n, heads, depth]`` private query heads; plain ``q_proj`` on builds
-    without the query/QK-norm options."""
+    """``[n, heads, depth]`` private query heads; the actor's ``project_query``
+    (norm arms included) or a plain ``q_proj`` on builds without it."""
     if hasattr(actor, '_query_heads'):
         return actor._query_heads(query)
+    if hasattr(actor, 'project_query'):
+        return actor.project_query(query)
     cfg = actor.config
     return actor.q_proj(query).view(-1, cfg.heads, cfg.width // cfg.heads)
 
 
 def key_heads(actor, k: Tensor) -> Tensor:
     return actor._key_heads(k) if hasattr(actor, '_key_heads') else k
+
+
+def keys_values_heads(actor, memory: Tensor) -> tuple[Tensor, Tensor]:
+    """``[n, L, heads, depth]`` decision keys/values of encoded ``memory``
+    ``[n, L, w]``; the actor's ``project_keys_values`` applies its k-norm arm."""
+    if hasattr(actor, 'project_keys_values'):
+        k, v = actor.project_keys_values(memory)
+        heads, depth = actor.config.heads, actor.config.width // actor.config.heads
+        return k.unflatten(-1, (heads, depth)), v.unflatten(-1, (heads, depth))
+    k, v = actor.kv_proj(memory).chunk(2, dim=-1)
+    cfg = actor.config
+    k = key_heads(actor, k.view(*k.shape[:2], cfg.heads, cfg.width // cfg.heads))
+    return k, v.view(*v.shape[:2], cfg.heads, cfg.width // cfg.heads)
 
 
 def public_tokens(seat: np.ndarray, encoded: np.ndarray, cards_left: np.ndarray) -> np.ndarray:
@@ -113,10 +128,7 @@ class SharedPrefixCache:
             self.rm[i, :e.length] = e.memory[:e.length]
         self.root_len_t = torch.as_tensor(self.root_len, device=self.device)
         # Decision-time keys/values of the root memory, once per search.
-        rkv = actor.kv_proj(self.rm)
-        k, v = rkv.chunk(2, dim=-1)
-        self.dk = key_heads(actor, k.view(n, rmax, self.heads, self.depth))
-        self.dv = v.view(n, rmax, self.heads, self.depth)
+        self.dk, self.dv = keys_values_heads(actor, self.rm)
         self.positions = sinusoidal(POSITIONS, self.width, self.device, self.dtype)
         self.rows = 0
 
@@ -263,9 +275,7 @@ class SharedPrefixCache:
             q = query_heads(actor, query[pick_t])                             # [B, h, d]
             L = int(self.suffix[rr].max())
             mem = self.sm[torch.as_tensor(rr, device=dev), :L]
-            k, v = actor.kv_proj(mem).chunk(2, dim=-1)
-            k = key_heads(actor, k.view(n, L, self.heads, self.depth))
-            v = v.view(n, L, self.heads, self.depth)
+            k, v = keys_values_heads(actor, mem)
             s_suf = torch.einsum('bhd,blhd->bhl', q, k) * scale
             ok = torch.arange(L, device=dev)[None] < torch.as_tensor(self.suffix[rr], device=dev)[:, None]
             s_suf = s_suf.masked_fill(~ok[:, None], float('-inf'))
@@ -400,19 +410,19 @@ def batched_search(actor, requests: list[SearchRequest], sampler: str = 'fast',
             off = np.r_[0, np.cumsum(counts[multi])]
             off_t = torch.as_tensor(off, device=device)
             seat_t = torch.as_tensor(seats[multi], device=device)
-            query = actor.private(obs.float()) + actor.seat(seat_t)
-            attended = cache.attend(br, query)
-            state = actor.attention_norm(query + attended)
-            state = actor.output_norm(state + actor.feed_forward(state))
-            nrows = torch.repeat_interleave(torch.arange(len(multi), device=device),
-                                            torch.as_tensor(counts[multi], device=device))
-            logits = actor.candidate_logits(state, c, off_t, rows=nrows)
             inputs = DecisionInputs(StreamBatch(torch.empty(len(multi), 0, TOKEN_DIM, dtype=torch.uint8, device=device),
                                                 torch.empty(len(multi), 0, dtype=torch.long, device=device),
                                                 torch.empty(len(multi), 0, dtype=torch.long, device=device),
                                                 torch.zeros(len(multi), dtype=torch.long, device=device)),
                                     torch.arange(len(multi), device=device), torch.zeros(len(multi), dtype=torch.long, device=device),
                                     obs, seat_t, c, off_t, one_decision_per_stream=True)
+            query = actor.private_query(inputs)
+            reading = actor.reader_input(query)
+            attended = cache.attend(br, reading)
+            state = actor.fuse(reading, attended)
+            nrows = torch.repeat_interleave(torch.arange(len(multi), device=device),
+                                            torch.as_tensor(counts[multi], device=device))
+            logits = actor.candidate_logits(state, c, off_t, rows=nrows)
             opp = (seats[multi] % 2) != team[br]
             tilt = np.where(opp, zrow[br] * brow[br], 0.0)
             if np.any(tilt != 0):

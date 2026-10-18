@@ -95,6 +95,9 @@ def validate_actor(actor: HistoryActor) -> None:
                          "response bridge")
     if config.private_qk_norm != "none":
         raise ValueError("merged snapshot inference does not implement private Q/K norms")
+    if config.private_fusion != "sum":
+        raise ValueError("merged snapshot inference does not implement the split "
+                         "private fusion")
     _mlp_linears(actor.private, 2)
     _mlp_linears(actor.action_tower, 2)
     _mlp_linears(actor.fusion[0], 2)
