@@ -160,6 +160,16 @@ class BatchedHistoryCache:
         order. Host values and tensor metadata are checked without a CUDA read;
         the returned metadata shares the supplied tensor's storage.
         """
+        targets = self._encode_targets(keys, streams, preuploaded_lengths, host_lengths)
+        entries = self._extend(keys, streams, targets)
+        # Power-of-two shapes reduce allocator churn without truncating history.
+        memory = self._gather_memory(entries, self._memory_size(max(targets)))
+        return self._stream_metadata(targets, preuploaded_lengths, memory.device), memory
+
+    def _encode_targets(self, keys: list[tuple[int, int]], streams: list[PublicStream],
+                 preuploaded_lengths: Tensor | None, host_lengths: tuple[int, ...] | None
+                 ) -> list[int]:
+        """Validated ``encode`` arguments; each stream's positions, BOS included."""
         if not keys or len(keys) != len(streams) or len(set(keys)) != len(keys):
             raise ValueError("one distinct match key per public stream required")
         targets = [s.prefix + 1 for s in streams]
@@ -172,16 +182,18 @@ class BatchedHistoryCache:
                 raise ValueError("uploaded lengths must be int64 [streams] on the actor device")
         elif host_lengths is not None:
             raise ValueError("host lengths require an uploaded lengths tensor")
-        entries = self._extend(keys, streams, targets)
-        # Power-of-two shapes reduce allocator churn without truncating history.
-        memory = self._gather_memory(entries, self._memory_size(max(targets)))
-        device = memory.device
-        metadata = StreamBatch(torch.empty(len(entries), 0, TOKEN_DIM, dtype=torch.uint8, device=device),
-                               torch.empty(len(entries), 0, dtype=torch.long, device=device),
-                               torch.empty(len(entries), 0, dtype=torch.long, device=device),
-                               preuploaded_lengths if preuploaded_lengths is not None else
-                               torch.tensor([n - 1 for n in targets], device=device))
-        return metadata, memory
+        return targets
+
+    @staticmethod
+    def _stream_metadata(targets: list[int], preuploaded_lengths: Tensor | None, device
+                         ) -> StreamBatch:
+        """Token-free stream metadata: the lengths the decisions read."""
+        count = len(targets)
+        return StreamBatch(torch.empty(count, 0, TOKEN_DIM, dtype=torch.uint8, device=device),
+                           torch.empty(count, 0, dtype=torch.long, device=device),
+                           torch.empty(count, 0, dtype=torch.long, device=device),
+                           preuploaded_lengths if preuploaded_lengths is not None else
+                           torch.tensor([n - 1 for n in targets], device=device))
 
     def _extend(self, keys: list[tuple[int, int]], streams: list[PublicStream],
                 targets: list[int]) -> list[Entry]:

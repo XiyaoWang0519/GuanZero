@@ -401,6 +401,28 @@ class DecisionInputs:
                                        self.counts, output_size=len(self.cand))
 
 
+@dataclass
+class RolloutMemory:
+    """Collector-built public memory for one decision per stream (rollout only).
+
+    Built by ``PagedHistoryCache.encode_rollout`` in place of the padded
+    ``[streams, span, width]`` memory; decision ``i`` reads stream ``i``.
+    ``groups`` holds ``(rows, values)`` per span group: the decision rows (int64
+    ``[n_g]`` on the device; ``None`` for one group of every row in order) and
+    their streams' ``[n_g, span_g, features]`` values, zero past each length.
+    ``projected`` False: top-layer memory, to which the actor applies
+    ``kv_proj``; True: ``kv_proj(memory)`` stored per token at append time
+    (keys then values, as ``kv_proj`` lays them out).
+    """
+    groups: list[tuple[Tensor | None, Tensor]]
+    projected: bool = False
+
+    def keys_values(self, kv_proj: nn.Linear, index: int = 0) -> tuple[Tensor, Tensor]:
+        """``[n_g, span_g, width]`` keys and values of group ``index``."""
+        values = self.groups[index][1]
+        return (values if self.projected else kv_proj(values)).chunk(2, dim=-1)
+
+
 # ---- actor --------------------------------------------------------------------
 
 def sinusoidal(length: int, width: int, device, dtype) -> Tensor:
@@ -665,6 +687,36 @@ class HistoryActor(nn.Module):
         out = out[:, :, 0].reshape(count, width)
         return project(self.out_proj, out)
 
+    def _attend_rollout(self, query: Tensor, memory: RolloutMemory, prefix: Tensor) -> Tensor:
+        """``_attend_independent`` over a ``RolloutMemory``: the query and output
+        projections once over all rows, keys/values and SDPA per span group,
+        each group padded only to its own longest stream. One ungrouped
+        unprojected part is ``_attend_independent`` exactly; groups and stored
+        projections change FP32 reduction shapes only (acceptance tier 2)."""
+        count = len(query)
+        width, heads = self.config.width, self.config.heads
+        depth = width // heads
+        project = ((lambda layer, value: layer(value)) if self.wide_private_projection
+                   else self._project_independent)
+        q = project(self.q_proj, query).view(count, heads, depth)
+        whole = len(memory.groups) == 1 and memory.groups[0][0] is None
+        out = None if whole else q.new_empty(count, heads, depth)
+        for index, (rows, part) in enumerate(memory.groups):
+            keys, values = memory.keys_values(self.kv_proj, index)
+            n, span = part.shape[:2]
+            own, visible = (q, prefix) if rows is None else (q.index_select(0, rows),
+                                                              prefix.index_select(0, rows))
+            allowed = torch.arange(span, device=part.device)[None] <= visible[:, None]
+            k = keys.view(n, span, heads, depth).transpose(1, 2)
+            v = values.view(n, span, heads, depth).transpose(1, 2)
+            attended = F.scaled_dot_product_attention(own[:, :, None], k, v,
+                                                      attn_mask=allowed[:, None, None])[:, :, 0]
+            if out is None:
+                out = attended
+            else:
+                out.index_copy_(0, rows, attended)
+        return project(self.out_proj, out.reshape(count, width))
+
     def _attend_by_match(self, query: Tensor, keys: Tensor, values: Tensor,
                          match_index: Tensor, prefix: Tensor,
                          rank: Tensor | None = None, slots: int = 0) -> Tensor:
@@ -704,16 +756,18 @@ class HistoryActor(nn.Module):
         out = out.transpose(1, 2)[match_index, rank].reshape(count, width)
         return self.out_proj(out)
 
-    def decision_states(self, encoded: Tensor | None, inputs: DecisionInputs,
+    def decision_states(self, encoded: Tensor | RolloutMemory | None, inputs: DecisionInputs,
                         collect: list | None = None) -> Tensor:
         """One state per decision from its private query and visible prefix.
 
         ``encoded`` is ``encode_batch(inputs.streams)`` for the full-history
         actor and is ignored by the windowed control, which encodes its own
         per-decision windows. A decision attends to positions ``<= prefix``.
-        ``collect``, when a list, receives every encoded stream tensor this
-        call produced as ``(encoded, group)`` (``group`` None for the whole
-        batch) for the next-token head; the computation itself is unchanged.
+        The rollout collector may pass a ``RolloutMemory`` instead (one
+        decision per stream). ``collect``, when a list, receives every encoded
+        stream tensor this call produced as ``(encoded, group)`` (``group``
+        None for the whole batch) for the next-token head; the computation
+        itself is unchanged.
         """
         query = self.private(inputs.obs.float()) + self.seat(inputs.seat)
         if self.config.style_input:
@@ -731,6 +785,8 @@ class HistoryActor(nn.Module):
             if encoded is None:
                 encoded = self.encode_batch(inputs.streams)
             if collect is not None:
+                if isinstance(encoded, RolloutMemory):
+                    raise ValueError("rollout memory carries no encoded streams to collect")
                 collect.append((encoded, None))
             attended = self._attend_encoded(query, encoded, inputs.match_index, inputs.prefix,
                                             inputs.one_decision_per_stream,
@@ -738,19 +794,28 @@ class HistoryActor(nn.Module):
         state = self.attention_norm(query + attended)
         return self.output_norm(state + self.feed_forward(state))
 
-    def _attend_encoded(self, query: Tensor, encoded: Tensor, match_index: Tensor,
+    def _attend_encoded(self, query: Tensor, encoded: Tensor | RolloutMemory, match_index: Tensor,
                         prefix: Tensor, one_decision_per_stream: bool,
                         rank: Tensor | None = None, slots: int = 0) -> Tensor:
         """Each decision's attention over its encoded stream, positions ``<= prefix``."""
-        keys, values = self.kv_proj(encoded).chunk(2, dim=-1)
-        positions = torch.arange(encoded.shape[1], device=encoded.device)
+        if isinstance(encoded, RolloutMemory):
+            if not one_decision_per_stream:
+                raise ValueError("rollout memory serves one decision per stream")
+            if self.batched_private_attention and len(query) > 1:
+                return self._attend_rollout(query, encoded, prefix)
+            if len(encoded.groups) != 1 or encoded.groups[0][0] is not None:
+                raise ValueError("grouped rollout memory needs batched private attention")
+            keys, values = encoded.keys_values(self.kv_proj)
+        else:
+            keys, values = self.kv_proj(encoded).chunk(2, dim=-1)
+        positions = torch.arange(keys.shape[1], device=keys.device)
         if self.batched_private_attention and one_decision_per_stream and len(query) > 1:
             allowed = positions[None] <= prefix[:, None]
             return self._attend_independent(query, keys, values, allowed)
         if self.batched_match_attention and not one_decision_per_stream and len(query) > 1:
             return self._attend_by_match(query, keys, values, match_index, prefix, rank, slots)
         attended = torch.empty_like(query)
-        for b in range(encoded.shape[0]):
+        for b in range(keys.shape[0]):
             if one_decision_per_stream:
                 # The collector already knows this layout on the host.
                 # Keep the same per-match attention shapes, avoiding a
