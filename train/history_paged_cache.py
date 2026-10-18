@@ -27,6 +27,12 @@ the next whole page past the longest stream instead of the next power of two.
 Position encodings are unchanged; the SDPA reduction shapes change, so this is
 acceptance tier 2 (on CPU most calls stay bitwise, single-token calls do not).
 
+An experimental ``attention_backend="triton"`` directly reads these pages in
+FP32 rollout attention. It is OFF by default, has no backward implementation,
+and needs target-GPU numerical and throughput acceptance; see
+``docs/reports/paged-attention-prototype-2026-10-18.md``. It does not change
+learner history recomputation or the private-attention math safeguard.
+
 A pool is shared by the caches built on it: a cache releases its pages on
 ``clear``/``prune``. Page 0 is never allocated and stays zero. A pool grows by
 reallocation and does not shrink on its own; its reserved size is the
@@ -48,6 +54,9 @@ from torch.nn import functional as F
 from train.history_attention import finish
 from train.history_inference import BatchedHistoryCache, bucket
 from train.history_model import HistoryActor, PublicStream
+from train.history_paged_attention import (
+    PagedAttentionLayout, paged_attention, require_triton, resolve_backend,
+)
 from train.history_transfers import upload_arrays
 from train.logs import TOKEN_DIM
 
@@ -163,11 +172,21 @@ class PagedHistoryCache(BatchedHistoryCache):
     """``BatchedHistoryCache`` over a shared ``KVPagePool`` (see the module notes)."""
 
     def __init__(self, actor: HistoryActor, pool: KVPagePool | None = None,
-                 chunk_size: int = 128, *, page_span: bool = False) -> None:
+                 chunk_size: int = 128, *, page_span: bool = False,
+                 attention_backend: str | None = None) -> None:
+        self._attention_backend = resolve_backend(attention_backend)
+        if self._attention_backend == "triton":
+            require_triton(actor.bos.device, actor.bos.dtype, actor.config.width // actor.config.heads)
         super().__init__(actor, chunk_size)
         self.pool = pool if pool is not None else KVPagePool.for_actor(actor)
         self.pool.check(actor)
         self.page_span = page_span
+        self.attention_kernel_calls = 0  # cumulative actual prototype dispatches
+
+    @property
+    def attention_backend(self) -> str:
+        """Fixed for this cache's lifetime; switching requires a new cache."""
+        return self._attention_backend
 
     def _span(self, longest: int) -> int:
         """Attention keys and memory positions to materialize for ``longest``."""
@@ -259,6 +278,8 @@ class PagedHistoryCache(BatchedHistoryCache):
         return torch.index_select(self.pool.memory, 0, rows.view(-1)).view(len(entries), size, self.pool.width)
 
     def _append(self, entries: list[PagedEntry], counts: list[int]) -> None:
+        if self.attention_backend == "triton" and torch.is_grad_enabled():
+            raise RuntimeError("experimental paged attention requires torch.no_grad()")
         actor, cfg, pool = self.actor, self.actor.config, self.pool
         device, dtype = actor.bos.device, actor.bos.dtype
         batch, width = len(entries), max(counts)
@@ -301,9 +322,15 @@ class PagedHistoryCache(BatchedHistoryCache):
         positions = start_positions[:, None] + key_positions[:width]
         state = state + position_table[positions.clamp(max=capacity - 1)]
         key_positions = key_positions[:span]
-        allowed = ((key_positions[None, None] <= positions[:, :, None])
-                   & (key_positions[None, None] < end_positions[:, None, None]))
-        rows = self._rows(table_d, end_positions, key_positions).view(-1)
+        layout = None
+        if self.attention_backend == "triton":
+            layout = PagedAttentionLayout.from_host(
+                table, starts, ends, table_d, start_positions, end_positions,
+                page_tokens=P, span=span, query_width=width, pool_rows=pool.pages * P)
+        else:
+            allowed = ((key_positions[None, None] <= positions[:, :, None])
+                       & (key_positions[None, None] < end_positions[:, None, None]))
+            rows = self._rows(table_d, end_positions, key_positions).view(-1)
         heads, depth = cfg.heads, cfg.width // cfg.heads
         for layer_index, layer in enumerate(actor.stream.layers):
             attention = layer.self_attn
@@ -313,10 +340,14 @@ class PagedHistoryCache(BatchedHistoryCache):
             q = qkv[:, :, 0].transpose(1, 2)
             kv = pool.kv[layer_index]
             kv[write_rows_d] = qkv[write_batch_d, write_slot_d, 1:]
-            # [batch * span, 2, heads, depth] -> keys/values [batch, heads, span, depth]
-            packed = torch.index_select(kv, 0, rows).view(batch, span, 2, heads, depth).permute(2, 0, 3, 1, 4)
-            attended = F.scaled_dot_product_attention(q, packed[0], packed[1],
-                                                      attn_mask=allowed[:, None], dropout_p=0.0)
+            if layout is not None:
+                attended = paged_attention(q, kv, layout)
+                self.attention_kernel_calls += 1
+            else:
+                # Preserve the default path's exact operands and dispatch.
+                packed = torch.index_select(kv, 0, rows).view(batch, span, 2, heads, depth).permute(2, 0, 3, 1, 4)
+                attended = F.scaled_dot_product_attention(q, packed[0], packed[1],
+                                                          attn_mask=allowed[:, None], dropout_p=0.0)
             state = finish(layer, state, attended)
         if actor.stream.norm is not None:
             state = actor.stream.norm(state)
@@ -345,6 +376,11 @@ def merged_encode(parts: list[tuple[PagedHistoryCache, list[tuple[int, int]], li
     """
     if not parts:
         raise ValueError("nothing to encode")
+    backend = parts[0][0].attention_backend
+    if any(cache.attention_backend != backend for cache, _, _, _ in parts):
+        raise ValueError("merged encoding needs one attention backend")
+    if backend == "triton" and torch.is_grad_enabled():
+        raise RuntimeError("experimental merged attention requires torch.no_grad()")
     pool, chunk = parts[0][0].pool, parts[0][0].chunk_size
     entries, targets, slots, owners = [], [], [], []
     for cache, keys, streams, slot in parts:
@@ -382,6 +418,8 @@ def _merged_append(cache: PagedHistoryCache, entries: list[PagedEntry], counts: 
     Attention runs over the real rows only.
     """
     from train.history_snapshot_batch import _linear, _norm
+    if cache.attention_backend == "triton" and torch.is_grad_enabled():
+        raise RuntimeError("experimental merged attention requires torch.no_grad()")
     pool, tensors, cfg, eps = cache.pool, heads.tensors, heads.config, heads.eps
     device = pool.device
     batch, width = len(entries), max(counts)
@@ -439,18 +477,28 @@ def _merged_append(cache: PagedHistoryCache, entries: list[PagedEntry], counts: 
                                    .clamp(max=capacity - 1)]
     positions = start_positions[:, None] + key_positions[:width]
     key_positions = key_positions[:span]
-    allowed = ((key_positions[None, None] <= positions[:, :, None])
-               & (key_positions[None, None] < end_positions[:, None, None]))
-    rows = cache._rows(table_d, end_positions, key_positions).view(-1)
+    layout = None
+    if cache.attention_backend == "triton":
+        layout = PagedAttentionLayout.from_host(
+            table, starts, ends, table_d, start_positions, end_positions,
+            page_tokens=P, span=span, query_width=width, pool_rows=pool.pages * P)
+    else:
+        allowed = ((key_positions[None, None] <= positions[:, :, None])
+                   & (key_positions[None, None] < end_positions[:, None, None]))
+        rows = cache._rows(table_d, end_positions, key_positions).view(-1)
     for index in range(cfg.layers):
         hidden = _norm(flat(state), tensors, f"e{index}_n1", S, eps)
         qkv = _linear(hidden, tensors, f"e{index}_in", S).view(R, width, 3, H, depth)
         kv = pool.kv[index]
         kv[write_rows_d] = qkv[write_pad_d, write_slot_d, 1:]
         q = qkv[pad_d][:, :, 0].transpose(1, 2)
-        packed = torch.index_select(kv, 0, rows).view(batch, span, 2, H, depth).permute(2, 0, 3, 1, 4)
-        attended = F.scaled_dot_product_attention(q, packed[0], packed[1],
-                                                  attn_mask=allowed[:, None], dropout_p=0.0)
+        if layout is not None:
+            attended = paged_attention(q, kv, layout)
+            cache.attention_kernel_calls += 1
+        else:
+            packed = torch.index_select(kv, 0, rows).view(batch, span, 2, H, depth).permute(2, 0, 3, 1, 4)
+            attended = F.scaled_dot_product_attention(q, packed[0], packed[1],
+                                                      attn_mask=allowed[:, None], dropout_p=0.0)
         attended = state.new_zeros(R, width, W).index_copy_(
             0, pad_d, attended.transpose(1, 2).reshape(batch, width, W))
         state = state + _linear(flat(attended), tensors, f"e{index}_o", S).view(R, width, W)

@@ -6,6 +6,17 @@ boundary is in [DESIGN.md](DESIGN.md); dated readiness and research directions
 are in [STATUS.md](STATUS.md). Experiment chronology is in
 [TRAINING_EVIDENCE.md](TRAINING_EVIDENCE.md), not a launch configuration.
 
+## Experimental paged rollout attention (October 18, 2026)
+
+The [FP32 Triton prototype and GPU acceptance guide](reports/paged-attention-prototype-2026-10-18.md)
+adds explicit `PagedHistoryCache(..., attention_backend="triton")` selection for
+isolated experiments. The default remains `torch`; ordinary and merged snapshot
+rollout caches are covered, while learner/private-attention backward is unchanged.
+CUDA compilation, numerical parity, and throughput are not yet verified. Do not
+enable this in production on the basis of CPU tests. The guide includes a
+fail-closed GPU gate runner and separate component/complete-PPO benchmarks.
+No production CLI, checkpoint schema, or research boundary is changed.
+
 ## Choose the entrypoint
 
 | Task | Owning module / document |
