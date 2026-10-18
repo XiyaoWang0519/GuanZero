@@ -164,3 +164,11 @@ source identity rebuilt with `--allow-source-change`. Measured vs DanLM (4,000 d
 m8 u81344 −0.376 [−0.414, −0.340], u86800 −0.312 [−0.350, −0.277] (m7 −0.334);
 the model recovered, no rollback, and u86800 versus m7 is within error. This
 supersedes the "production unchanged / not restarted" statements above for the main run.
+
+October 18: [private-attention audit tooling](reports/private-attention-audit-2026-10-18.md)
+implemented (`eval/private_attention_audit.py`, CPU, multi-minibatch) together with
+an opt-in `private_qk_norm` architecture arm (default `none`, main lineage
+unchanged, fresh lineages only). Measured only on random-init and synthetic
+actors: m7/u86800/latest were not on that VM, so whether their saturation is
+global remains unresolved. Next: run the audit where the checkpoints are; any
+`qk` A/B lineage needs separate authorization.

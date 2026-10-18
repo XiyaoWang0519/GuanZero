@@ -63,6 +63,8 @@ class NumpyHistoryActor(object):
             raise ValueError("the explicit response bridge is not supported")
         if config.get("style_input"):
             raise ValueError("style-input actors are not supported")
+        if config.get("private_qk_norm", "none") != "none":
+            raise ValueError("private Q/K norms are not supported")
 
     @staticmethod
     def load(path: object) -> "NumpyHistoryActor":

@@ -50,7 +50,7 @@ from torch.nn import functional as F
 from infra.history_artifacts import engine_compatible, engine_digest, source_identity, sha256
 
 from train.ckpt import restore_rng, rng_state
-from train.history_model import (extend_actor, STAGE, TOKEN_SCHEMA_VERSION,
+from train.history_model import (extend_actor, PRIVATE_QK_NORMS, STAGE, TOKEN_SCHEMA_VERSION,
                                  HistoryActor, HistoryCritic, HistoryPolicyConfig,
                                  checkpoint_payload, config_record, count_parameters,
                                  fresh_player, load_history_checkpoint, save_history_checkpoint)
@@ -95,6 +95,9 @@ class HistoryPPOConfig:
     aux_heads: str = ""
     aux_coef: float = 0.1
     aux_warmup_updates: int = 0
+    # Private cross-attention Q/K normalization (HistoryPolicyConfig.private_qk_norm):
+    # a fresh-lineage A/B arm only; a resume cannot change it.
+    private_qk_norm: str = "none"
     # rollout
     num_envs: int = 16
     num_threads: int = 1
@@ -206,6 +209,9 @@ class HistoryPPOConfig:
                 self.window or self.response_mode == "explicit"):
             raise ValueError("batch_snapshot_policies requires full history and no explicit "
                              "response bridge")
+        if (self.batch_snapshot_policies or self.batch_snapshot_policies_schedule) and (
+                self.private_qk_norm != "none"):
+            raise ValueError("batch_snapshot_policies does not implement private Q/K norms")
         if (self.rollout_private_graphs or self.rollout_triton_cache
                 or self.rollout_paged_cache) and not self.rollout_kv_cache:
             raise ValueError('KV cache layouts and CUDA rollout optimizations require rollout_kv_cache')
@@ -284,6 +290,7 @@ class HistoryPPOConfig:
                                    window=self.window, max_rounds=self.max_rounds,
                                    response_mode=self.response_mode,
                                    aux_heads=self.aux_heads,
+                                   private_qk_norm=self.private_qk_norm,
                                    style_input=bool(self.habit_pack)
                                    and self.habit_view == "oracle")
 
@@ -1380,6 +1387,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--aux-warmup-updates", type=int, default=0,
                         help="ramp the auxiliary weight linearly over this many updates "
                              "from the heads' insertion (0: full weight at once)")
+    parser.add_argument("--private-qk-norm", choices=PRIVATE_QK_NORMS, default="none",
+                        help="private cross-attention normalization: LayerNorm the q_proj "
+                             "input (query) or q and k per head (qk); fresh lineages only")
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--critic-lr", type=float, default=None)
     parser.add_argument("--clip", type=float, default=0.2)

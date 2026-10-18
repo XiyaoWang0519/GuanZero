@@ -93,6 +93,8 @@ def validate_actor(actor: HistoryActor) -> None:
     if config.response_mode == "explicit":
         raise ValueError("merged snapshot inference does not implement the explicit "
                          "response bridge")
+    if config.private_qk_norm != "none":
+        raise ValueError("merged snapshot inference does not implement private Q/K norms")
     _mlp_linears(actor.private, 2)
     _mlp_linears(actor.action_tower, 2)
     _mlp_linears(actor.fusion[0], 2)
