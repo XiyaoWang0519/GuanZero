@@ -424,6 +424,28 @@ def test_lockstep_with_tiny_capacities_grows_and_swaps(seed, monkeypatch):
     run_lockstep(100 + seed, updates=8, envs=5, keep_views=seed == 1)
 
 
+def test_row_gather_matches_gather_then_astype():
+    rng = np.random.default_rng(3)
+    values = np.array([0, 1, 2, 7.0, 0.5, 254.9, 255], np.float32)
+    for rows, width in ((128, 31), (300, 1)):
+        float_rows = rng.choice(values, (rows, width))
+        sources = (float_rows, float_rows.astype(np.uint8), np.asfortranarray(float_rows),
+                   float_rows[::-1], rng.integers(0, 256, (rows, width)).astype(np.uint8))
+        for source in sources:
+            for kept in (0, 1, rows // 3, rows // 2, 2 * rows // 3 + 1, rows - 2, rows):
+                index = np.sort(rng.choice(rows, kept, replace=False))
+                out = np.full((kept + 4, width), 99, np.uint8)
+                rollout._take_rows(source, index, out[2:kept + 2])
+                assert_bitwise(out[2:kept + 2], source[index].astype(np.uint8, copy=True))
+                assert (out[:2] == 99).all() and (out[kept + 2:] == 99).all()
+            wrapped = np.empty((2, width), np.uint8)
+            rollout._take_rows(source, np.array([-1, 0]), wrapped)     # numpy's own wrap
+            assert_bitwise(wrapped, source[[-1, 0]].astype(np.uint8))
+            with pytest.raises(IndexError):
+                rollout._take_rows(source, np.arange(rows + 1), np.empty((rows + 1, width),
+                                                                         np.uint8))
+
+
 def test_empty_buffers_and_empty_updates_match():
     new, ref = SequenceRolloutBuffer(), ReferenceRolloutBuffer()
     assert_same_state(new, ref)

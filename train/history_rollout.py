@@ -207,11 +207,17 @@ def _in_use(storage: dict[str, np.ndarray]) -> bool:
 
 
 def _take_rows(source: np.ndarray, index: np.ndarray, out: np.ndarray) -> None:
-    """``out[...] = source[index]``. Same-dtype rows are gathered straight into
-    ``out``; others are cast as ``astype`` casts them (the engine's binary
-    float32 observations to uint8), through one gathered temporary."""
-    if source.dtype == out.dtype and (
-            index.size == 0 or (index.min() >= 0 and index.max() < len(source))):
+    """``out[...] = source[index]``. Other dtypes are cast as ``astype`` casts
+    them (the engine's binary float32 rows to uint8), element by element, so
+    casting before or after the gather gives the same bytes. With two thirds
+    of the rows kept or more, one streaming cast of the batch and a byte
+    gather beat a float32 gather (break-even near 0.6 on captured steps)."""
+    if source.dtype != out.dtype:
+        if not (source.flags.c_contiguous and 3 * index.size >= 2 * len(source)):
+            out[...] = source[index]
+            return
+        source = source.astype(out.dtype)
+    if index.size == 0 or (index.min() >= 0 and index.max() < len(source)):
         # ``raise`` mode would gather into a temporary first; bounds hold here.
         np.take(source, index, axis=0, out=out, mode="clip")
     else:
