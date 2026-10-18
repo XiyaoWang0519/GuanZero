@@ -29,6 +29,7 @@ Usage::
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import copy
 from dataclasses import asdict
 import json
@@ -45,20 +46,74 @@ import gd
 import numpy as np
 import torch
 from torch.nn import functional as F
-from infra.history_artifacts import engine_digest, source_identity, sha256
+from infra.history_artifacts import engine_compatible, engine_digest, source_identity, sha256
 
 from train.ckpt import restore_rng, rng_state
 from train.history_config import (REWARD_SEMANTICS, RESUME_OVERRIDES, HistoryPPOConfig,
                                   build_parser, config_from_args, optional_bool,
                                   parse_arm_schedule, parse_resume_overrides)
-from train.history_model import (STAGE, TOKEN_SCHEMA_VERSION,
-                                 HistoryPolicyConfig, checkpoint_payload, count_parameters,
+from train.history_model import (extend_actor, STAGE, TOKEN_SCHEMA_VERSION,
+                                 HistoryActor, HistoryCritic, HistoryPolicyConfig,
+                                 checkpoint_payload, config_record, count_parameters,
                                  fresh_player, load_history_checkpoint, save_history_checkpoint)
-from train.history_rollout import (HistoryCollector, MatchEventStore, SequenceRolloutBuffer)
+from train.history_rollout import (CollectStats, HistoryCollector, MatchEventStore,
+                                   SequenceRolloutBuffer, _PhaseTimer)
 from train.history_population import HistoryPopulation
 from train.history_response import RESPONSE_SCHEMA, opponent_response_labels
+from train.history_aux import (belief_loss, next_token_loss, outcome_loss,
+                               round_outcomes)
 from train.history_transfers import runtime_settings
 from train.public_history import TOKEN_DIM
+
+
+def habit_init_player(config: HistoryPPOConfig
+                      ) -> tuple[HistoryActor, HistoryCritic, dict[str, Any]]:
+    """Planted-habit exception: continue from a trained history checkpoint.
+
+    Same architecture required; a style-input (ORACLE) actor adds only its
+    zero-initialised style embedding, so its initial policy equals the source.
+    """
+    base_actor, base_critic, payload = load_history_checkpoint(config.habit_init, "cpu")
+    policy = config.policy_config()
+    if config_record(base_actor.config) != config_record(
+            HistoryPolicyConfig(**{**asdict(policy), "style_input": False})):
+        raise ValueError("habit_init architecture differs from the configured one")
+    actor, critic = HistoryActor(policy), HistoryCritic(policy)
+    missing, unexpected = actor.load_state_dict(base_actor.state_dict(), strict=False)
+    if unexpected or set(missing) != ({"style_embedding.weight"} if policy.style_input else set()):
+        raise ValueError(f"habit_init weights do not fit: missing {missing}, extra {unexpected}")
+    critic.load_state_dict(base_critic.state_dict())
+    return actor, critic, payload
+
+
+def load_extended_optimizers(trainer: "HistoryTrainer", payload: dict[str, Any], *,
+                             keep_lr: bool) -> None:
+    """Adam moments of a checkpoint whose actor had fewer parameters: the extra
+    ones (a style embedding, auxiliary heads) are registered last and start
+    fresh. ``keep_lr`` keeps the configured learning rates instead of the saved."""
+    for name, optimizer in (("actor", trainer.actor_optimizer),
+                            ("critic", trainer.critic_optimizer)):
+        saved = copy.deepcopy(payload["optimizer"][name])
+        count = len(list(optimizer.param_groups[0]["params"]))
+        known = saved["param_groups"][0]["params"]
+        if len(saved["param_groups"]) != 1 or len(known) > count or (
+                name == "critic" and len(known) != count):
+            raise ValueError("saved optimizer state does not fit the extended actor")
+        saved["param_groups"][0]["params"] = list(range(count))
+        lr = optimizer.param_groups[0]["lr"]
+        optimizer.load_state_dict(saved)
+        if keep_lr:
+            optimizer.param_groups[0]["lr"] = lr
+
+
+def load_habit_optimizers(trainer: "HistoryTrainer", payload: dict[str, Any]) -> dict[str, Any]:
+    """Adam moments of the source checkpoint (new style embedding starts fresh);
+    learning rates stay the configured ones. Returns the init record."""
+    load_extended_optimizers(trainer, payload, keep_lr=True)
+    return dict(path=str(trainer.config.habit_init),
+                sha256=sha256(Path(trainer.config.habit_init)),
+                lineage=payload.get("lineage"), update=payload["progress"]["updates"],
+                decisions=payload["progress"]["decisions"])
 
 def segment_entropy(log_probs: torch.Tensor, rows: torch.Tensor, count: int) -> torch.Tensor:
     """Entropy of each decision's full candidate distribution, ``[count]``."""
@@ -73,9 +128,14 @@ class HistoryTrainer:
     STAT_KEYS = ("policy_loss", "value_loss", "entropy", "approx_kl", "clip_fraction",
                  "ratio_deviation", "actor_grad_norm", "encoder_grad_norm", "critic_grad_norm",
                  "response_loss", "response_accuracy", "response_event_fraction",
-                 "behaviour_weight_mean", "behaviour_weight_cap_fraction")
+                 "behaviour_weight_mean", "behaviour_weight_cap_fraction",
+                 "aux_loss", "aux_coefficient", "next_loss", "next_type_accuracy",
+                 "next_seat_accuracy", "next_cards_exact", "belief_loss", "belief_baseline",
+                 "outcome_loss", "outcome_baseline")
     # (mean, std) of the whole data-parallel minibatch's advantages, else None
     advantage_moments: tuple[float, float] | None = None
+    # Profile mode (``profile_learn``): synchronized wall time per learn phase.
+    learn_mark = staticmethod(lambda name: None)
 
     def __init__(self, config: HistoryPPOConfig, output: str | Path, device: str = "cpu",
                  resume: str | Path | None = None, allow_source_change: bool = False,
@@ -88,6 +148,7 @@ class HistoryTrainer:
         if config.torch_threads:
             torch.set_num_threads(config.torch_threads)
         payload: dict[str, Any] | None = None
+        extended = False
         if resume is not None:
             actor, critic, payload = load_history_checkpoint(resume, self.device)
             saved_config = HistoryPPOConfig.from_payload(payload["config"], updates=config.updates)
@@ -98,6 +159,16 @@ class HistoryTrainer:
             config = HistoryPPOConfig.from_payload(payload["config"], updates=config.updates,
                                                    **overrides)
             self.lineage = str(payload["lineage"])
+            if actor.config != config.policy_config():
+                # Only auxiliary heads may be added on resume (extend_actor checks).
+                actor = extend_actor(actor, config.policy_config())
+                # The critic's architecture does not depend on the heads; it keeps
+                # its weights and takes the shared config the checkpoint requires.
+                critic.config = actor.config
+                extended = True
+        elif config.habit_init:
+            actor, critic, init_payload = habit_init_player(config)
+            self.lineage = f"habit-{config.habit_view}-{config.seed}-{uuid.uuid4().hex[:8]}"
         else:
             actor, critic = fresh_player(config.policy_config(), config.seed)
             self.lineage = f"{STAGE}-{config.seed}-{uuid.uuid4().hex[:8]}"
@@ -113,11 +184,13 @@ class HistoryTrainer:
         if payload is not None and payload.get("run_identity") != self.run_identity:
             saved = payload.get("run_identity") or {}
             if not (allow_source_change
-                    and saved.get("engine_digest") == self.run_identity["engine_digest"]
+                    and engine_compatible(saved)
                     and saved.get("token_schema") == self.run_identity["token_schema"]):
                 raise ValueError("resume source/engine/token identity mismatch")
             self.source_changes.append(dict(
                 at_update=int(payload["progress"]["updates"]),
+                previous_engine_digest=saved.get("engine_digest"),
+                engine_digest=self.run_identity["engine_digest"],
                 previous_source_sha256=saved.get("source", {}).get("source_sha256"),
                 previous_revision=saved.get("source", {}).get("revision"),
                 source_sha256=self.run_identity["source"]["source_sha256"],
@@ -150,16 +223,32 @@ class HistoryTrainer:
         self.progress: dict[str, Any] = {"updates": 0, "decisions": 0, "rounds": 0,
                                          "matches": 0, "samples": 0, "learner_rows": 0,
                                          "elapsed_seconds": 0.0}
-        self.population = HistoryPopulation(self.actor, self.lineage, config.seed + 17,
-                                            config.population_recent,
-                                            config.snapshot_probability,
-                                            config.population_archive_every,
-                                            config.population_archive_size,
-                                            config.population_archive_share)
+        if config.habit_pack:
+            from train.history_habit import HabitPack
+            self.population = HabitPack(self.actor, self.lineage, config.seed + 17,
+                                        config.habit_pack, config.habit_axis,
+                                        config.habit_strength, self.rollout_device)
+        else:
+            self.population = HistoryPopulation(self.actor, self.lineage, config.seed + 17,
+                                                config.population_recent,
+                                                config.snapshot_probability,
+                                                config.population_archive_every,
+                                                config.population_archive_size,
+                                                config.population_archive_share)
+        self.habit_init = None
+        if payload is None and config.habit_init:
+            self.habit_init = load_habit_optimizers(self, init_payload)
+        elif payload is not None:
+            self.habit_init = payload.get("habit_init")
         if payload is not None:
-            self.actor_optimizer.load_state_dict(payload["optimizer"]["actor"])
-            self.critic_optimizer.load_state_dict(payload["optimizer"]["critic"])
+            if extended:
+                load_extended_optimizers(self, payload, keep_lr=False)
+            else:
+                self.actor_optimizer.load_state_dict(payload["optimizer"]["actor"])
+                self.critic_optimizer.load_state_dict(payload["optimizer"]["critic"])
             self.progress.update(payload["progress"])
+            if extended or (config.aux_heads and "aux_start_update" not in self.progress):
+                self.progress["aux_start_update"] = int(self.progress["updates"])
             rng = payload["rng"]
             if rng.get("sampler_device", "cpu") != self.rollout_device.type:
                 raise ValueError("resume requires the same sampler device type")
@@ -170,11 +259,17 @@ class HistoryTrainer:
                 raise ValueError("population-enabled resume requires saved population state")
             restore_rng(rng, self.rng)
             self.generator.set_state(rng["sampler"].cpu())
+        elif config.aux_heads:
+            self.progress["aux_start_update"] = 0
         self.session_first_update = int(self.progress["updates"])
         self.env = gd.VecEnv(num_envs=config.num_envs, num_threads=config.num_threads,
                              seed=config.seed + 1000 * self.progress["updates"],
                              log_public_actions=True, log_env_limit=config.num_envs)
-        self.store = MatchEventStore()
+        if config.habit_round:
+            from train.history_habit import RoundEventStore
+            self.store = RoundEventStore()
+        else:
+            self.store = MatchEventStore()
         self.buffer = SequenceRolloutBuffer()
         self.rollout_actor = (self.actor if self.rollout_device == self.device else
                               copy.deepcopy(self.actor).to(self.rollout_device).requires_grad_(False))
@@ -214,7 +309,11 @@ class HistoryTrainer:
                                 batch_snapshot_policies=self.snapshot_batching(),
                                 paged_cache=config.rollout_paged_cache,
                                 batch_snapshot_encoder=config.batch_snapshot_encoder,
-                                page_span=config.rollout_page_span)
+                                page_span=config.rollout_page_span,
+                                round_streams=config.habit_round,
+                                row_style=(self.population.style
+                                           if self.actor.config.style_input else None),
+                                prefill_learner_cache=config.rollout_prefill_learner_cache)
 
     def snapshot_batching(self) -> bool:
         """Merged snapshot inference for this update (the schedule's block, if any)."""
@@ -256,6 +355,71 @@ class HistoryTrainer:
         record["seconds"] = time.perf_counter() - begin
         trims[point] = record
 
+    @contextmanager
+    def torch_profile(self, phase: str):
+        """Diagnostic, off by default: with ``GUANZERO_TORCH_PROFILE_DIR`` set, the
+        updates of this process listed in ``GUANZERO_TORCH_PROFILE_UPDATES`` (comma
+        separated, 0 = the first update after start or resume) run ``phase`` under
+        ``torch.profiler`` and write per-operator and per-kernel totals to
+        ``<dir>/rank-<r>-update-<n>-<phase>.json``. Nothing trained or sampled
+        changes; that update's timings include the profiler's overhead."""
+        directory = os.environ.get(TORCH_PROFILE_ENV)
+        index = int(self.progress["updates"]) - self.session_first_update
+        wanted = {int(item) for item in
+                  os.environ.get(TORCH_PROFILE_UPDATES_ENV, "").split(",") if item.strip()}
+        if not directory or index not in wanted:
+            yield
+            return
+        from torch.profiler import ProfilerActivity, profile
+        cuda = "cuda" in (self.device.type, self.rollout_device.type)
+        path = Path(directory) / (f"rank-{getattr(self, 'rank', 0)}-update-{index}-{phase}.json")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        record = dict(phase=phase, update=int(self.progress["updates"]), process_update=index,
+                      cuda=cuda, torch=torch.__version__)
+
+        def failed(stage: str, error: Exception) -> None:
+            # A diagnostic must not end the run: record why there is no profile.
+            path.write_text(json.dumps(dict(record, events=[], error=(
+                f"{stage}: {type(error).__name__}: {error}")[:500]), indent=1) + "\n")
+
+        activities = [ProfilerActivity.CPU] + ([ProfilerActivity.CUDA] if cuda else [])
+        try:
+            if cuda:
+                torch.cuda.synchronize()
+            profiler = profile(activities=activities)
+            profiler.__enter__()
+        except Exception as error:
+            failed("start", error)
+            yield
+            return
+        begin = time.perf_counter()
+        try:
+            yield
+        finally:
+            try:
+                if cuda:
+                    torch.cuda.synchronize()
+                seconds = time.perf_counter() - begin
+                profiler.__exit__(None, None, None)
+                pick = lambda event, *names: next((getattr(event, name) for name in names
+                                                   if hasattr(event, name)), 0)
+                events = [dict(name=event.key, count=event.count,
+                               device=str(getattr(event, "device_type", "")).rsplit(".", 1)[-1],
+                               self_cpu_us=event.self_cpu_time_total,
+                               cpu_us=event.cpu_time_total,
+                               self_device_us=pick(event, "self_device_time_total",
+                                                   "self_cuda_time_total"),
+                               device_us=pick(event, "device_time_total", "cuda_time_total"))
+                          for event in profiler.key_averages()]
+                events.sort(key=lambda row: -(row["self_device_us"] or row["self_cpu_us"]))
+                path.write_text(json.dumps(dict(
+                    record, wall_seconds=seconds,
+                    self_device_seconds=sum(row["self_device_us"] for row in events) / 1e6,
+                    self_cpu_seconds=sum(row["self_cpu_us"] for row in events) / 1e6,
+                    events=events), indent=1) + "\n")
+            except Exception as error:
+                failed("finish", error)
+
     def collection_profiled(self) -> bool:
         """Profile this update's collection: on, after this process's warmup updates."""
         return (self.config.profile_collection and int(self.progress["updates"])
@@ -272,7 +436,8 @@ class HistoryTrainer:
     def write_manifest(self) -> None:
         manifest = {
             "stage": STAGE, "lineage": self.lineage, "init": "random", "teacher": None,
-            "config": asdict(self.config), "model_config": asdict(self.actor.config),
+            "config": asdict(self.config), "model_config": config_record(self.actor.config),
+            "habit": self.habit_record(),
             "engine_digest": self.run_identity["engine_digest"],
             "source": self.run_identity["source"],
             "source_changes": self.source_changes,
@@ -287,6 +452,14 @@ class HistoryTrainer:
                 "target_source": "executed actions and future public events in own-lineage self-play",
                 "policy_input": "detached predicted probabilities only in explicit mode",
                 "target_seat_or_future_events_in_actor_input": False,
+            },
+            "auxiliary_heads": {
+                "heads": list(self.actor.aux_head_names), "coefficient": self.config.aux_coef,
+                "warmup_updates": self.config.aux_warmup_updates,
+                "start_update": self.progress.get("aux_start_update"),
+                "targets": "next public token at every stream position; hidden-hand counts "
+                           "(critic storage); the acting team's round return",
+                "policy_input": "none: heads read the encoder/decision state only",
             },
             "candidates": "full canonical set in engine order; every candidate selectable",
             "seats": "match-pinned current/own-lineage snapshot seats; learner rows only",
@@ -305,6 +478,7 @@ class HistoryTrainer:
                           "rollout_private_graphs": self.collector.private_graphs,
                           "learner_batched_attention": self.actor.batched_match_attention,
                           "learner_length_groups": self.config.learner_length_groups,
+                          "learner_chosen_response": self.config.learner_chosen_response,
                           "rollout_graph_budget_mb": self.config.rollout_graph_budget_mb,
                           "rollout_graph_policy_budget_mb": self.config.rollout_graph_policy_budget_mb,
                           "rollout_triton_cache": self.collector.triton_cache,
@@ -312,6 +486,8 @@ class HistoryTrainer:
                           "rollout_paged_cache": self.collector.paged_cache,
                           "batch_snapshot_encoder": self.collector.batch_snapshot_encoder,
                           "rollout_page_span": self.collector.page_span,
+                          "rollout_prefill_learner_cache":
+                              self.collector.prefill_learner_cache,
                           "batch_snapshot_policies": self.config.batch_snapshot_policies,
                           "batch_snapshot_policies_schedule":
                               self.config.batch_snapshot_policies_schedule,
@@ -357,8 +533,9 @@ class HistoryTrainer:
                 if identity not in self.population.models:
                     del self.rollout_snapshots[identity]
         self.collector.policy_decisions.clear()
-        return self.collector.collect(self.config.steps_per_update,
-                                      version=self.progress["updates"])
+        with self.collector.frozen_weights():
+            return self.collector.collect(self.config.steps_per_update,
+                                          version=self.progress["updates"])
 
     @torch.no_grad()
     def refresh_values(self, chunk: int = 4096) -> np.ndarray:
@@ -376,9 +553,25 @@ class HistoryTrainer:
                             ) -> tuple[torch.Tensor, torch.Tensor]:
         """Current-actor log-probability of each stored row's chosen candidate
         and the entropy over its full candidate set, from raw tokens."""
-        inputs, chosen = self.buffer.decision_inputs(rows, self.store, self.device, streams)
+        if self.config.habit_pack:
+            batch = self.buffer.training_batch(rows, self.store, self.device, streams, fields=(),
+                                               extra=self.habit_extra(rows),
+                                               round_streams=self.config.habit_round)
+            inputs, chosen = batch.inputs, batch.chosen
+            inputs.style = batch.fields.get("style")
+        else:
+            inputs, chosen = self.buffer.decision_inputs(rows, self.store, self.device, streams)
         log_probs = self.actor.candidate_log_probs(inputs)
         return log_probs[chosen], segment_entropy(log_probs, inputs.rows, inputs.decisions)
+
+    def habit_extra(self, rows: np.ndarray) -> dict[str, np.ndarray]:
+        """Per-row opponents' style for a style-input (ORACLE) learner."""
+        if not self.actor.config.style_input:
+            return {}
+        data = self.buffer.compact()
+        return {"style": np.asarray([self.population.style(e, m) for e, m in
+                                     zip(data["env"][rows].tolist(), data["match"][rows].tolist())],
+                                    np.int64)}
 
     def minibatches(self) -> Iterator[np.ndarray]:
         return self.buffer.minibatches(self.config.minibatch_matches, self.rng)
@@ -386,27 +579,41 @@ class HistoryTrainer:
     def minibatch_loss(self, rows: np.ndarray) -> dict[str, torch.Tensor]:
         cfg = self.config
         predict = cfg.response_mode != "none"
-        extra = ({"response_target": opponent_response_labels(self.buffer, self.store, rows)}
-                 if predict else None)
+        extra = ({"response_target": opponent_response_labels(
+            self.buffer, self.store, rows, round_streams=cfg.habit_round)} if predict else {})
+        if "outcome" in self.actor.aux_head_names:
+            extra["outcome_target"] = round_outcomes(self.buffer, rows)
+        extra.update(self.habit_extra(rows))
         # Actor inputs, stored row data and response targets: one packed upload.
-        batch = self.buffer.training_batch(rows, self.store, self.device, extra=extra,
+        batch = self.buffer.training_batch(rows, self.store, self.device, extra=extra or None,
                                            length_groups=cfg.learner_length_groups,
-                                           width=cfg.width)
+                                           width=cfg.width, round_streams=cfg.habit_round)
+        self.learn_mark("batch_and_upload")
         inputs, chosen, row = batch.inputs, batch.chosen, batch.fields
+        inputs.style = row.get("style")
         response_stats = {}
-        if not predict:
+        aux_stats = {}
+        heads = self.actor.aux_head_names
+        if not predict and not heads:
             all_log_probs = self.actor.candidate_log_probs(inputs)
         else:
             from train.history_model import segment_log_softmax
-            state = self.actor.decision_states(None, inputs)
-            logits, response = self.actor.candidate_outputs(state, inputs.cand, inputs.offsets,
-                                                            predict=True)
+            encoded_streams: list = []
+            state = self.actor.decision_states(None, inputs, encoded_streams if heads else None)
+            chosen_only = cfg.learner_chosen_response
+            logits, response = self.actor.candidate_outputs(
+                state, inputs.cand, inputs.offsets, predict=predict,
+                response_rows=chosen if (predict and chosen_only) else None, rows=inputs.rows)
             all_log_probs = segment_log_softmax(logits, inputs.rows, inputs.decisions)
-            targets = row["response_target"]
-            prediction = response[chosen]   # outcomes exist ONLY for executed actions
-            response_stats = {"response_loss": F.cross_entropy(prediction, targets),
-                              "response_accuracy": (prediction.argmax(-1) == targets).float().mean(),
-                              "response_event_fraction": (targets != 0).float().mean()}
+            if predict:
+                targets = row["response_target"]
+                # Outcomes exist ONLY for executed actions.
+                prediction = response if chosen_only else response[chosen]
+                response_stats = {"response_loss": F.cross_entropy(prediction, targets),
+                                  "response_accuracy": (prediction.argmax(-1) == targets).float().mean(),
+                                  "response_event_fraction": (targets != 0).float().mean()}
+            if heads:
+                aux_stats = self.auxiliary_losses(state, inputs, row, encoded_streams)
         log_prob = all_log_probs[chosen]
         entropy = segment_entropy(all_log_probs, inputs.rows, inputs.decisions)
         old, behaviour = row["logp"], row["behaviour_logp"]
@@ -432,17 +639,77 @@ class HistoryTrainer:
         policy_total = surrogate - cfg.entropy * entropy.mean()
         if response_stats:
             policy_total = policy_total + cfg.response_coef * response_stats["response_loss"]
+        if aux_stats:
+            policy_total = policy_total + aux_stats["aux_coefficient"] * aux_stats["aux_loss"]
         value_loss = F.mse_loss(self.critic(inputs.obs, row["hidden"]), returns)
         with torch.no_grad():
             approx_kl = ((ratio - 1) - log_ratio).mean()
             clip_fraction = ((ratio - 1).abs() > cfg.clip).float().mean()
             ratio_deviation = (ratio - 1).abs().max()
             weight_capped = (raw_weight > cfg.behaviour_weight_cap).float().mean()
+        self.learn_mark("forward")
         return {"policy_total": policy_total, "value_total": cfg.value_coef * value_loss,
                 "policy_loss": surrogate, "value_loss": value_loss, "entropy": entropy.mean(),
                 "approx_kl": approx_kl, "clip_fraction": clip_fraction,
                 "ratio_deviation": ratio_deviation, "behaviour_weight_mean": weight.mean(),
-                "behaviour_weight_cap_fraction": weight_capped, **response_stats}
+                "behaviour_weight_cap_fraction": weight_capped, **response_stats, **aux_stats}
+
+    def aux_coefficient(self) -> float:
+        """This update's auxiliary-loss weight: ``aux_coef`` ramped linearly over
+        ``aux_warmup_updates`` updates from the heads' insertion."""
+        cfg = self.config
+        if not cfg.aux_warmup_updates:
+            return cfg.aux_coef
+        since = int(self.progress["updates"]) - int(self.progress.get("aux_start_update", 0)) + 1
+        return cfg.aux_coef * min(1.0, since / cfg.aux_warmup_updates)
+
+    def auxiliary_losses(self, state: torch.Tensor, inputs, row: dict[str, torch.Tensor],
+                         encoded_streams: list) -> dict[str, torch.Tensor]:
+        """The configured heads' losses and diagnostics (train/history_aux.py);
+        ``aux_loss`` is their sum and ``aux_coefficient`` this update's weight."""
+        heads = self.actor.aux_head_names
+        stats: dict[str, torch.Tensor] = {}
+        total = state.new_zeros(())
+        if "next" in heads:
+            if not encoded_streams:
+                raise RuntimeError("the next-token head needs the encoded streams")
+            s = inputs.streams
+            parts = []
+            for encoded, group in encoded_streams:
+                # Positions up to each match's longest cited prefix count (the tokens
+                # some decision of the minibatch read), so the loss is the same set
+                # of positions whether or not the learner encodes in length groups.
+                if group is None:
+                    tokens, lengths = s.tokens, s.lengths
+                    cited = torch.zeros_like(lengths).scatter_reduce(
+                        0, inputs.match_index, inputs.prefix, reduce="amax")
+                else:
+                    n = group.tokens
+                    tokens = s.tokens[group.matches, :n]
+                    lengths = s.lengths[group.matches].clamp(max=n)
+                    cited = torch.zeros_like(lengths).scatter_reduce(
+                        0, group.local_match, inputs.prefix[group.rows], reduce="amax")
+                count = tokens.shape[1]
+                # Position s has seen s tokens and predicts token s; positions at or
+                # past a stream's length are padding.
+                limit = torch.minimum(lengths, cited)
+                valid = torch.arange(count, device=tokens.device)[None] < limit[:, None]
+                logits = self.actor.next_logits(encoded[:, :count])
+                parts.append((logits.reshape(-1, logits.shape[-1]), tokens.reshape(-1, tokens.shape[-1]),
+                              valid.reshape(-1)))
+            stats.update(next_token_loss(torch.cat([p[0] for p in parts]),
+                                         torch.cat([p[1] for p in parts]),
+                                         torch.cat([p[2] for p in parts])))
+            total = total + stats["next_loss"]
+        if "belief" in heads:
+            stats.update(belief_loss(self.actor.belief_logits(state), row["hidden"]))
+            total = total + stats["belief_loss"]
+        if "outcome" in heads:
+            stats.update(outcome_loss(self.actor.outcome_value(state), row["outcome_target"]))
+            total = total + stats["outcome_loss"]
+        stats["aux_loss"] = total
+        stats["aux_coefficient"] = state.new_tensor(self.aux_coefficient())
+        return stats
 
     def learn_summary(self) -> tuple[dict[str, Any], int]:
         """Values, GAE and the update's data statistics; returns ``(stats, samples)``.
@@ -487,6 +754,7 @@ class HistoryTrainer:
         terms = self.minibatch_loss(rows)
         terms["policy_total"].backward()
         terms["value_total"].backward()
+        self.learn_mark("backward")
         return terms
 
     def reduce_gradients(self, real: bool) -> int:
@@ -499,7 +767,11 @@ class HistoryTrainer:
 
     def learn(self) -> dict[str, Any]:
         cfg = self.config
+        phases = CollectStats()
+        mark = self.learn_mark = _PhaseTimer(phases, self.device, cfg.profile_learn)
         stats, samples = self.learn_summary()
+        stats["learn_phase_seconds"] = phases.phase_seconds
+        mark("values_and_gae")
         if samples == 0 and not self.collective():
             return stats
         # Loss terms and gradient norms stay on the device until one transfer per
@@ -515,8 +787,11 @@ class HistoryTrainer:
             for rows in self.epoch_batches(samples):
                 self.actor_optimizer.zero_grad(set_to_none=True)
                 self.critic_optimizer.zero_grad(set_to_none=True)
+                mark("minibatch_setup")
                 terms = self.backward_minibatch(rows)
-                if self.reduce_gradients(terms is not None) == 0:
+                reduced = self.reduce_gradients(terms is not None)
+                mark("gradient_reduce")
+                if reduced == 0:
                     continue
                 # Per-tensor encoder norms in one foreach call rather than a few
                 # kernels per tensor; squared and summed as before.
@@ -533,8 +808,10 @@ class HistoryTrainer:
                 actor, critic = host[0], host[1]
                 if not (math.isfinite(actor) and math.isfinite(critic)):
                     raise FloatingPointError("non-finite gradient; stopping before the step")
+                mark("norms_clip_and_stats")
                 self.actor_optimizer.step()
                 self.critic_optimizer.step()
+                mark("optimizer")
                 steps += 1
                 if terms is None:
                     continue
@@ -556,6 +833,26 @@ class HistoryTrainer:
                 stats[key] = totals[key] / count
         self.progress["samples"] += samples
         return stats
+
+    def lr_scale(self, update: int) -> float:
+        """Factor on the configured rates at ``update`` (linear decay, then flat)."""
+        config = self.config
+        if config.lr_decay_updates <= 0:
+            return 1.0
+        frac = min(max((update - config.lr_decay_start) / config.lr_decay_updates, 0.0), 1.0)
+        return 1.0 + (config.lr_final / config.lr - 1.0) * frac
+
+    def apply_lr_schedule(self) -> float:
+        """Set both optimizers' rates for the coming learn; returns the factor."""
+        scale = self.lr_scale(int(self.progress["updates"]))
+        if self.config.lr_decay_updates > 0:
+            critic_lr = (self.config.critic_lr if self.config.critic_lr is not None
+                         else self.config.lr)
+            for group in self.actor_optimizer.param_groups:
+                group["lr"] = self.config.lr * scale
+            for group in self.critic_optimizer.param_groups:
+                group["lr"] = critic_lr * scale
+        return scale
 
     def update(self) -> dict[str, Any]:
         """Collect, learn, log one metrics line and advance the counters."""
@@ -580,7 +877,8 @@ class HistoryTrainer:
             if self.collector.release_snapshot_graphs():
                 self.trim_cuda_cache("graphs_released", trims)
         t0 = time.perf_counter()
-        collected = self.collect()
+        with self.torch_profile("collect"):
+            collected = self.collect()
         if self.device.type == "cuda":
             torch.cuda.synchronize(self.device)
         t1 = time.perf_counter()
@@ -588,7 +886,9 @@ class HistoryTrainer:
         if trim:
             self.trim_cuda_cache("after_collect", trims)
         t1_learn = time.perf_counter()
-        stats = self.learn()
+        lr_scale = self.apply_lr_schedule()
+        with self.torch_profile("learn"):
+            stats = self.learn()
         if self.device.type == "cuda":
             torch.cuda.synchronize(self.device)
         t2 = time.perf_counter()
@@ -615,6 +915,7 @@ class HistoryTrainer:
             "step_decisions": collected.decisions, "step_learner_rows": collected.learner_rows,
             "step_rounds": collected.rounds, "step_matches": collected.matches,
             "round_gain": collected.gain / collected.rounds if collected.rounds else None,
+            "lr_scale": lr_scale,
             "decisions_per_sec": collected.decisions / max(t1 - t0, 1e-9),
             "collect_seconds": t1 - t0, "learn_seconds": t2 - t1_learn,
             "learn_decisions_per_sec": stats["update_samples"] / max(t2 - t1_learn, 1e-9),
@@ -661,6 +962,16 @@ class HistoryTrainer:
             stream.write(json.dumps(line) + "\n")
         return line
 
+    def habit_record(self) -> dict[str, Any] | None:
+        """Planted-habit diagnostic identity: pack, view and initial checkpoint."""
+        if not self.config.habit_pack:
+            return None
+        return dict(diagnostic="planted-habit; never the main lineage",
+                    view=self.config.habit_view, pack=self.population.pack,
+                    init=self.habit_init,
+                    learner_seats="one team (two seats) per match; both other seats the pack",
+                    style_input=self.actor.config.style_input)
+
     def extend_metrics(self, line: dict[str, Any]) -> None:
         """Hook for subclasses to add fields to the metrics line before it is written."""
 
@@ -677,6 +988,8 @@ class HistoryTrainer:
             optimizer={"actor": self.actor_optimizer.state_dict(),
                        "critic": self.critic_optimizer.state_dict()},
             config=asdict(self.config), progress=dict(self.progress), rng=rng)
+        if self.config.habit_pack:
+            payload.update(habit=self.habit_record(), habit_init=self.habit_init)
         payload.update(population=self.population.state_dict(), run_identity=self.run_identity,
                        resume_count=self.resume_count, source_changes=self.source_changes,
                        config_changes=self.config_changes)
@@ -704,6 +1017,8 @@ class HistoryTrainer:
 # ---- diagnostics ----------------------------------------------------------------
 
 CPROFILE_ENV = "GUANZERO_CPROFILE_DIR"
+TORCH_PROFILE_ENV = "GUANZERO_TORCH_PROFILE_DIR"
+TORCH_PROFILE_UPDATES_ENV = "GUANZERO_TORCH_PROFILE_UPDATES"
 CPROFILE_BUILTINS_ENV = "GUANZERO_CPROFILE_BUILTINS"
 
 
@@ -736,9 +1051,6 @@ def run_profiled(trainer: "HistoryTrainer", rank: int = 0) -> None:
     finally:
         profiler.disable()
         profiler.dump_stats(str(path))
-
-
-# ---- CLI ------------------------------------------------------------------------
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)

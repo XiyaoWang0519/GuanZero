@@ -153,7 +153,8 @@ def health(lines: list[dict]) -> dict:
                 return dict(healthy=False, reason="PPO ratio instability")
     return dict(healthy=True, update=latest["update"], rounds=latest["rounds"],
                 learned_rows=sum(r["update_samples"] for r in lines),
-                snapshot_decisions=sum(v for k, v in latest["population"]["decisions"].items() if int(k) != 0),
+                snapshot_decisions=latest["population"].get("snapshot_decisions", sum(
+                    v for k, v in latest["population"]["decisions"].items() if int(k) != 0)),
                 mean_prefix=latest["mean_prefix"], collect_dps=latest["decisions_per_sec"],
                 learn_dps=latest["learn_decisions_per_sec"],
                 gpu_peak_bytes=latest["cuda_peak_reserved_bytes"])

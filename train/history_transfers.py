@@ -11,6 +11,16 @@ import torch
 _PINNED_CUDA_UPLOAD = os.environ.get("GUANZERO_PINNED_UPLOAD", "0") == "1"
 
 
+def _byte_view(tensor: torch.Tensor) -> torch.Tensor:
+    flat = tensor.contiguous().reshape(-1)
+    if flat.stride(0) != 1:
+        # Empty/singleton tensors count as contiguous even with stride 0 or 2.
+        # A dtype view still requires unit stride; changing it for at most one
+        # element addresses the same storage without allocating or copying.
+        flat = flat.as_strided(flat.shape, (1,))
+    return flat.view(torch.uint8)
+
+
 def runtime_settings(device: str | torch.device) -> dict[str, bool]:
     """Report live numerics and the effective default upload setting.
 
@@ -54,7 +64,7 @@ def upload_arrays(arrays: Sequence[np.ndarray], device: str | torch.device, *,
     host = (torch.zeros(total, dtype=torch.uint8, pin_memory=True) if asynchronous
             else torch.zeros(total, dtype=torch.uint8))
     for tensor, (start, end) in zip(tensors, layout):
-        host[start:end].copy_(tensor.contiguous().reshape(-1).view(torch.uint8))
+        host[start:end].copy_(_byte_view(tensor))
     # The local staging tensor is never mutated after enqueue. PyTorch's pinned
     # allocator records the async copy's stream event before recycling storage,
     # so its Python reference can expire here without a custom host-buffer pool.
@@ -72,7 +82,7 @@ def download_tensors(tensors: Sequence[torch.Tensor], *, packed: bool = True
         return ()
     dtypes = {torch.int64: np.int64, torch.float32: np.float32,
               torch.float64: np.float64, torch.bool: np.bool_}
-    pieces = [t.detach().contiguous().reshape(-1).view(torch.uint8) for t in tensors]
+    pieces = [_byte_view(t.detach()) for t in tensors]
     data = torch.cat(pieces).cpu().numpy()
     result, start = [], 0
     for tensor, piece in zip(tensors, pieces):

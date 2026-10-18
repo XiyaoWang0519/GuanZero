@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 import cProfile
+from contextlib import nullcontext
 from dataclasses import asdict
 import hashlib
 import json
@@ -211,7 +212,8 @@ def run_case(args):
             torch.cuda.synchronize()
             torch.cuda.reset_peak_memory_stats()
         started = time.perf_counter()
-        stats = collector.collect(args.steps, version=chunk)
+        with collector.frozen_weights() if getattr(args, "frozen_weights", False) else nullcontext():
+            stats = collector.collect(args.steps, version=chunk)
         if args.device == "cuda":
             torch.cuda.synchronize()
         seconds = time.perf_counter() - started
@@ -320,6 +322,8 @@ def main(argv=None):
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--profile", action="store_true")
     parser.add_argument("--cprofile", action="store_true")
+    parser.add_argument("--frozen-weights", action="store_true",
+                        help="validate cache weights at trainer-owned collection boundaries")
     args = parser.parse_args(argv)
     if (min(args.envs, args.torch_threads, args.engine_threads, args.steps, args.chunks, args.recent) < 1
             or not 0 <= args.warmup < args.chunks or (args.identities is not None and args.identities < 0)):

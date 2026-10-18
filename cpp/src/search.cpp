@@ -1,6 +1,7 @@
 #include "gd/search.h"
 
 #include <algorithm>
+#include <cmath>
 #include <array>
 #include <random>
 #include <stdexcept>
@@ -8,7 +9,17 @@
 
 namespace gd {
 
-MatchState determinize_uniform(const MatchState& source, int observer, uint64_t seed) {
+namespace {
+
+struct Residual {
+  std::array<Hand, 4> sampled;         // observer's hand and publicly known holdings
+  std::vector<CardId> pool;            // unseen copies still to deal
+};
+
+// Public constraints shared by every sampler: the observer's own hand, played
+// cards, public tribute transfers and anti-tribute red-joker holders. Reads no
+// other seat's current cards.
+Residual residual_cards(const MatchState& source, int observer) {
   if (source.round.phase != Phase::Play)
     throw std::invalid_argument("determinization requires the play phase");
   if (observer < 0 || observer >= 4)
@@ -62,7 +73,16 @@ MatchState determinize_uniform(const MatchState& source, int observer, uint64_t 
     if (seat != observer) needed += round.hands[seat].size() - sampled[seat].size();
   if (needed != static_cast<int>(pool.size()))
     throw std::invalid_argument("public hand sizes do not match unseen cards");
+  return Residual{sampled, std::move(pool)};
+}
 
+}  // namespace
+
+MatchState determinize_uniform(const MatchState& source, int observer, uint64_t seed) {
+  Residual residual = residual_cards(source, observer);
+  std::array<Hand, 4>& sampled = residual.sampled;
+  std::vector<CardId>& pool = residual.pool;
+  const RoundState& round = source.round;
   std::mt19937_64 rng(seed);
   std::shuffle(pool.begin(), pool.end(), rng);
   size_t at = 0;
@@ -70,6 +90,51 @@ MatchState determinize_uniform(const MatchState& source, int observer, uint64_t 
     if (seat == observer) continue;
     const int count = round.hands[seat].size() - sampled[seat].size();
     for (int i = 0; i < count; ++i) sampled[seat].add(pool[at++]);
+  }
+
+  MatchState result = source;
+  result.round.hands = sampled;
+  return result;
+}
+
+MatchState determinize_weighted(const MatchState& source, int observer, uint64_t seed,
+                                const SeatWeights& weights) {
+  for (const auto& row : weights)
+    for (const float w : row)
+      if (!(w >= 0.0f) || !std::isfinite(w))
+        throw std::invalid_argument("seat weights must be finite and nonnegative");
+  Residual residual = residual_cards(source, observer);
+  std::array<Hand, 4>& sampled = residual.sampled;
+  std::vector<CardId>& pool = residual.pool;
+  const RoundState& round = source.round;
+  std::array<int, 3> room{};
+  for (int r = 1; r <= 3; ++r) {
+    const int seat = (observer + r) % 4;
+    room[r - 1] = round.hands[seat].size() - sampled[seat].size();
+  }
+  std::mt19937_64 rng(seed);
+  std::shuffle(pool.begin(), pool.end(), rng);
+  std::uniform_real_distribution<double> unit(0.0, 1.0);
+  for (const CardId card : pool) {
+    double total = 0.0;
+    std::array<double, 3> w{};
+    for (int r = 0; r < 3; ++r) {
+      w[r] = room[r] > 0 ? static_cast<double>(weights[r][card]) : 0.0;
+      total += w[r];
+    }
+    if (total <= 0.0) {   // no weight on a seat with room: uniform over the seats with room
+      for (int r = 0; r < 3; ++r) w[r] = room[r] > 0 ? 1.0 : 0.0, total += w[r];
+    }
+    double draw = unit(rng) * total;
+    int chosen = -1;
+    for (int r = 0; r < 3; ++r) {
+      if (w[r] <= 0.0) continue;
+      chosen = r;
+      draw -= w[r];
+      if (draw < 0.0) break;
+    }
+    sampled[(observer + chosen + 1) % 4].add(card);
+    --room[chosen];
   }
 
   MatchState result = source;

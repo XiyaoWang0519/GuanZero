@@ -52,13 +52,58 @@ def source_identity(root: Path = ROOT) -> dict:
                 dirty_source_sha256=digest if dirty else None, files=files)
 
 
+# Evaluation-only engine code: the determinization samplers of test-time search.
+# Neither the trainer nor VecEnv calls them, so they are outside the engine
+# digest (October 3, 2026); so is python/bindings.cpp, which only exposes the
+# library. Rule, state, move-generation, encoding, bot and config sources stay in.
+ENGINE_EXCLUDED = ("cpp/include/gd/search.h", "cpp/src/search.cpp")
+
+
+def _is_engine_file(relative: str) -> bool:
+    return ((relative.startswith("cpp/include/gd/") and relative.endswith(".h"))
+            or (relative.startswith("cpp/src/") and relative.endswith(".cpp"))) \
+        and relative not in ENGINE_EXCLUDED
+
+
+def engine_files(root: Path = ROOT) -> list[Path]:
+    paths = [*root.glob("cpp/include/gd/*.h"), *root.glob("cpp/src/*.cpp")]
+    return sorted(p for p in paths if _is_engine_file(str(p.relative_to(root))))
+
+
+def engine_digest_from_hashes(hashes: dict[str, str]) -> str:
+    """The engine digest of a tree described by ``{relative path: sha256}``
+    (``source_identity()["files"]`` of any checkpoint since the first run)."""
+    digest = hashlib.sha256()
+    for relative in sorted(name for name in hashes if _is_engine_file(name)):
+        digest.update(relative.encode() + b"\0" + hashes[relative].encode() + b"\n")
+    return digest.hexdigest()
+
+
 def engine_digest(root: Path = ROOT) -> str:
+    """Digest of the game-dynamics sources (version 2, October 3 2026)."""
+    return engine_digest_from_hashes({str(p.relative_to(root)): sha256(p) for p in engine_files(root)})
+
+
+def legacy_engine_digest(root: Path = ROOT) -> str:
+    """The digest every checkpoint and freeze before October 3, 2026 recorded:
+    raw bytes of all cpp headers, cpp sources and python/bindings.cpp."""
     digest = hashlib.sha256()
     for path in sorted([*root.glob("cpp/include/gd/*.h"), *root.glob("cpp/src/*.cpp"),
                         root / "python/bindings.cpp"]):
         digest.update(str(path.relative_to(root)).encode() + b"\0")
         digest.update(path.read_bytes())
     return digest.hexdigest()
+
+
+def engine_compatible(saved_run_identity: dict, root: Path = ROOT) -> bool:
+    """Whether a checkpoint's recorded engine is this tree's engine: the same
+    digest, or (checkpoints written before version 2) the same version-2 digest
+    recomputed from the per-file source hashes the checkpoint recorded."""
+    current = engine_digest(root)
+    if saved_run_identity.get("engine_digest") == current:
+        return True
+    files = (saved_run_identity.get("source") or {}).get("files") or {}
+    return bool(files) and engine_digest_from_hashes(files) == current
 
 
 def pack_source(destination: Path, root: Path = ROOT) -> dict:

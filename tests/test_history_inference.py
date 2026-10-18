@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 import torch
 
-from train.history_inference import BatchedHistoryCache
+from train.history_inference import BatchedHistoryCache, ForkedHistoryCache
 from train.history_model import HistoryPolicyConfig, PublicStream, StreamBatch, fresh_player
 from train.history_ppo import HistoryPPOConfig, HistoryTrainer
 from train.history_rollout import HistoryCollector, MatchEventStore, SequenceRolloutBuffer
@@ -168,6 +168,37 @@ def test_cached_trainer_update_resume_and_probability_recomputation(tmp_path, de
     restored.collect()
     assert 1 in restored.collector.caches
     assert restored.learn()["encoder_grad_norm"] > 0
+
+
+@pytest.mark.parametrize("device", ["cpu", "mps"])
+def test_forked_branch_cache_matches_full_encode_through_growth_and_chunks(device):
+    if device == "mps" and not torch.backends.mps.is_available():
+        pytest.skip("MPS acceptance")
+    actor, _ = fresh_player(HistoryPolicyConfig(width=32, layers=2), 11)
+    actor.to(device).eval()
+    root_cache = BatchedHistoryCache(actor, chunk_size=16)
+    root = PublicStream(0)
+    append(root, 23)
+    root_cache.prefill([(0, 0)], [root])
+    branches = [copy.deepcopy(root) for _ in range(5)]
+    forked = ForkedHistoryCache(root_cache, (0, 0), branches)
+    assert forked.capacity == 32
+    # Ragged steps: some rows idle, one grows past the capacity in chunked appends.
+    for step, extra in enumerate([(1, 0, 2, 1, 0), (0, 3, 1, 0, 1), (40, 1, 0, 2, 0), (2, 0, 5, 1, 3)]):
+        for stream, n in zip(branches, extra):
+            append(stream, n, offset=stream.prefix)
+        rows = [i for i, n in enumerate(extra) if n] + [4]
+        metadata, memory = forked.encode(rows)
+        expected = actor.encode_batch(StreamBatch.from_streams([branches[i] for i in rows], device))
+        assert metadata.lengths.tolist() == [branches[i].prefix for i in rows]
+        assert memory.shape[1] >= max(branches[i].prefix + 1 for i in rows)
+        for j, i in enumerate(rows):
+            n = branches[i].prefix + 1
+            torch.testing.assert_close(memory[j, :n], expected[j, :n], rtol=3e-5, atol=3e-5)
+            assert not memory[j, n:].any()
+    assert forked.capacity == 128
+    # The root entry is untouched by the branches.
+    assert root_cache.entries[(0, 0)].length == root.prefix + 1
 
 
 def test_cache_rejects_window_control():

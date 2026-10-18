@@ -1,7 +1,10 @@
 # GuanZero: system design
 
 Status: v0.6, owner decisions consolidated September 25, 2026.
-This is the current research and implementation plan. It replaces the former
+This is the baseline research and implementation contract. Later implementation
+receipts and proposals are indexed in [STATUS.md](STATUS.md); the deferred
+list here records the baseline scope, not current component availability.
+It replaces the former
 MLP-continuation, belief-gated history and MLP-distillation roadmaps.
 Implementation tasks: [STAGE_C_TODO.md](STAGE_C_TODO.md).
 Operator guide: [TRAINING.md](TRAINING.md).
@@ -549,4 +552,4 @@ is outside the current route rather than an automatic fallback.
 - [PerfectDou](https://arxiv.org/abs/2203.16406): privileged training critic with an imperfect-information actor.
 - [Huginn recurrent depth](https://arxiv.org/abs/2502.05171): latent iteration; evidence from language-model tasks.
 - [Earlier architecture research](reports/model-research-2026-09-23.md): dated research record, not the active plan.
-- [M2 evidence index](M2_TODO.md), [Stage B evidence](STAGE_B_TODO.md), [current implementation inventory](reports/transformer-inventory-2026-09-25.md).
+- [M2 evidence index](M2_TODO.md), [Stage B evidence](STAGE_B_TODO.md), [September 25 implementation inventory](reports/transformer-inventory-2026-09-25.md).

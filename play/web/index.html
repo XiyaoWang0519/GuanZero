@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>GuanZero 掼蛋</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <header id="topbar">
+    <div class="brand">GuanZero 掼蛋</div>
+    <div id="levelbar">
+      <span class="pill" id="lvl-now">打 2</span>
+      <span class="pill us">我方 <b id="lvl-us">2</b></span>
+      <span class="pill them">对方 <b id="lvl-them">2</b></span>
+      <span class="pill muted" id="round-no">第 1 局</span>
+    </div>
+    <div class="top-actions">
+      <button class="ghost" id="btn-ai">AI 概率</button>
+      <button class="ghost" id="btn-log">记录</button>
+      <button class="ghost" id="btn-help">规则</button>
+      <button class="ghost" id="btn-new">新比赛</button>
+    </div>
+  </header>
+
+  <main id="table">
+    <div class="seat" id="seat-2" data-seat="2">
+      <div class="avatar partner">友</div>
+      <div class="seat-info"><div class="name">队友 · AI</div><div class="count" id="count-2">27</div></div>
+      <div class="badge" id="badge-2"></div>
+    </div>
+    <div class="seat" id="seat-3" data-seat="3">
+      <div class="avatar enemy">上</div>
+      <div class="seat-info"><div class="name">上家 · AI</div><div class="count" id="count-3">27</div></div>
+      <div class="badge" id="badge-3"></div>
+    </div>
+    <div class="seat" id="seat-1" data-seat="1">
+      <div class="avatar enemy">下</div>
+      <div class="seat-info"><div class="name">下家 · AI</div><div class="count" id="count-1">27</div></div>
+      <div class="badge" id="badge-1"></div>
+    </div>
+
+    <div class="play-zone" id="zone-2"></div>
+    <div class="play-zone" id="zone-3"></div>
+    <div class="play-zone" id="zone-1"></div>
+    <div class="play-zone" id="zone-0"></div>
+
+    <div id="center-msg"></div>
+    <div id="rotate-tip">手机横屏玩更舒服 ↻</div>
+    <div id="me-badge" class="badge"></div>
+  </main>
+
+  <section id="controls">
+    <div id="prompt"></div>
+    <div id="action-row">
+      <button id="btn-pass" class="act gray hidden">不出</button>
+      <button id="btn-hint" class="act blue hidden">提示</button>
+      <button id="btn-play" class="act gold hidden">出牌</button>
+      <button id="btn-tribute" class="act gold hidden">进贡</button>
+    </div>
+    <div id="sort-row">
+      <button class="tool" id="btn-group">理牌</button>
+      <button class="tool" id="btn-sf">同花顺</button>
+      <button class="tool" id="btn-reset">还原</button>
+      <button class="tool" id="btn-clear">取消选择</button>
+    </div>
+  </section>
+
+  <section id="hand-wrap"><div id="hand"></div></section>
+</div>
+
+<div id="ai-panel" class="hidden">
+  <div class="ai-head">AI 会怎么出你这手牌 <span class="ai-sub">点一行可选中那些牌</span></div>
+  <div id="ai-body"></div>
+</div>
+
+<div id="log-panel" class="panel hidden">
+  <div class="panel-head">出牌记录 <button class="ghost" data-close="log-panel">关闭</button></div>
+  <div id="log-body"></div>
+</div>
+
+<div id="modal" class="hidden">
+  <div class="modal-card">
+    <div id="modal-body"></div>
+    <div class="modal-actions" id="modal-actions"></div>
+  </div>
+</div>
+
+<div id="toast"></div>
+<script src="app.js"></script>
+</body>
+</html>

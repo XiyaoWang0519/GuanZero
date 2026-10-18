@@ -2,6 +2,8 @@
 
 Configuration validation and argument parsing use only the standard library.
 The policy architecture is materialized lazily when a trainer requests it.
+Auxiliary-head and habit names match ``train.history_aux`` and
+``train.history_habit`` so this module does not import the training runtime.
 """
 from __future__ import annotations
 
@@ -12,6 +14,12 @@ from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from train.history_model import HistoryPolicyConfig
+
+
+# Same sets as train.history_aux.AUX_HEADS and train.history_habit.
+_AUX_HEADS = ("next", "belief", "outcome")
+_STYLE_AXES = ("pass", "bomb", "lead_single")
+_HABIT_VIEWS = ("full", "round", "oracle")
 
 
 REWARD_SEMANTICS = {
@@ -27,6 +35,14 @@ REWARD_SEMANTICS = {
 }
 
 
+def _validate_aux_heads(spec: str) -> None:
+    """Reject unknown auxiliary heads. Order is canonicalized when the policy is built."""
+    names = [part.strip() for part in str(spec).split(",") if part.strip()]
+    unknown = set(names) - set(_AUX_HEADS)
+    if unknown:
+        raise ValueError(f"unknown auxiliary heads {sorted(unknown)}; choose from {_AUX_HEADS}")
+
+
 @dataclass
 class HistoryPPOConfig:
     # architecture (HistoryPolicyConfig)
@@ -37,6 +53,15 @@ class HistoryPPOConfig:
     max_rounds: int = 16
     response_mode: str = "none"
     response_coef: float = 0.1
+    # Auxiliary heads on the shared encoder (train/history_aux.py): a subset of
+    # "next", "belief", "outcome". Their summed loss enters the actor loss with
+    # weight aux_coef, ramped linearly over aux_warmup_updates updates from the
+    # update the heads were inserted (0: full weight at once). A resume may add
+    # heads to a trained lineage (``--resume-set aux_heads=...``): the policy is
+    # unchanged at insertion, only the new heads' weights are fresh.
+    aux_heads: str = ""
+    aux_coef: float = 0.1
+    aux_warmup_updates: int = 0
     # rollout
     num_envs: int = 16
     num_threads: int = 1
@@ -51,6 +76,9 @@ class HistoryPPOConfig:
     # Learner encode in up to N length groups, each stream only as far as its rows
     # read (history_model.length_groups): same loss, far less padding; FP32, not bitwise.
     learner_length_groups: int = 0
+    # Auxiliary response head on the executed candidates only (the only rows its
+    # loss reads); the policy still scores every candidate. FP32, not bitwise.
+    learner_chosen_response: bool = False
     rollout_graph_budget_mb: int = 512
     rollout_graph_policy_budget_mb: int = 128  # per-policy cap inside the total budget
     rollout_triton_cache: bool = False  # lossless KV update/packing; requires Triton
@@ -62,7 +90,13 @@ class HistoryPPOConfig:
     # Paged cache: pad attention keys and the decision memory to the next 64-token
     # page instead of the next power of two. Tier 2 (FP32 reduction shapes change).
     rollout_page_span: bool = False
+    # Rebuild the learner's public KV cache for every current match at the start
+    # of each collection, all streams in one pass per prefill chunk, instead of
+    # stream by stream as learner rows first read them. Tier 2 (learner seats'
+    # FP32 reduction order: the same tokens are encoded in different batches).
+    rollout_prefill_learner_cache: bool = False
     profile_collection: bool = False   # synchronized phase timings; diagnostic only
+    profile_learn: bool = False        # the same for the PPO update's phases
     profile_collection_warmup: int = 0  # unprofiled updates of this process before profiling
     # All snapshot identities' play rows of a vector step in one merged actor call
     # (train/history_snapshot_batch.py): same distribution, FP32 reduction-order
@@ -85,6 +119,12 @@ class HistoryPPOConfig:
     # learner
     lr: float = 3e-4
     critic_lr: float | None = None       # None: same as lr
+    # Linear learning-rate decay: from update lr_decay_start (absolute, so restarts
+    # land on the same schedule) over lr_decay_updates updates, both rates scale
+    # to lr_final / lr and then stay there. lr_decay_updates 0: constant rates.
+    lr_final: float = 0.0
+    lr_decay_start: int = 0
+    lr_decay_updates: int = 0
     clip: float = 0.2
     entropy: float = 0.01
     value_coef: float = 1.0
@@ -112,6 +152,14 @@ class HistoryPPOConfig:
     # data parallel (train/history_ddp.py): normalize advantages and weight the
     # loss over the union of the ranks' minibatches, as one minibatch would be
     ddp_global_minibatch: bool = False
+    # Planted-habit diagnostic (train/history_habit.py; approved exceptions, never
+    # the main lineage). habit_pack: frozen base checkpoint of the styled opponent
+    # pack (empty: off). habit_init: checkpoint the learner continues from.
+    habit_pack: str = ""
+    habit_axis: str = "lead_single"
+    habit_strength: float = 1.0
+    habit_view: str = "full"            # full | round | oracle
+    habit_init: str = ""
 
     def __post_init__(self) -> None:
         if self.rollout_graph_budget_mb < 1 or self.rollout_graph_policy_budget_mb < 1:
@@ -133,6 +181,10 @@ class HistoryPPOConfig:
         if self.rollout_page_span and (not self.rollout_paged_cache
                                        or self.rollout_private_graphs):
             raise ValueError('rollout_page_span requires rollout_paged_cache and no private graphs')
+        if self.rollout_prefill_learner_cache and (not self.rollout_kv_cache
+                                                   or self.habit_view == "round"):
+            raise ValueError('rollout_prefill_learner_cache requires the match-keyed '
+                             'rollout_kv_cache')
         if self.batch_snapshot_encoder and not (
                 self.rollout_paged_cache
                 and (self.batch_snapshot_policies or self.batch_snapshot_policies_schedule)):
@@ -152,6 +204,9 @@ class HistoryPPOConfig:
             raise ValueError("gamma must be in (0, 1] and gae_lambda in [0, 1]")
         if self.lr <= 0 or self.clip <= 0 or self.entropy < 0:
             raise ValueError("lr and clip must be positive; entropy must not be negative")
+        if self.lr_decay_updates < 0 or self.lr_decay_start < 0 or (
+                self.lr_decay_updates and not 0 < self.lr_final <= self.lr):
+            raise ValueError("lr decay needs non-negative counts and 0 < lr_final <= lr")
         if (not 0 < self.rollout_temperature < math.inf or not 0 <= self.rollout_epsilon <= 1
                 or not 0 < self.behaviour_weight_cap < math.inf):
             raise ValueError("rollout_temperature and behaviour_weight_cap must be positive "
@@ -169,12 +224,39 @@ class HistoryPPOConfig:
             raise ValueError("response_coef must be finite and nonnegative")
         if self.response_mode != "none" and self.response_coef == 0:
             raise ValueError("prediction arms require a positive response_coef")
+        if self.learner_chosen_response and self.response_mode != "auxiliary":
+            raise ValueError("learner_chosen_response needs the auxiliary response mode")
+        _validate_aux_heads(self.aux_heads)
+        if not math.isfinite(self.aux_coef) or self.aux_coef < 0 or self.aux_warmup_updates < 0:
+            raise ValueError("aux_coef must be finite and nonnegative; aux_warmup_updates >= 0")
+        if self.aux_heads and self.aux_coef == 0:
+            raise ValueError("auxiliary heads require a positive aux_coef")
+        if self.habit_pack:
+            if self.habit_axis not in _STYLE_AXES or self.habit_view not in _HABIT_VIEWS:
+                raise ValueError("unknown habit axis or view")
+            if not (math.isfinite(self.habit_strength) and self.habit_strength >= 0):
+                raise ValueError("habit_strength must be finite and nonnegative")
+            if (self.snapshot_updates or self.batch_snapshot_policies
+                    or self.batch_snapshot_policies_schedule or self.window):
+                raise ValueError("the habit pack replaces snapshots: snapshot_updates 0, no "
+                                 "merged snapshot inference, full history")
+            if self.habit_view == "oracle" and self.rollout_private_graphs:
+                raise ValueError("private graphs do not capture the oracle style input")
+        elif self.habit_init or self.habit_view != "full":
+            raise ValueError("habit_init and habit_view need habit_pack")
 
     def policy_config(self) -> HistoryPolicyConfig:
         from train.history_model import HistoryPolicyConfig
         return HistoryPolicyConfig(width=self.width, layers=self.layers, heads=self.heads,
                                    window=self.window, max_rounds=self.max_rounds,
-                                   response_mode=self.response_mode)
+                                   response_mode=self.response_mode,
+                                   aux_heads=self.aux_heads,
+                                   style_input=bool(self.habit_pack)
+                                   and self.habit_view == "oracle")
+
+    @property
+    def habit_round(self) -> bool:
+        return bool(self.habit_pack) and self.habit_view == "round"
 
     @classmethod
     def from_payload(cls, config: dict[str, Any], **overrides: Any) -> "HistoryPPOConfig":
@@ -202,9 +284,11 @@ def parse_arm_schedule(schedule: str) -> list[tuple[int, bool]]:
 # the allocator cache trim (allocator timing only), the public KV cache storage
 # (Triton copies: same attention inputs; paged pool: bitwise on CPU, but SDPA reads
 # strided K/V views, so tier 2 on CUDA for learner seats too until the CUDA gate says
-# otherwise; private graphs replay the same kernels; page-padded spans are tier 2),
+# otherwise; private graphs replay the same kernels; page-padded spans and the
+# batched learner cache prefill are tier 2), the learn-phase profile (timing only),
 # the learner's length-grouped
-# encode (tier 2: same loss, learner float-order noise), plus snapshot_updates,
+# encode and chosen-only auxiliary response head (tier 2: same loss, learner
+# float-order noise), plus snapshot_updates,
 # which changes dynamics.
 RESUME_OVERRIDES = frozenset({"num_envs", "num_threads", "minibatch_matches", "torch_threads",
                               "checkpoint_updates", "ddp_global_minibatch",
@@ -214,8 +298,12 @@ RESUME_OVERRIDES = frozenset({"num_envs", "num_threads", "minibatch_matches", "t
                               "batch_snapshot_policies", "batch_snapshot_policies_schedule",
                               "rollout_trim_cuda_cache", "rollout_paged_cache",
                               "rollout_triton_cache", "batch_snapshot_encoder",
-                              "learner_length_groups", "rollout_page_span",
-                              "rollout_private_graphs"})
+                              "learner_length_groups", "learner_chosen_response",
+                              "rollout_page_span", "rollout_prefill_learner_cache",
+                              "profile_learn",
+                              "aux_heads", "aux_coef", "aux_warmup_updates",
+                              "rollout_private_graphs",
+                              "lr_final", "lr_decay_start", "lr_decay_updates"})
 
 
 def parse_resume_overrides(items: list[str] | None) -> dict[str, Any]:
@@ -236,6 +324,8 @@ def parse_resume_overrides(items: list[str] | None) -> dict[str, Any]:
             values[key] = raw.lower() in ("true", "1")
         elif str(types[key]) == "str":
             values[key] = raw
+        elif str(types[key]) == "float":
+            values[key] = float(raw)
         else:
             values[key] = int(raw)
     return values
@@ -260,6 +350,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-rounds", type=int, default=16)
     parser.add_argument("--response-mode", choices=("none", "auxiliary", "explicit"), default="none")
     parser.add_argument("--response-coef", type=float, default=0.1)
+    parser.add_argument("--aux-heads", default="",
+                        help="auxiliary heads on the shared encoder, a comma-separated subset "
+                             f"of {','.join(_AUX_HEADS)} (train/history_aux.py)")
+    parser.add_argument("--aux-coef", type=float, default=0.1,
+                        help="weight of the summed auxiliary losses in the actor loss")
+    parser.add_argument("--aux-warmup-updates", type=int, default=0,
+                        help="ramp the auxiliary weight linearly over this many updates "
+                             "from the heads' insertion (0: full weight at once)")
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--critic-lr", type=float, default=None)
     parser.add_argument("--clip", type=float, default=0.2)
@@ -281,6 +379,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--population-archive-every", type=int, default=0)
     parser.add_argument("--population-archive-size", type=int, default=16)
     parser.add_argument("--population-archive-share", type=float, default=0.5)
+    parser.add_argument("--habit-pack", default="",
+                        help="planted-habit diagnostic: frozen base checkpoint of the styled "
+                             "opponent pack (replaces snapshots; never the main lineage)")
+    parser.add_argument("--habit-axis", default="lead_single",
+                        choices=["pass", "bomb", "lead_single"])
+    parser.add_argument("--habit-strength", type=float, default=1.0)
+    parser.add_argument("--habit-view", default="full", choices=["full", "round", "oracle"])
+    parser.add_argument("--habit-init", default="",
+                        help="planted-habit diagnostic: checkpoint the learner continues from")
     parser.add_argument("--causal-sdpa", action="store_true")
     parser.add_argument("--rollout-kv-cache", action="store_true")
     parser.add_argument("--rollout-batched-attention", action="store_true")
@@ -297,6 +404,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--learner-length-groups", type=int, default=0,
                         help="learner: encode each minibatch in up to N length groups, each "
                              "stream only as far as its rows read (FP32; not bitwise)")
+    parser.add_argument("--learner-chosen-response", action="store_true",
+                        help="learner, auxiliary response mode: run the response head on "
+                             "executed candidates only, the rows its loss reads (FP32; not bitwise)")
     parser.add_argument("--rollout-graph-budget-mb", type=int, default=512)
     parser.add_argument("--rollout-graph-policy-budget-mb", type=int, default=128,
                         help="per-policy private-graph cap within the total budget")
@@ -318,7 +428,13 @@ def build_parser() -> argparse.ArgumentParser:
                         metavar="auto|true|false",
                         help="torch.cuda.empty_cache() after collect and after learn "
                              "(allocator timing only); auto follows the merged-snapshot arm")
+    parser.add_argument("--rollout-prefill-learner-cache", action="store_true",
+                        help="rebuild the learner's public KV cache for all current matches "
+                             "at the start of each collection (FP32; learner seats' "
+                             "reduction order differs)")
     parser.add_argument("--profile-collection", action="store_true")
+    parser.add_argument("--profile-learn", action="store_true",
+                        help="synchronized wall time per learn phase (learn_phase_seconds)")
     parser.add_argument("--profile-collection-warmup", type=int, default=0,
                         help="with --profile-collection: unprofiled updates of this process "
                              "before profiling starts (resident snapshots and histories "
@@ -347,4 +463,3 @@ def optional_bool(raw: str) -> bool | None:
 def config_from_args(args: argparse.Namespace) -> HistoryPPOConfig:
     names = {f.name for f in fields(HistoryPPOConfig)}
     return HistoryPPOConfig(**{k: v for k, v in vars(args).items() if k in names})
-

@@ -1,0 +1,890 @@
+{
+  "speed": {
+    "results": {
+      "learner_groups_0": {
+        "old": {
+          "median_seconds": 0.06022468954324722,
+          "samples": 48,
+          "process_rates": [
+            35421.93163863557,
+            32013.903253475997
+          ],
+          "median_rate": 33717.917446055784
+        },
+        "new-default": {
+          "median_seconds": 0.061611397191882133,
+          "samples": 48,
+          "process_rates": [
+            33101.30175608121,
+            33280.82032506685
+          ],
+          "median_rate": 33191.06104057403,
+          "speedup_vs_old": 0.9843745864101882
+        },
+        "new-chosen": {
+          "median_seconds": 0.06133808009326458,
+          "samples": 48,
+          "process_rates": [
+            33392.71585478584,
+            33320.00144482968
+          ],
+          "median_rate": 33356.358649807764,
+          "speedup_vs_old": 0.9892769535121358,
+          "speedup_vs_new_default": 1.0049801845452204
+        }
+      },
+      "learner_groups_4": {
+        "old": {
+          "median_seconds": 0.1053471602499485,
+          "samples": 48,
+          "process_rates": [
+            21066.249117194384,
+            18461.007450490884
+          ],
+          "median_rate": 19763.628283842634
+        },
+        "new-default": {
+          "median_seconds": 0.1037690956145525,
+          "samples": 48,
+          "process_rates": [
+            19221.32375649058,
+            21981.355016363526
+          ],
+          "median_rate": 20601.339386427055,
+          "speedup_vs_old": 1.04238650365982
+        },
+        "new-chosen": {
+          "median_seconds": 0.08982698433101177,
+          "samples": 48,
+          "process_rates": [
+            21496.264135313126,
+            21947.85481713755
+          ],
+          "median_rate": 21722.05947622534,
+          "speedup_vs_old": 1.0990926951395752,
+          "speedup_vs_new_default": 1.0544003508110087
+        }
+      },
+      "update_groups_0": {
+        "old": {
+          "median_seconds": 4.22271565720439,
+          "samples": 16,
+          "process_rates": [
+            981.165951762797,
+            950.5582521063114
+          ],
+          "median_rate": 965.8621019345542,
+          "learn_median_seconds": 0.975691182538867,
+          "collect_median_seconds": 2.9180339071899652
+        },
+        "new-default": {
+          "median_seconds": 4.157713247463107,
+          "samples": 16,
+          "process_rates": [
+            968.247860834157,
+            943.9980323167962
+          ],
+          "median_rate": 956.1229465754766,
+          "learn_median_seconds": 0.9467149153351784,
+          "collect_median_seconds": 3.15004700422287,
+          "speedup_vs_old": 0.9899166192155477
+        },
+        "new-chosen": {
+          "median_seconds": 4.1927414033561945,
+          "samples": 16,
+          "process_rates": [
+            959.528458733378,
+            948.7826953693374
+          ],
+          "median_rate": 954.1555770513577,
+          "learn_median_seconds": 0.939549071714282,
+          "collect_median_seconds": 3.2117124889045954,
+          "speedup_vs_old": 0.9878797140298298,
+          "speedup_vs_new_default": 0.9979423467126635
+        }
+      },
+      "update_groups_4": {
+        "old": {
+          "median_seconds": 5.529904622584581,
+          "samples": 16,
+          "process_rates": [
+            734.3999642056108,
+            716.8344893312504
+          ],
+          "median_rate": 725.6172267684306,
+          "learn_median_seconds": 2.6504642460495234,
+          "collect_median_seconds": 3.1913320887833834
+        },
+        "new-default": {
+          "median_seconds": 5.649246696382761,
+          "samples": 16,
+          "process_rates": [
+            708.5982137307806,
+            742.7715985914898
+          ],
+          "median_rate": 725.6849061611351,
+          "learn_median_seconds": 2.782856957986951,
+          "collect_median_seconds": 2.86101090721786,
+          "speedup_vs_old": 1.0000932714800694
+        },
+        "new-chosen": {
+          "median_seconds": 5.44784420914948,
+          "samples": 16,
+          "process_rates": [
+            745.7419652100419,
+            727.1050838172193
+          ],
+          "median_rate": 736.4235245136306,
+          "learn_median_seconds": 2.764010738581419,
+          "collect_median_seconds": 2.5521936416625977,
+          "speedup_vs_old": 1.0148925595293905,
+          "speedup_vs_new_default": 1.014797907826556
+        }
+      }
+    },
+    "claim": "FP32 CUDA speed/equivalence only; single-rank short PPO, no playing-strength claim"
+  },
+  "source_digests": {
+    "old": "a1f704e18f2feb839d3b3b1c07410c1636b3a5293ad04ccdd5b440dfa9f0f8d7",
+    "new": "a66fee6e5936a1b385c17695d18b6f4024b8e79bbace0e44964fc51ec3747a34"
+  },
+  "checkpoint_sha256": "b1c5503743fe69d7d997612ffeab139cb9d5ef2ecb55e02ee2c76f259e112bd7",
+  "parity": {
+    "parity-g0-r1.json": {
+      "new-default": {
+        "passed": true,
+        "bitwise": true,
+        "max_abs_difference": 0.0,
+        "different_tensors": []
+      },
+      "new-chosen": {
+        "passed": true,
+        "bitwise": false,
+        "max_abs_difference": 4.6566128730773926e-09,
+        "different_tensors": [
+          "grads.bos",
+          "grads.public.weight",
+          "grads.public.bias",
+          "grads.round_embedding.weight",
+          "grads.phase_embedding.weight",
+          "grads.stream.layers.0.self_attn.in_proj_weight",
+          "grads.stream.layers.0.self_attn.in_proj_bias",
+          "grads.stream.layers.0.self_attn.out_proj.weight",
+          "grads.stream.layers.0.self_attn.out_proj.bias",
+          "grads.stream.layers.0.linear1.weight",
+          "grads.stream.layers.0.linear1.bias",
+          "grads.stream.layers.0.linear2.weight",
+          "grads.stream.layers.0.linear2.bias",
+          "grads.stream.layers.0.norm1.weight",
+          "grads.stream.layers.0.norm1.bias",
+          "grads.stream.layers.0.norm2.weight",
+          "grads.stream.layers.0.norm2.bias",
+          "grads.stream.layers.1.self_attn.in_proj_weight",
+          "grads.stream.layers.1.self_attn.in_proj_bias",
+          "grads.stream.layers.1.self_attn.out_proj.weight",
+          "grads.stream.layers.1.self_attn.out_proj.bias",
+          "grads.stream.layers.1.linear1.weight",
+          "grads.stream.layers.1.linear1.bias",
+          "grads.stream.layers.1.linear2.weight",
+          "grads.stream.layers.1.linear2.bias",
+          "grads.stream.layers.1.norm1.weight",
+          "grads.stream.layers.1.norm1.bias",
+          "grads.stream.layers.1.norm2.weight",
+          "grads.stream.layers.1.norm2.bias",
+          "grads.stream.layers.2.self_attn.in_proj_weight",
+          "grads.stream.layers.2.self_attn.in_proj_bias",
+          "grads.stream.layers.2.self_attn.out_proj.weight",
+          "grads.stream.layers.2.self_attn.out_proj.bias",
+          "grads.stream.layers.2.linear1.weight",
+          "grads.stream.layers.2.linear1.bias",
+          "grads.stream.layers.2.linear2.weight",
+          "grads.stream.layers.2.linear2.bias",
+          "grads.stream.layers.2.norm1.weight",
+          "grads.stream.layers.2.norm1.bias",
+          "grads.stream.layers.2.norm2.weight",
+          "grads.stream.layers.2.norm2.bias",
+          "grads.stream.layers.3.self_attn.in_proj_weight",
+          "grads.stream.layers.3.self_attn.in_proj_bias",
+          "grads.stream.layers.3.self_attn.out_proj.weight",
+          "grads.stream.layers.3.self_attn.out_proj.bias",
+          "grads.stream.layers.3.linear1.weight",
+          "grads.stream.layers.3.linear1.bias",
+          "grads.stream.layers.3.linear2.weight",
+          "grads.stream.layers.3.linear2.bias",
+          "grads.stream.layers.3.norm1.weight",
+          "grads.stream.layers.3.norm1.bias",
+          "grads.stream.layers.3.norm2.weight",
+          "grads.stream.layers.3.norm2.bias",
+          "grads.stream_norm.weight",
+          "grads.stream_norm.bias",
+          "grads.private.0.weight",
+          "grads.private.0.bias",
+          "grads.private.2.weight",
+          "grads.private.2.bias",
+          "grads.seat.weight",
+          "grads.q_proj.weight",
+          "grads.q_proj.bias",
+          "grads.kv_proj.weight",
+          "grads.kv_proj.bias",
+          "grads.out_proj.weight",
+          "grads.out_proj.bias",
+          "grads.attention_norm.weight",
+          "grads.attention_norm.bias",
+          "grads.feed_forward.0.weight",
+          "grads.feed_forward.0.bias",
+          "grads.feed_forward.2.weight",
+          "grads.feed_forward.2.bias",
+          "grads.output_norm.weight",
+          "grads.output_norm.bias",
+          "grads.action_tower.0.weight",
+          "grads.action_tower.0.bias",
+          "grads.action_tower.2.weight",
+          "grads.action_tower.2.bias",
+          "grads.response_head.0.0.weight",
+          "grads.response_head.0.0.bias",
+          "grads.response_head.0.2.weight",
+          "grads.response_head.0.2.bias",
+          "grads.response_head.1.weight",
+          "grads.response_head.1.bias"
+        ]
+      }
+    },
+    "parity-g0-r0.json": {
+      "new-default": {
+        "passed": true,
+        "bitwise": true,
+        "max_abs_difference": 0.0,
+        "different_tensors": []
+      },
+      "new-chosen": {
+        "passed": true,
+        "bitwise": false,
+        "max_abs_difference": 4.6566128730773926e-09,
+        "different_tensors": [
+          "grads.bos",
+          "grads.public.weight",
+          "grads.public.bias",
+          "grads.round_embedding.weight",
+          "grads.phase_embedding.weight",
+          "grads.stream.layers.0.self_attn.in_proj_weight",
+          "grads.stream.layers.0.self_attn.in_proj_bias",
+          "grads.stream.layers.0.self_attn.out_proj.weight",
+          "grads.stream.layers.0.self_attn.out_proj.bias",
+          "grads.stream.layers.0.linear1.weight",
+          "grads.stream.layers.0.linear1.bias",
+          "grads.stream.layers.0.linear2.weight",
+          "grads.stream.layers.0.linear2.bias",
+          "grads.stream.layers.0.norm1.weight",
+          "grads.stream.layers.0.norm1.bias",
+          "grads.stream.layers.0.norm2.weight",
+          "grads.stream.layers.0.norm2.bias",
+          "grads.stream.layers.1.self_attn.in_proj_weight",
+          "grads.stream.layers.1.self_attn.in_proj_bias",
+          "grads.stream.layers.1.self_attn.out_proj.weight",
+          "grads.stream.layers.1.self_attn.out_proj.bias",
+          "grads.stream.layers.1.linear1.weight",
+          "grads.stream.layers.1.linear1.bias",
+          "grads.stream.layers.1.linear2.weight",
+          "grads.stream.layers.1.linear2.bias",
+          "grads.stream.layers.1.norm1.weight",
+          "grads.stream.layers.1.norm1.bias",
+          "grads.stream.layers.1.norm2.weight",
+          "grads.stream.layers.1.norm2.bias",
+          "grads.stream.layers.2.self_attn.in_proj_weight",
+          "grads.stream.layers.2.self_attn.in_proj_bias",
+          "grads.stream.layers.2.self_attn.out_proj.weight",
+          "grads.stream.layers.2.self_attn.out_proj.bias",
+          "grads.stream.layers.2.linear1.weight",
+          "grads.stream.layers.2.linear1.bias",
+          "grads.stream.layers.2.linear2.weight",
+          "grads.stream.layers.2.linear2.bias",
+          "grads.stream.layers.2.norm1.weight",
+          "grads.stream.layers.2.norm1.bias",
+          "grads.stream.layers.2.norm2.weight",
+          "grads.stream.layers.2.norm2.bias",
+          "grads.stream.layers.3.self_attn.in_proj_weight",
+          "grads.stream.layers.3.self_attn.in_proj_bias",
+          "grads.stream.layers.3.self_attn.out_proj.weight",
+          "grads.stream.layers.3.self_attn.out_proj.bias",
+          "grads.stream.layers.3.linear1.weight",
+          "grads.stream.layers.3.linear1.bias",
+          "grads.stream.layers.3.linear2.weight",
+          "grads.stream.layers.3.linear2.bias",
+          "grads.stream.layers.3.norm1.weight",
+          "grads.stream.layers.3.norm1.bias",
+          "grads.stream.layers.3.norm2.weight",
+          "grads.stream.layers.3.norm2.bias",
+          "grads.stream_norm.weight",
+          "grads.stream_norm.bias",
+          "grads.private.0.weight",
+          "grads.private.0.bias",
+          "grads.private.2.weight",
+          "grads.private.2.bias",
+          "grads.seat.weight",
+          "grads.q_proj.weight",
+          "grads.q_proj.bias",
+          "grads.kv_proj.weight",
+          "grads.kv_proj.bias",
+          "grads.out_proj.weight",
+          "grads.out_proj.bias",
+          "grads.attention_norm.weight",
+          "grads.attention_norm.bias",
+          "grads.feed_forward.0.weight",
+          "grads.feed_forward.0.bias",
+          "grads.feed_forward.2.weight",
+          "grads.feed_forward.2.bias",
+          "grads.output_norm.weight",
+          "grads.output_norm.bias",
+          "grads.action_tower.0.weight",
+          "grads.action_tower.0.bias",
+          "grads.action_tower.2.weight",
+          "grads.action_tower.2.bias",
+          "grads.response_head.0.0.weight",
+          "grads.response_head.0.0.bias",
+          "grads.response_head.0.2.weight",
+          "grads.response_head.0.2.bias",
+          "grads.response_head.1.weight",
+          "grads.response_head.1.bias"
+        ]
+      }
+    },
+    "parity-g4-r1.json": {
+      "new-default": {
+        "passed": true,
+        "bitwise": true,
+        "max_abs_difference": 0.0,
+        "different_tensors": []
+      },
+      "new-chosen": {
+        "passed": true,
+        "bitwise": false,
+        "max_abs_difference": 4.6566128730773926e-09,
+        "different_tensors": [
+          "grads.bos",
+          "grads.public.weight",
+          "grads.public.bias",
+          "grads.round_embedding.weight",
+          "grads.phase_embedding.weight",
+          "grads.stream.layers.0.self_attn.in_proj_weight",
+          "grads.stream.layers.0.self_attn.in_proj_bias",
+          "grads.stream.layers.0.self_attn.out_proj.weight",
+          "grads.stream.layers.0.self_attn.out_proj.bias",
+          "grads.stream.layers.0.linear1.weight",
+          "grads.stream.layers.0.linear1.bias",
+          "grads.stream.layers.0.linear2.weight",
+          "grads.stream.layers.0.linear2.bias",
+          "grads.stream.layers.0.norm1.weight",
+          "grads.stream.layers.0.norm1.bias",
+          "grads.stream.layers.0.norm2.weight",
+          "grads.stream.layers.0.norm2.bias",
+          "grads.stream.layers.1.self_attn.in_proj_weight",
+          "grads.stream.layers.1.self_attn.in_proj_bias",
+          "grads.stream.layers.1.self_attn.out_proj.weight",
+          "grads.stream.layers.1.self_attn.out_proj.bias",
+          "grads.stream.layers.1.linear1.weight",
+          "grads.stream.layers.1.linear1.bias",
+          "grads.stream.layers.1.linear2.weight",
+          "grads.stream.layers.1.linear2.bias",
+          "grads.stream.layers.1.norm1.weight",
+          "grads.stream.layers.1.norm1.bias",
+          "grads.stream.layers.1.norm2.weight",
+          "grads.stream.layers.1.norm2.bias",
+          "grads.stream.layers.2.self_attn.in_proj_weight",
+          "grads.stream.layers.2.self_attn.in_proj_bias",
+          "grads.stream.layers.2.self_attn.out_proj.weight",
+          "grads.stream.layers.2.self_attn.out_proj.bias",
+          "grads.stream.layers.2.linear1.weight",
+          "grads.stream.layers.2.linear1.bias",
+          "grads.stream.layers.2.linear2.weight",
+          "grads.stream.layers.2.linear2.bias",
+          "grads.stream.layers.2.norm1.weight",
+          "grads.stream.layers.2.norm1.bias",
+          "grads.stream.layers.2.norm2.weight",
+          "grads.stream.layers.2.norm2.bias",
+          "grads.stream.layers.3.self_attn.in_proj_weight",
+          "grads.stream.layers.3.self_attn.in_proj_bias",
+          "grads.stream.layers.3.self_attn.out_proj.weight",
+          "grads.stream.layers.3.self_attn.out_proj.bias",
+          "grads.stream.layers.3.linear1.weight",
+          "grads.stream.layers.3.linear1.bias",
+          "grads.stream.layers.3.linear2.weight",
+          "grads.stream.layers.3.linear2.bias",
+          "grads.stream.layers.3.norm1.weight",
+          "grads.stream.layers.3.norm1.bias",
+          "grads.stream.layers.3.norm2.weight",
+          "grads.stream.layers.3.norm2.bias",
+          "grads.stream_norm.weight",
+          "grads.stream_norm.bias",
+          "grads.private.0.weight",
+          "grads.private.0.bias",
+          "grads.private.2.weight",
+          "grads.private.2.bias",
+          "grads.seat.weight",
+          "grads.q_proj.weight",
+          "grads.q_proj.bias",
+          "grads.kv_proj.weight",
+          "grads.kv_proj.bias",
+          "grads.out_proj.weight",
+          "grads.out_proj.bias",
+          "grads.attention_norm.weight",
+          "grads.attention_norm.bias",
+          "grads.feed_forward.0.weight",
+          "grads.feed_forward.0.bias",
+          "grads.feed_forward.2.weight",
+          "grads.feed_forward.2.bias",
+          "grads.output_norm.weight",
+          "grads.output_norm.bias",
+          "grads.action_tower.0.weight",
+          "grads.action_tower.0.bias",
+          "grads.action_tower.2.weight",
+          "grads.action_tower.2.bias",
+          "grads.response_head.0.0.weight",
+          "grads.response_head.0.0.bias",
+          "grads.response_head.0.2.weight",
+          "grads.response_head.0.2.bias",
+          "grads.response_head.1.weight",
+          "grads.response_head.1.bias"
+        ]
+      }
+    },
+    "parity-g4-r0.json": {
+      "new-default": {
+        "passed": true,
+        "bitwise": true,
+        "max_abs_difference": 0.0,
+        "different_tensors": []
+      },
+      "new-chosen": {
+        "passed": true,
+        "bitwise": false,
+        "max_abs_difference": 4.6566128730773926e-09,
+        "different_tensors": [
+          "grads.bos",
+          "grads.public.weight",
+          "grads.public.bias",
+          "grads.round_embedding.weight",
+          "grads.phase_embedding.weight",
+          "grads.stream.layers.0.self_attn.in_proj_weight",
+          "grads.stream.layers.0.self_attn.in_proj_bias",
+          "grads.stream.layers.0.self_attn.out_proj.weight",
+          "grads.stream.layers.0.self_attn.out_proj.bias",
+          "grads.stream.layers.0.linear1.weight",
+          "grads.stream.layers.0.linear1.bias",
+          "grads.stream.layers.0.linear2.weight",
+          "grads.stream.layers.0.linear2.bias",
+          "grads.stream.layers.0.norm1.weight",
+          "grads.stream.layers.0.norm1.bias",
+          "grads.stream.layers.0.norm2.weight",
+          "grads.stream.layers.0.norm2.bias",
+          "grads.stream.layers.1.self_attn.in_proj_weight",
+          "grads.stream.layers.1.self_attn.in_proj_bias",
+          "grads.stream.layers.1.self_attn.out_proj.weight",
+          "grads.stream.layers.1.self_attn.out_proj.bias",
+          "grads.stream.layers.1.linear1.weight",
+          "grads.stream.layers.1.linear1.bias",
+          "grads.stream.layers.1.linear2.weight",
+          "grads.stream.layers.1.linear2.bias",
+          "grads.stream.layers.1.norm1.weight",
+          "grads.stream.layers.1.norm1.bias",
+          "grads.stream.layers.1.norm2.weight",
+          "grads.stream.layers.1.norm2.bias",
+          "grads.stream.layers.2.self_attn.in_proj_weight",
+          "grads.stream.layers.2.self_attn.in_proj_bias",
+          "grads.stream.layers.2.self_attn.out_proj.weight",
+          "grads.stream.layers.2.self_attn.out_proj.bias",
+          "grads.stream.layers.2.linear1.weight",
+          "grads.stream.layers.2.linear1.bias",
+          "grads.stream.layers.2.linear2.weight",
+          "grads.stream.layers.2.linear2.bias",
+          "grads.stream.layers.2.norm1.weight",
+          "grads.stream.layers.2.norm1.bias",
+          "grads.stream.layers.2.norm2.weight",
+          "grads.stream.layers.2.norm2.bias",
+          "grads.stream.layers.3.self_attn.in_proj_weight",
+          "grads.stream.layers.3.self_attn.in_proj_bias",
+          "grads.stream.layers.3.self_attn.out_proj.weight",
+          "grads.stream.layers.3.self_attn.out_proj.bias",
+          "grads.stream.layers.3.linear1.weight",
+          "grads.stream.layers.3.linear1.bias",
+          "grads.stream.layers.3.linear2.weight",
+          "grads.stream.layers.3.linear2.bias",
+          "grads.stream.layers.3.norm1.weight",
+          "grads.stream.layers.3.norm1.bias",
+          "grads.stream.layers.3.norm2.weight",
+          "grads.stream.layers.3.norm2.bias",
+          "grads.stream_norm.weight",
+          "grads.stream_norm.bias",
+          "grads.private.0.weight",
+          "grads.private.0.bias",
+          "grads.private.2.weight",
+          "grads.private.2.bias",
+          "grads.seat.weight",
+          "grads.q_proj.weight",
+          "grads.q_proj.bias",
+          "grads.kv_proj.weight",
+          "grads.kv_proj.bias",
+          "grads.out_proj.weight",
+          "grads.out_proj.bias",
+          "grads.attention_norm.weight",
+          "grads.attention_norm.bias",
+          "grads.feed_forward.0.weight",
+          "grads.feed_forward.0.bias",
+          "grads.feed_forward.2.weight",
+          "grads.feed_forward.2.bias",
+          "grads.output_norm.weight",
+          "grads.output_norm.bias",
+          "grads.action_tower.0.weight",
+          "grads.action_tower.0.bias",
+          "grads.action_tower.2.weight",
+          "grads.action_tower.2.bias",
+          "grads.response_head.0.0.weight",
+          "grads.response_head.0.0.bias",
+          "grads.response_head.0.2.weight",
+          "grads.response_head.0.2.bias",
+          "grads.response_head.1.weight",
+          "grads.response_head.1.bias"
+        ]
+      }
+    }
+  },
+  "full_verification": {
+    "old": {
+      "returncode": 1,
+      "tests": 3,
+      "passed": 0,
+      "skipped": 0,
+      "failed": [
+        {
+          "name": "test_merged_snapshot_encode_matches_per_identity_encodes[cuda]",
+          "classname": "tests.test_history_paged_cache",
+          "message": "RuntimeError: self.stride(-1) must be 1 to view Long as Byte (different element sizes), but got 0"
+        },
+        {
+          "name": "test_collector_paged_and_merged_encoder_match_the_plain_rollout[True-cuda]",
+          "classname": "tests.test_history_paged_cache",
+          "message": "RuntimeError: self.stride(-1) must be 1 to view Long as Byte (different element sizes), but got 0"
+        },
+        {
+          "name": "test_merged_encoder_refreshes_when_snapshots_change[cuda]",
+          "classname": "tests.test_history_paged_cache",
+          "message": "RuntimeError: self.stride(-1) must be 1 to view Long as Byte (different element sizes), but got 0"
+        }
+      ]
+    },
+    "new": {
+      "returncode": 1,
+      "tests": 1471,
+      "passed": 1451,
+      "skipped": 16,
+      "failed": [
+        {
+          "name": "test_merged_snapshot_encode_matches_per_identity_encodes[cuda]",
+          "classname": "tests.test_history_paged_cache",
+          "message": "RuntimeError: self.stride(-1) must be 1 to view Long as Byte (different element sizes), but got 0"
+        },
+        {
+          "name": "test_collector_paged_and_merged_encoder_match_the_plain_rollout[False-cuda]",
+          "classname": "tests.test_history_paged_cache",
+          "message": "assert (dtype('float32') == dtype('float32') and b\"\\xf7\\x8c\\x8...xbfM9\\xf9\\xbf\" == b\"\\xf7\\x8c\\x8...xbfM9\\xf9\\xbf\"\n +  where dtype('float32') = array([-4.0797076 , -4.0604715 , -1.3863758 , -2.4000275 , -1.9466709 ,\\n       -3.7615461 , -2.773085  , -1.0981283 , ...354 , -1.0989075 , -1.3846416 , -1.9442245 , -1.0987104 ,\\n       -1.7919774 , -0.6942809 , -1.9470612 ], dtype=float32).dtype\n +  and   dtype('float32') = array([-4.0797076 , -4.060471  , -1.3863758 , -2.4000275 , -1.9466709 ,\\n       -3.7615461 , -2.773085  , -1.0981283 , ...354 , -1.0989075 , -1.3846416 , -1.9442245 , -1.0987104 ,\\n       -1.7919774 , -0.6942809 , -1.9470612 ], dtype=float32).dtype\n  \n  At index 4 diff: b'b' != b'a'\n  Use -v to get more diff)"
+        },
+        {
+          "name": "test_collector_paged_and_merged_encoder_match_the_plain_rollout[True-cuda]",
+          "classname": "tests.test_history_paged_cache",
+          "message": "RuntimeError: self.stride(-1) must be 1 to view Long as Byte (different element sizes), but got 0"
+        },
+        {
+          "name": "test_merged_encoder_refreshes_when_snapshots_change[cuda]",
+          "classname": "tests.test_history_paged_cache",
+          "message": "RuntimeError: self.stride(-1) must be 1 to view Long as Byte (different element sizes), but got 0"
+        }
+      ]
+    },
+    "remaining_failures_match_baseline": false
+  },
+  "baseline_classification": {
+    "old": {
+      "returncode": 1,
+      "tests": 19,
+      "passed": 16,
+      "skipped": 0,
+      "failed": [
+        {
+          "name": "test_merged_snapshot_encode_matches_per_identity_encodes[cuda]",
+          "classname": "tests.test_history_paged_cache",
+          "message": "RuntimeError: self.stride(-1) must be 1 to view Long as Byte (different element sizes), but got 0"
+        },
+        {
+          "name": "test_collector_paged_and_merged_encoder_match_the_plain_rollout[True-cuda]",
+          "classname": "tests.test_history_paged_cache",
+          "message": "RuntimeError: self.stride(-1) must be 1 to view Long as Byte (different element sizes), but got 0"
+        },
+        {
+          "name": "test_merged_encoder_refreshes_when_snapshots_change[cuda]",
+          "classname": "tests.test_history_paged_cache",
+          "message": "RuntimeError: self.stride(-1) must be 1 to view Long as Byte (different element sizes), but got 0"
+        }
+      ]
+    },
+    "new": {
+      "returncode": 1,
+      "tests": 19,
+      "passed": 16,
+      "skipped": 0,
+      "failed": [
+        {
+          "name": "test_merged_snapshot_encode_matches_per_identity_encodes[cuda]",
+          "classname": "tests.test_history_paged_cache",
+          "message": "RuntimeError: self.stride(-1) must be 1 to view Long as Byte (different element sizes), but got 0"
+        },
+        {
+          "name": "test_collector_paged_and_merged_encoder_match_the_plain_rollout[True-cuda]",
+          "classname": "tests.test_history_paged_cache",
+          "message": "RuntimeError: self.stride(-1) must be 1 to view Long as Byte (different element sizes), but got 0"
+        },
+        {
+          "name": "test_merged_encoder_refreshes_when_snapshots_change[cuda]",
+          "classname": "tests.test_history_paged_cache",
+          "message": "RuntimeError: self.stride(-1) must be 1 to view Long as Byte (different element sizes), but got 0"
+        }
+      ]
+    },
+    "old-repeat": {
+      "returncode": 1,
+      "tests": 19,
+      "passed": 15,
+      "skipped": 0,
+      "failed": [
+        {
+          "name": "test_merged_snapshot_encode_matches_per_identity_encodes[cuda]",
+          "classname": "tests.test_history_paged_cache",
+          "message": "RuntimeError: self.stride(-1) must be 1 to view Long as Byte (different element sizes), but got 0"
+        },
+        {
+          "name": "test_collector_paged_and_merged_encoder_match_the_plain_rollout[False-cuda]",
+          "classname": "tests.test_history_paged_cache",
+          "message": "assert (dtype('float32') == dtype('float32') and b\"\\xf7\\x8c\\x8...xbfM9\\xf9\\xbf\" == b\"\\xf7\\x8c\\x8...xbfM9\\xf9\\xbf\"\n +  where dtype('float32') = array([-4.0797076 , -4.060471  , -1.3863758 , -2.4000275 , -1.9466709 ,\\n       -3.7615461 , -2.7730849 , -1.0981283 , ...354 , -1.0989075 , -1.3846416 , -1.9442245 , -1.0987104 ,\\n       -1.7919774 , -0.6942809 , -1.9470612 ], dtype=float32).dtype\n +  and   dtype('float32') = array([-4.0797076 , -4.0604715 , -1.3863758 , -2.4000275 , -1.9466709 ,\\n       -3.7615461 , -2.7730849 , -1.0981283 , ...354 , -1.0989075 , -1.3846416 , -1.9442245 , -1.0987104 ,\\n       -1.7919774 , -0.6942809 , -1.9470612 ], dtype=float32).dtype\n  \n  At index 4 diff: b'a' != b'b'\n  Use -v to get more diff)"
+        },
+        {
+          "name": "test_collector_paged_and_merged_encoder_match_the_plain_rollout[True-cuda]",
+          "classname": "tests.test_history_paged_cache",
+          "message": "RuntimeError: self.stride(-1) must be 1 to view Long as Byte (different element sizes), but got 0"
+        },
+        {
+          "name": "test_merged_encoder_refreshes_when_snapshots_change[cuda]",
+          "classname": "tests.test_history_paged_cache",
+          "message": "RuntimeError: self.stride(-1) must be 1 to view Long as Byte (different element sizes), but got 0"
+        }
+      ]
+    },
+    "new-repeat": {
+      "returncode": 1,
+      "tests": 19,
+      "passed": 16,
+      "skipped": 0,
+      "failed": [
+        {
+          "name": "test_merged_snapshot_encode_matches_per_identity_encodes[cuda]",
+          "classname": "tests.test_history_paged_cache",
+          "message": "RuntimeError: self.stride(-1) must be 1 to view Long as Byte (different element sizes), but got 0"
+        },
+        {
+          "name": "test_collector_paged_and_merged_encoder_match_the_plain_rollout[True-cuda]",
+          "classname": "tests.test_history_paged_cache",
+          "message": "RuntimeError: self.stride(-1) must be 1 to view Long as Byte (different element sizes), but got 0"
+        },
+        {
+          "name": "test_merged_encoder_refreshes_when_snapshots_change[cuda]",
+          "classname": "tests.test_history_paged_cache",
+          "message": "RuntimeError: self.stride(-1) must be 1 to view Long as Byte (different element sizes), but got 0"
+        }
+      ]
+    },
+    "remaining_failures_match_baseline": true
+  },
+  "lifecycle": [
+    {
+      "instance_id": 53520610,
+      "machine_id": 20082,
+      "offer_id": 52800771,
+      "created_epoch": 1790768757.11625,
+      "absence_confirmed": true,
+      "ended_epoch": 1790768957.855772,
+      "elapsed_seconds": 200.73952198028564,
+      "hourly_usd": 0.783148148148148,
+      "estimated_compute_disk_usd": 0.043669106916390324,
+      "within_hard_cap": true,
+      "balance_before": {
+        "credit": 5.387486155630018,
+        "balance": 0
+      },
+      "balance_after": {
+        "credit": 5.350798284230017,
+        "balance": 0
+      },
+      "status_after": {
+        "owned": null,
+        "instances": 0
+      },
+      "cost_scope": "elapsed x quoted hourly; traffic charges not included"
+    },
+    {
+      "instance_id": 53521164,
+      "machine_id": 20082,
+      "offer_id": 52800771,
+      "created_epoch": 1790769066.018464,
+      "absence_confirmed": true,
+      "ended_epoch": 1790769301.2981892,
+      "elapsed_seconds": 235.27972507476807,
+      "hourly_usd": 0.783148148148148,
+      "estimated_compute_disk_usd": 0.051183022496975004,
+      "within_hard_cap": true,
+      "balance_before": {
+        "credit": 5.325223119230017,
+        "balance": 0
+      },
+      "balance_after": {
+        "credit": 5.244634474230017,
+        "balance": 0
+      },
+      "status_after": {
+        "owned": null,
+        "instances": 0
+      },
+      "cost_scope": "elapsed x quoted hourly; traffic charges not included"
+    },
+    {
+      "instance_id": 53522352,
+      "machine_id": 20082,
+      "offer_id": 52800771,
+      "created_epoch": 1790769796.5753741,
+      "absence_confirmed": true,
+      "ended_epoch": 1790771173.2582989,
+      "elapsed_seconds": 1376.682924747467,
+      "hourly_usd": 0.783148148148148,
+      "estimated_compute_disk_usd": 0.2994851897508764,
+      "within_hard_cap": true,
+      "balance_before": {
+        "credit": 5.186078953230016,
+        "balance": 0
+      },
+      "balance_after": {
+        "credit": 4.895119053730017,
+        "balance": 0
+      },
+      "status_after": {
+        "owned": null,
+        "instances": 0
+      },
+      "cost_scope": "elapsed x quoted hourly; traffic charges not included"
+    },
+    {
+      "instance_id": 53526199,
+      "machine_id": 33405,
+      "offer_id": 52800687,
+      "created_epoch": 1790771707.744086,
+      "absence_confirmed": true,
+      "ended_epoch": 1790771938.919636,
+      "elapsed_seconds": 231.17554998397827,
+      "hourly_usd": 0.7431481481481482,
+      "estimated_compute_disk_usd": 0.04772157829658976,
+      "within_hard_cap": true,
+      "balance_before": {
+        "credit": 4.808108546730017,
+        "balance": 0
+      },
+      "balance_after": {
+        "credit": 4.768260417830016,
+        "balance": 0
+      },
+      "status_after": {
+        "owned": null,
+        "instances": 0
+      },
+      "cost_scope": "elapsed x quoted hourly; traffic charges not included"
+    },
+    {
+      "instance_id": 53526804,
+      "machine_id": 20082,
+      "offer_id": 52800771,
+      "created_epoch": 1790772058.706513,
+      "absence_confirmed": true,
+      "ended_epoch": 1790772445.292995,
+      "elapsed_seconds": 386.58648204803467,
+      "hourly_usd": 0.783148148148148,
+      "estimated_compute_disk_usd": 0.08409846875417379,
+      "within_hard_cap": true,
+      "balance_before": {
+        "credit": 4.742148689830016,
+        "balance": 0
+      },
+      "balance_after": {
+        "credit": 4.627645559830015,
+        "balance": 0
+      },
+      "status_after": {
+        "owned": null,
+        "instances": 0
+      },
+      "cost_scope": "elapsed x quoted hourly; traffic charges not included"
+    }
+  ],
+  "final_provider_state": {
+    "checked_epoch": 1790772481.9664571,
+    "instances": 0,
+    "current_hourly_usd": 0,
+    "balance": {
+      "credit": 4.619495669830014,
+      "balance": 0
+    }
+  },
+  "total_compute_disk_estimated_usd": 0.5261573662150053,
+  "observed_account_credit_decrease_usd": 0.767990485800004,
+  "budget_cap_usd": 3.0,
+  "artifacts": [
+    {
+      "path": ".work/learner-gpu-2026-09-30/attempt-1",
+      "verification": {
+        "verified": true,
+        "files": 18,
+        "mismatched": [],
+        "manifest_sha256": "6c8691b33e854272e1ecd6548dedf2127e6fb71ac4a5e9f50335acb97488b061"
+      }
+    },
+    {
+      "path": ".work/learner-gpu-2026-09-30/attempt-2",
+      "verification": {
+        "verified": true,
+        "files": 37,
+        "mismatched": [],
+        "manifest_sha256": "7499df5a0cfef5511496be5c747962698e72a27b71d172f860c3dcbc3a66e411"
+      }
+    },
+    {
+      "path": ".work/learner-gpu-2026-09-30",
+      "verification": {
+        "verified": true,
+        "files": 141,
+        "mismatched": [],
+        "manifest_sha256": "6f6d6562ba23ea90e1d634bd705ee53eb31314dd5aab585836941ba071de6d57"
+      }
+    },
+    {
+      "path": ".work/learner-gpu-verification-2026-09-30",
+      "verification": {
+        "verified": true,
+        "files": 22,
+        "mismatched": [],
+        "manifest_sha256": "0de1a5670ac7e8d4d31d154eccb1978ac5ddea74766511bbf859ff5ca42e35f5"
+      }
+    },
+    {
+      "path": ".work/learner-gpu-paged-check-2026-09-30",
+      "verification": {
+        "verified": true,
+        "files": 26,
+        "mismatched": [],
+        "manifest_sha256": "5d517454e61036bb06c26315d4c98e9b861789ff5f043b055c6d1baa5892ead4"
+      }
+    }
+  ]
+}

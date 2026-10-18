@@ -34,6 +34,7 @@ consumes only seat, encoded action, cards left, round index and phase.
 """
 from __future__ import annotations
 
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Sequence
 import time
@@ -172,6 +173,7 @@ class SequenceRolloutBuffer:
         self.trajectories: list[Trajectory] = []
         self.open: dict[tuple[int, int], int] = {}
         self.data: dict[str, np.ndarray] | None = None
+        self._match_layout: dict[bool, tuple[list[tuple[int, ...]], np.ndarray]] = {}
         self.samples = np.zeros(0, np.int64)
         self.value = np.zeros(0, np.float32)
         self.reward = np.zeros(0, np.float32)
@@ -258,6 +260,7 @@ class SequenceRolloutBuffer:
     def compact(self) -> dict[str, np.ndarray]:
         """All rows as contiguous arrays (cached until the next append)."""
         if self.data is None:
+            self._match_layout.clear()
             if self.chunks:
                 data = {name: np.concatenate([c[name] for c in self.chunks])
                         for name in (*ROW_FIELDS, "obs", "hidden", "cand")}
@@ -328,11 +331,38 @@ class SequenceRolloutBuffer:
 
     def match_groups(self) -> dict[tuple[int, int], np.ndarray]:
         """Completed sample rows grouped by ``(env, match)``."""
+        keys, index = self._group_rows(self.samples)
+        order = np.argsort(index, kind="stable")
+        ends = np.cumsum(np.bincount(index, minlength=len(keys)))
+        return {key: self.samples[order[start:end]]
+                for key, start, end in zip(keys, np.r_[0, ends[:-1]], ends)}
+
+    def _group_rows(self, rows: np.ndarray, round_streams: bool = False
+                    ) -> tuple[list[tuple[int, ...]], np.ndarray]:
+        """Match keys in first-row order, and each row's index into those keys.
+
+        A trajectory belongs to one match and round. Factor those few keys
+        once per compact buffer, then gather integer IDs for later minibatches
+        instead of rebuilding Python tuples for every decision and epoch.
+        """
         data = self.compact()
-        groups: dict[tuple[int, int], list[int]] = {}
-        for row in self.samples.tolist():
-            groups.setdefault((int(data["env"][row]), int(data["match"][row])), []).append(row)
-        return {key: np.asarray(rows, np.int64) for key, rows in groups.items()}
+        layout = self._match_layout.get(round_streams)
+        if layout is None:
+            lookup: dict[tuple[int, ...], int] = {}
+            trajectory_ids = np.empty(len(self.trajectories), np.int64)
+            for i, trajectory in enumerate(self.trajectories):
+                key = (trajectory.env, trajectory.match)
+                if round_streams:
+                    key += (trajectory.round,)
+                trajectory_ids[i] = lookup.setdefault(key, len(lookup))
+            layout = (list(lookup), trajectory_ids[data["traj"]])
+            self._match_layout[round_streams] = layout
+        keys, row_ids = layout
+        ids, first, inverse = np.unique(row_ids[rows], return_index=True, return_inverse=True)
+        order = np.argsort(first)
+        remap = np.empty_like(order)
+        remap[order] = np.arange(len(order))
+        return [keys[i] for i in ids[order]], remap[inverse]
 
     def minibatches(self, matches_per_batch: int, rng: np.random.Generator
                     ) -> Iterator[np.ndarray]:
@@ -393,7 +423,8 @@ class SequenceRolloutBuffer:
                        streams: dict[tuple[int, int], PublicStream] | None = None, *,
                        fields: Sequence[str] = TRAINING_FIELDS,
                        extra: dict[str, np.ndarray] | None = None,
-                       length_groups: int = 0, width: int = 0) -> "TrainingBatch":
+                       length_groups: int = 0, width: int = 0,
+                       round_streams: bool = False) -> "TrainingBatch":
         """``decision_inputs`` plus the rows' ``fields`` (stored row data, or
         ``advantage``/``returns`` from ``finalize``) and ``extra`` host arrays,
         all uploaded with one packed copy. ``length_groups > 0`` plans the
@@ -403,21 +434,29 @@ class SequenceRolloutBuffer:
             raise ValueError("length groups need the actor width for their cost model")
         data = self.compact()
         rows = np.asarray(rows, np.int64)
-        keys = list(zip(data["env"][rows].tolist(), data["match"][rows].tolist()))
-        unique = list(dict.fromkeys(keys))
-        index = {key: i for i, key in enumerate(unique)}
-        picked = [(streams or {}).get(key) or store.stream(*key) for key in unique]
+        unique, match_index = self._group_rows(rows, round_streams)
+        if round_streams:
+            # Planted-habit ROUND view: each row read its round's own stream.
+            picked = [store.round_stream(*key) for key in unique]
+        else:
+            picked = [(streams or {}).get(key) or store.stream(*key) for key in unique]
         prefix = data["prefix"][rows]
-        for key, p in zip(keys, prefix.tolist()):
-            if p > picked[index[key]].prefix:
-                raise ValueError("a stored row cites more history than its match has")
+        lengths = np.asarray([stream.prefix for stream in picked], np.int64)
+        if np.any(prefix > lengths[match_index]):
+            raise ValueError("a stored row cites more history than its match has")
         counts = data["cand_count"][rows]
         src = ragged_index(data["cand_start"][rows], counts)
         offsets = np.concatenate(([0], np.cumsum(counts))).astype(np.int64)
         named = {name: (getattr(self, name) if name in ("advantage", "returns") else data[name])[rows]
                  for name in fields}
         named.update(extra or {})
-        match_index = np.asarray([index[key] for key in keys], np.int64)
+        # Batched match attention's layout, planned here instead of on the
+        # device: each row's rank among its match's rows, in row order.
+        order = np.argsort(match_index, kind="stable")
+        per_match = np.bincount(match_index, minlength=len(unique))
+        starts = np.cumsum(per_match) - per_match
+        match_rank = np.empty_like(match_index)
+        match_rank[order] = np.arange(len(rows)) - starts[match_index[order]]
         arrays = [stream.arrays() for stream in picked]
         plan = []
         if length_groups > 0 and len(rows):
@@ -430,22 +469,29 @@ class SequenceRolloutBuffer:
             for matches in plan_groups(cited, length_groups, width):
                 local[matches] = np.arange(len(matches))
                 members = np.flatnonzero(np.isin(match_index, matches))
-                plan.append((int(cited[matches].max()),
-                             (matches.astype(np.int64), members, local[match_index[members]])))
+                plan.append(((int(cited[matches].max()), int(per_match[matches].max())),
+                             (matches.astype(np.int64), members, local[match_index[members]],
+                              match_rank[members])))
         host = (*StreamBatch.host_arrays(arrays), match_index, prefix,
                 data["obs"][rows], data["seat"][rows], data["cand"][src], offsets,
-                offsets[:-1] + data["chosen"][rows], *named.values(),
+                offsets[:-1] + data["chosen"][rows], *named.values(), match_rank,
                 *(array for _, group in plan for array in group))
         uploaded = upload_arrays(host, device)
+        # Keep the existing floating-point fields at their original packed
+        # offsets. Moving them by an odd number of int64 ranks changes their
+        # CUDA vector alignment and can change reduction bits (e.g. advantages).
+        fields_end = 11 + len(named)
         inputs = DecisionInputs(streams=StreamBatch(*uploaded[:4]), match_index=uploaded[4],
                                 prefix=uploaded[5], obs=uploaded[6], seat=uploaded[7],
-                                cand=uploaded[8], offsets=uploaded[9])
-        base = 11 + len(named)
+                                cand=uploaded[8], offsets=uploaded[9], match_rank=uploaded[fields_end],
+                                match_slots=int(per_match.max(initial=0)))
+        base = fields_end + 1
         if plan:
             from train.history_model import MatchGroup
-            inputs.match_groups = [MatchGroup(*uploaded[base + 3 * g:base + 3 * g + 3], tokens)
-                                   for g, (tokens, _) in enumerate(plan)]
-        return TrainingBatch(inputs, uploaded[10], dict(zip(named, uploaded[11:base])))
+            inputs.match_groups = [MatchGroup(*uploaded[base + 4 * g:base + 4 * g + 3], tokens,
+                                              uploaded[base + 4 * g + 3], slots)
+                                   for g, ((tokens, slots), _) in enumerate(plan)]
+        return TrainingBatch(inputs, uploaded[10], dict(zip(named, uploaded[11:fields_end])))
 
 
 # ---- collector -------------------------------------------------------------------
@@ -581,7 +627,12 @@ class HistoryCollector:
     call and ``paged_cache``) also encodes those identities' public streams in
     one pass per step over stacked encoder weights
     (``train.history_paged_cache.merged_encode``), again tier 2 on snapshot
-    seats only.
+    seats only. ``prefill_learner_cache`` (opt-in, with the KV cache) rebuilds
+    the learner's public cache for every current match at the start of
+    ``collect`` in one batched pass per prefill chunk; without it each stream
+    is rebuilt by the first step whose learner row reads it, in passes of its
+    own. Same function of the same tokens in different batches: FP32
+    reduction-order noise on learner seats (tier 2).
     """
 
     def __init__(self, env: Any, actor: HistoryActor, store: MatchEventStore,
@@ -599,7 +650,10 @@ class HistoryCollector:
                  batch_snapshot_policies: bool = False,
                  paged_cache: bool = False,
                  batch_snapshot_encoder: bool = False,
-                 page_span: bool = False) -> None:
+                 page_span: bool = False,
+                 round_streams: bool = False,
+                 row_style: Callable[[int, int], int] | None = None,
+                 prefill_learner_cache: bool = False) -> None:
         self.env = env
         self.actor = actor
         self.store = store
@@ -625,6 +679,20 @@ class HistoryCollector:
             raise ValueError("Triton minimum batch must be positive")
         if private_graph_budget_mb < 1 or private_graph_policy_budget_mb < 1:
             raise ValueError("private graph memory budget must be positive")
+        # Planted-habit views of the learner (train/history_habit.py): ``round_streams``
+        # reads a RoundEventStore's current-round stream; ``row_style`` gives the
+        # opponents' z of a match for a style-input actor. Snapshot seats unchanged.
+        if round_streams and not hasattr(store, "round_stream"):
+            raise ValueError("round streams need a RoundEventStore")
+        if actor.config.style_input and row_style is None:
+            raise ValueError("a style-input learner needs the opponents' style per match")
+        if actor.config.style_input and private_graphs:
+            raise ValueError("private graphs do not capture the style input")
+        if prefill_learner_cache and (not kv_cache or round_streams):
+            raise ValueError("learner cache prefill requires the match-keyed KV cache")
+        self.prefill_learner_cache = bool(prefill_learner_cache)
+        self.round_streams = bool(round_streams)
+        self.row_style = row_style
         self.kv_cache = kv_cache
         self.reuse_cache_lengths = reuse_cache_lengths
         self.private_graphs = private_graphs
@@ -635,7 +703,8 @@ class HistoryCollector:
         self.triton_cache = triton_cache
         self.triton_min_batch = triton_min_batch
         self.paged_cache = paged_cache
-        self.kv_pool = None             # shared by every identity's paged cache
+        self.kv_pool = None             # shared by the snapshot identities' paged caches
+        self.learner_pool = None        # the learner's own pages, returned before each learn
         self.batch_snapshot_encoder = bool(batch_snapshot_encoder)
         self.page_span = bool(page_span)
         self.batch_snapshot_policies = bool(batch_snapshot_policies)
@@ -647,6 +716,8 @@ class HistoryCollector:
         self.temperature = float(temperature)
         self.epsilon = float(epsilon)
         self.caches = {}
+        self._frozen_stack: ExitStack | None = None
+        self._frozen_caches: set = set()
         self.policy_decisions: dict[int, int] = {}
         self.assignments: dict[tuple[int, int], np.ndarray] = {}
         self._assignments_changed = False
@@ -659,17 +730,22 @@ class HistoryCollector:
         metrics = dict(bytes=sum(c.bytes for c in self.caches.values()),
                        entries=sum(len(c.entries) for c in self.caches.values()),
                        encoded_tokens=sum(c.encoded_tokens for c in self.caches.values()),
-                       rebuilds=sum(c.rebuilds for c in self.caches.values()))
-        if self.kv_pool is not None:
-            metrics.update(pool_reserved_bytes=self.kv_pool.reserved_bytes,
-                           pool_used_pages=self.kv_pool.used_pages,
-                           pool_pages=self.kv_pool.pages, pool_grows=self.kv_pool.grows)
+                       rebuilds=sum(c.rebuilds for c in self.caches.values()),
+                       appends=sum(c.appends for c in self.caches.values()))
+        pools = [pool for pool in (self.kv_pool, self.learner_pool) if pool is not None]
+        if pools:
+            metrics.update(pool_reserved_bytes=sum(pool.reserved_bytes for pool in pools),
+                           pool_used_pages=sum(pool.used_pages for pool in pools),
+                           pool_pages=sum(pool.pages for pool in pools),
+                           pool_grows=sum(pool.grows for pool in pools))
         return metrics
 
     def invalidate_learner_cache(self) -> None:
         # Release before PPO allocates activations; rebuild with updated weights.
         if LEARNER in self.caches:
             self.caches[LEARNER].clear()
+        if self.learner_pool is not None:
+            self.learner_pool.reset()
 
     def _prune_caches(self) -> None:
         active = {}
@@ -677,6 +753,8 @@ class HistoryCollector:
             for identity in set(seats.tolist()):
                 active.setdefault(identity, set()).add(key)
         for identity in list(self.caches):
+            if identity == LEARNER and self.round_streams:
+                continue    # round keys; cleared before every learn anyway
             if identity not in active:
                 self.caches.pop(identity).clear()   # paged caches return their pages
             else:
@@ -731,16 +809,52 @@ class HistoryCollector:
                 cache.clear()
             if self.paged_cache:
                 from train.history_paged_cache import KVPagePool, PagedHistoryCache
-                if self.kv_pool is None:
-                    self.kv_pool = KVPagePool.for_actor(actor)
-                cache = PagedHistoryCache(actor, self.kv_pool, page_span=self.page_span)
+                name = "learner_pool" if int(identity) == LEARNER else "kv_pool"
+                if getattr(self, name) is None:
+                    setattr(self, name, KVPagePool.for_actor(actor))
+                cache = PagedHistoryCache(actor, getattr(self, name), page_span=self.page_span)
             elif self.triton_cache:
                 from train.history_triton_cache import TritonHistoryCache
                 cache = TritonHistoryCache(actor, min_batch=self.triton_min_batch)
             else:
                 cache = BatchedHistoryCache(actor)
             self.caches[int(identity)] = cache
+        if self._frozen_stack is not None and cache not in self._frozen_caches:
+            self._frozen_stack.enter_context(cache.frozen_weights())
+            self._frozen_caches.add(cache)
         return cache
+
+    @contextmanager
+    def frozen_weights(self):
+        """Trainer-owned scope: weights stay fixed until collection finishes.
+
+        Register caches lazily, including newly encountered snapshot identities.
+        Retain exit checks for caches pruned or replaced during collection.
+        Custom collectors need not enter this scope: their policy callbacks may
+        still mutate weights between steps, with ordinary per-encode checks.
+        """
+        if self._frozen_stack is not None:
+            raise RuntimeError("nested frozen-weight collection is unsupported")
+        try:
+            with ExitStack() as stack:
+                self._frozen_stack = stack
+                yield self
+        finally:
+            self._frozen_stack = None
+            self._frozen_caches.clear()
+
+    @torch.no_grad()
+    def _prefill_learner(self, stats: CollectStats) -> None:
+        """Encode every current match with a learner seat up to its drained
+        events, all streams together. Events still pending in the engine are
+        appended by the steps, as always."""
+        mark = _PhaseTimer(stats, self.device, self.profile)
+        keys = [key for key, seats in self.assignments.items()
+                if (seats == LEARNER).any() and key in self.store.streams]
+        if keys:
+            self._cache(LEARNER, self.actor).prefill(keys, [self.store.streams[key]
+                                                             for key in keys])
+        mark("learner_prefill", "learner")
 
     def transfer_metrics(self) -> dict:
         return {str(identity): dict(cache.copy_stats) for identity, cache in self.caches.items()
@@ -859,7 +973,11 @@ class HistoryCollector:
         for i in range(n):
             seats = self.assignment(rows.env_id[i], rows.match_id[i])
             rows.identities[i] = seats[rows.seat[i]]
-            rows.prefix[i] = self.store.stream(rows.env_id[i], rows.match_id[i]).prefix
+            if self.round_streams and rows.identities[i] == LEARNER:
+                rows.prefix[i] = self.store.round_stream(
+                    rows.env_id[i], rows.match_id[i], rows.round_index[i]).prefix
+            else:
+                rows.prefix[i] = self.store.stream(rows.env_id[i], rows.match_id[i]).prefix
         rows.acting = (rows.identities == LEARNER) & (rows.phase == PLAY_PHASE)
         if (self.kv_cache or self.snapshot_heads is not None) and self._assignments_changed:
             self._prune_caches()
@@ -873,9 +991,18 @@ class HistoryCollector:
         play = r.phase == PLAY_PHASE
         for identity in np.unique(r.identities[play]):
             rows = np.flatnonzero((r.identities == identity) & play)
-            keys = list(zip(r.env_id[rows].tolist(), r.match_id[rows].tolist()))
-            unique = list(dict.fromkeys(keys))
-            streams = [self.store.stream(*k) for k in unique]
+            if self.round_streams and identity == LEARNER:
+                from train.history_habit import ROUND_KEY_STRIDE
+                triples = list(zip(r.env_id[rows].tolist(), r.match_id[rows].tolist(),
+                                   r.round_index[rows].tolist()))
+                keys = [(e, m * ROUND_KEY_STRIDE + k) for e, m, k in triples]
+                unique = list(dict.fromkeys(keys))
+                first = dict(zip(keys, triples))
+                streams = [self.store.round_stream(*first[k]) for k in unique]
+            else:
+                keys = list(zip(r.env_id[rows].tolist(), r.match_id[rows].tolist()))
+                unique = list(dict.fromkeys(keys))
+                streams = [self.store.stream(*k) for k in unique]
             group = _PolicyBatch(int(identity), rows, unique, streams,
                                  len(keys) == len(unique), int(r.counts[rows].max()))
             if self.batch_snapshot_policies and identity != LEARNER:
@@ -914,6 +1041,11 @@ class HistoryCollector:
             match_index=fields[0], prefix=fields[1], obs=fields[2], seat=fields[3],
             cand=fields[4], offsets=fields[5], candidate_rows=fields[6],
             one_decision_per_stream=group.one_decision_per_stream)
+        if actor.config.style_input:
+            inputs.style = torch.as_tensor(
+                np.asarray([self.row_style(e, m) for e, m in
+                            zip(r.env_id[group.rows].tolist(), r.match_id[group.rows].tolist())],
+                           np.int64), device=self.device)
         inference = {}
         if self.private_graphs:
             inference["inference_log_probs"] = self._graph_log_probs(identity, actor, inputs, encoded)
@@ -1035,6 +1167,10 @@ class HistoryCollector:
                     validate_encoder(self.actor)
             # Snapshot seats no longer use private graphs; free their budget.
             self.release_snapshot_graphs()
+        if self.prefill_learner_cache:
+            if not self.kv_cache or self.round_streams:
+                raise ValueError("learner cache prefill requires the match-keyed KV cache")
+            self._prefill_learner(stats)
         if not self.private_graphs:
             for _ in range(int(steps)):
                 self.step(stats)

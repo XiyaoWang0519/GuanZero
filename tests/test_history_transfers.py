@@ -69,6 +69,54 @@ def test_pinned_upload_setting_keeps_cpu_zero_copy_and_packed_bytes(monkeypatch)
     assert torch.equal(packed, torch.arange(17))
 
 
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+@pytest.mark.parametrize("pinned", [False, True])
+@pytest.mark.parametrize("stride", [0, 2])
+def test_packed_upload_accepts_singleton_strides_and_empty_fields(device, pinned, stride):
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA transfer acceptance")
+    sources = (np.array([-(2**63), 0, 2**63 - 1], np.int64),
+               np.array([0x7FC00123, 0, 0x80000000], np.uint32).view(np.float32),
+               np.array([0x8000000000000000, 0, 1], np.uint64).view(np.float64),
+               np.array([True, False, True], np.bool_))
+    singletons = tuple(np.lib.stride_tricks.as_strided(
+        source, shape=(1, 1), strides=(0, stride * source.itemsize)) for source in sources)
+    arrays = (np.arange(3, dtype=np.uint8), *singletons, np.empty(0, np.int64))
+    strides = tuple(array.strides for array in arrays)
+    expected = tuple(array.tobytes() for array in arrays)
+    actual = upload_arrays(arrays, device, packed=True, pinned=pinned)
+    for tensor, array, bits in zip(actual, arrays, expected):
+        assert tensor.shape == array.shape
+        assert tensor.cpu().numpy().dtype == array.dtype
+        assert tensor.cpu().numpy().tobytes() == bits
+        assert tensor.storage_offset() * tensor.element_size() % 8 == 0
+    assert tuple(array.strides for array in arrays) == strides
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+@pytest.mark.parametrize("stride", [0, 2])
+def test_packed_download_accepts_singleton_strides_and_preserves_float_bits(device, stride):
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA transfer acceptance")
+    sources = (np.array([-(2**63), 0, 2**63 - 1], np.int64),
+               np.array([0x7FC00123, 0, 0x80000000], np.uint32).view(np.float32),
+               np.array([0x8000000000000000, 0, 1], np.uint64).view(np.float64),
+               np.array([True, False, True], np.bool_))
+    singletons = tuple(torch.from_numpy(source).to(device).as_strided((1, 1), (0, stride))
+                       for source in sources)
+    # Include a broadcast with several elements, which must be materialized,
+    # and an empty tensor, which can also have an arbitrary contiguous stride.
+    tensors = (*singletons, singletons[1].expand(2, 3),
+               torch.empty(0, dtype=torch.int64, device=device).as_strided((0,), (0,)))
+    strides = tuple(tensor.stride() for tensor in tensors)
+    expected = download_tensors(tensors, packed=False)
+    actual = download_tensors(tensors, packed=True)
+    for array, reference in zip(actual, expected):
+        assert array.shape == reference.shape and array.dtype == reference.dtype
+        assert array.tobytes() == reference.tobytes()
+    assert tuple(tensor.stride() for tensor in tensors) == strides
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA pinned allocator lifetime acceptance")
 def test_pinned_uploads_survive_staging_release_and_original_array_mutation(monkeypatch):
     from train import history_transfers as transfers

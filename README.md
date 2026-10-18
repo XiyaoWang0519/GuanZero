@@ -1,56 +1,101 @@
-# GuanZero
+<p align="center">
+  <img src="docs/assets/banner-guanzero.svg" alt="GuanZero: learning Guandan by self-play" width="100%">
+</p>
 
-A self-play reinforcement-learning system for Guandan (掼蛋), a four-player Chinese climbing card game. It has three parts:
+<p align="center"><i>A Guandan agent that starts from random weights and learns only by playing against itself.<br>
+No human games, no imitation, no hand-written play strategy.</i></p>
 
-- **`gd_core`**, a C++20 rules engine with pybind11 bindings.
-- A **history-Transformer policy** trained from scratch with PPO on GPU.
-- A **measurement workflow** that tests every performance change with A/B trials and checks that results are bitwise identical.
+<p align="center">
+  <img src="docs/assets/stats-m7.svg" alt="6x fewer self-play decisions than our MLP needed to reach the same strength; +0.08 to +0.41 levels per round from test-time search, depending on the checkpoint; a third of the parameters of the strongest published Guandan agent; US$114 of paid compute, later training on a free university GPU cluster" width="100%">
+</p>
 
-Most of the work is in the training system, not in how well the agent plays. Every number below links to the report that measured it.
+## The game
 
-## Performance results
+Guandan is a four-player team card game played with two decks. Partners sit across from each other, each holding 27 of the 108 cards, and race to empty their hands. The winning team climbs levels from 2 to A over a match of many rounds, and losers pay tribute cards to the winners before the next round starts.
+
+For an AI it combines three hard problems at once:
+
+- **Hidden information.** Three hands are unseen and have to be inferred from play.
+- **Silent teamwork.** Partners cooperate without communicating, against a pair doing the same.
+- **A large, structured action space.** Wild cards, bombs and combinations give hundreds of legal moves in some positions.
+
+## Where it stands
+
+<p align="center">
+  <img src="docs/assets/progress-m7.svg" alt="Net levels per round against the strongest published Guandan agent, rising from −2.05 at 172M self-play decisions to −1.56 at 989M, −1.36 at 1.33B, −0.87 at 2.33B, −0.67 at 2.84B, −0.55 at 3.33B, −0.50 at 3.84B, −0.42 at 4.33B and −0.33 at 4.84B; with test-time search −1.71 at 172M, −1.33 at 989M, −0.51 at 2.84B and −0.22 at 4.84B" width="100%">
+</p>
+
+Measured against the strongest published Guandan agent on duplicate deals, where every deal is replayed with the teams swapped. The gap has shrunk from **−2.05** to **−0.33** levels per round over 4.84B self-play decisions, and every 500M-decision milestone so far has gained: +0.21, +0.28, +0.20, +0.12, +0.05, +0.07 and +0.09. Progress slowed after 3.3B decisions but has not stopped. Test-time search adds about +0.3 levels per round on checkpoints up to 1.83B decisions, +0.13 at 2.84B and +0.08 at 4.84B (**−0.22**): the stronger the policy, the less search adds. The Transformer matched our strongest MLP after only 172M decisions and beat it head to head by +0.67 levels per round at 655M.
+
+<p align="center">
+  <img src="docs/assets/resources-params.svg" alt="GuanZero uses 1.36M policy parameters versus 4.00M for the strongest published agent (34%)" width="100%">
+</p>
+
+On the public [Botzone](https://www.botzone.org.cn/) Guandan ladder the current bot, the 2.33B-decision checkpoint with search, ranks 33rd with a score of 1077 on October 8, 2026, climbing from a fresh 1000 since October 6. Sources: [strength summary](docs/reports/strength-summary-2026-10-04.md).
+
+## How it learns
+
+<p align="center">
+  <img src="docs/assets/selfplay-loop.svg" alt="The self-play loop: four seats play on the C++20 rules engine; game records feed a PPO update of the policy and auxiliary heads; new versions join the snapshot pool of opponents; test-time search uses the same policy at play time" width="100%">
+</p>
+
+- **Engine.** `gd_core`, a C++20 rules engine specified line by line in [RULES.md](docs/RULES.md).
+- **Model.** A 1.36M-parameter Transformer that reads the whole match as a token stream, with auxiliary heads for the next move, the hidden hands and the round outcome.
+- **Training.** PPO against the current network and its own past snapshots. The only scripted part is a fixed tribute rule between rounds.
+- **Search.** When someone is close to going out or the policy is unsure, the agent samples hidden hands and compares its best moves by rollouts.
+
+## Open questions
+
+The experiments so far raised three questions this project is now built to study.
+
+1. **Can an agent learn its opponents' habits within a match?** The model can see the whole match, but [an ablation](docs/reports/history-ablation-2026-09-29.md) shows it hardly uses earlier rounds. Self-play opponents may have no habits worth learning; a population of opponents with distinct styles might change that ([plan](docs/reports/opponent-diversity-plan-2026-10-03.md)).
+2. **How should search and learning fit together in a hidden-information team game?** Search helps, but its gain shrinks as the policy improves (+0.32 early, +0.13 at 2.84B and +0.08 at 4.84B decisions), and sampling hidden hands from the learned belief head is not yet better than sampling uniformly ([distillation plan](docs/reports/search-distillation-plan-2026-10-06.md)).
+3. **Can variance reduction make each decision of training count for more?** In a four-player game most of the noise in the learning signal comes from sampled actions rather than critic error ([design](docs/reports/vrpo-design-2026-10-04.md)).
+
+## Built to be trusted
+
+- **An independent rules oracle.** `oracle/gd_reference.py` was written separately from the engine. They agree on 100,000 `interpret` cases, all 37,636 `beats` pairs and 10,000 move-generation hands, with 0 mismatches.
+- **Fuzzing.** 10,000,008 rounds and 735,492,869 decisions with every invariant checked; 100,002 rounds clean under UBSan.
+- **Rules parity with an external engine.** 70 rounds with zero tribute, finish-order or reward mismatches against the reference agent's own engine.
+- **Measured claims.** Strength claims come with confidence intervals on duplicate deals, A/B tests are paired, and results that showed no effect are kept. There is one report per experiment in [`docs/reports/`](docs/reports/).
+
+<details>
+<summary><b>Engineering: making self-play fast</b></summary>
+
+<br>
+
+Rollout collection is bound by the Python host thread, not by the GPU, so most of the speed work cuts host work per decision. Every optimization is checked for bitwise-identical results against the original path.
 
 | Change | Result | Hardware | Report |
 |---|---|---|---|
-| CUDA Graphs + batched attention + Triton KV-cache kernel in rollout collection | **3.48x** decisions/s (1,030 → 3,587). Bitwise-identical FP32 results on all 30 replays. About 1.95x in a short end-to-end PPO loop | RTX 4090 | [history-cuda-throughput-2026-09-28](docs/reports/history-cuda-throughput-2026-09-28.md) |
-| Causal SDPA + batched KV cache instead of dense attention | **1.76x** full-update throughput. Reserved GPU memory 24.74 GB → 0.145 GB | RTX 4090 | [history-stack-cuda-2026-09-26](docs/reports/history-stack-cuda-2026-09-26.md) |
-| 4 actor processes sharing one GPU | **1.78x** decisions/s (1,871 → 3,324). GPU utilization 55% → 82% | RTX 4090 | [history-actor-ranks-2026-09-28](docs/reports/history-actor-ranks-2026-09-28.md) |
-| Learner length groups + page-padded rollout attention + paged KV cache (opt-in) | **1.71x** per training update (149 → 87 s per 10 updates); learner 2.4x. Tier 1–2 only; GPU not yet measured | Apple M4 Pro CPU | [training-stack-refactor-2026-09-29](docs/reports/training-stack-refactor-2026-09-29.md) |
+| CUDA Graphs + batched attention + Triton KV-cache kernel in rollout collection | **3.48x** decisions/s (1,030 → 3,587), bitwise-identical FP32 on all 30 replays | RTX 4090 | [history-cuda-throughput-2026-09-28](docs/reports/history-cuda-throughput-2026-09-28.md) |
+| Causal SDPA + batched KV cache instead of dense attention | **1.76x** full-update throughput; reserved GPU memory 24.74 GB → 0.145 GB | RTX 4090 | [history-stack-cuda-2026-09-26](docs/reports/history-stack-cuda-2026-09-26.md) |
+| 4 actor processes sharing one GPU | **1.78x** decisions/s (1,871 → 3,324); GPU utilization 55% → 82% | RTX 4090 | [history-actor-ranks-2026-09-28](docs/reports/history-actor-ranks-2026-09-28.md) |
+| Learner length groups + page-padded rollout attention + paged KV cache (opt-in) | **1.71x** per training update; learner 2.4x | Apple M4 Pro CPU | [training-stack-refactor-2026-09-29](docs/reports/training-stack-refactor-2026-09-29.md) |
 | C++ rules engine, random play, canonical move generation | **190,533** decisions/s on one core; **1,839,581** on 12 threads | Apple silicon, 14 cores | [M0](docs/reports/M0.md) |
 
-### A rejected idea
+**A rejected idea.** torch.profiler showed about 300 kernel launches per rollout step. A two-stage in-process pipeline made collection 1.4–2.2x *slower*, because splitting each batch doubled the per-decision host cost ([perf-pipeline-2026-09-25](docs/reports/perf-pipeline-2026-09-25.md)). That led to the two changes that did work: CUDA Graphs, which cut launches per step, and separate actor processes.
 
-torch.profiler showed about **300 kernel launches per rollout step**. The single Python host thread was the bottleneck, not the GPU. A two-stage in-process pipeline made collection **1.4–2.2x slower**, because splitting each batch doubled the per-decision host cost. That result is kept in [perf-pipeline-2026-09-25](docs/reports/perf-pipeline-2026-09-25.md). It led to the two changes that did work: CUDA Graphs, which cut launches per step, and separate actor processes, which add Python threads of control.
+**How changes are measured.** Same-host A/B trials in interleaved orders (for example `ABDEEDBA`) with warmup discarded; replay digests compared for bitwise parity, with deterministic CUDA algorithms on (a CUDA `index_add_` was shown to be nondeterministic); torch.profiler, cProfile and nvidia-smi for profiling. Throughput, numerical parity and playing strength are reported separately: a faster component is never claimed to make a better player.
 
-## How changes are measured
+</details>
 
-- **Same-host A/B trials** in interleaved orders (for example `ABDEEDBA`), with warmup chunks discarded and medians over independent processes.
-- **Bitwise parity.** Replay digests of an optimized path are compared against the original. Deterministic CUDA algorithms stay on during these checks, because a CUDA `index_add_` was shown to be nondeterministic: 100 of 100 repeats differed, by at most 9.5e-7.
-- **Profiling** with torch.profiler (kernel launches per step), cProfile (host time) and nvidia-smi sampling (utilization, memory).
-- **Scope of each result.** Throughput, numerical parity and playing strength are reported separately. A faster component is not claimed to make a better player.
-
-## Correctness
-
-- An independent Python rules oracle (`oracle/gd_reference.py`), written separately from the engine. The engine and oracle agree on 100,000 `interpret` cases, all 37,636 `beats` pairs and 10,000 move-generation hands, with 0 mismatches.
-- A property fuzzer: 10,000,008 rounds and 735,492,869 decisions with all invariants checked. 100,002 rounds run clean under UBSan.
-- OpenGuanDan trace replay: 1,783,202 decisions, with one divergence class that is explained and reproduced.
-
-Details are in [M0](docs/reports/M0.md).
-
-## Current status
-
-The history Transformer trains from random initialization with self-play PPO. After 44.2M decisions on one RTX 4090, it beats an earlier 71M-decision MLP (+0.87 levels per round, 89% match wins). It still loses to the strongest MLP baseline (−0.36, 22% match wins). This is a single-seed run: [history-overnight-large-2026-09-28](docs/reports/history-overnight-large-2026-09-28.md). The design and the active plan are in [docs/DESIGN.md](docs/DESIGN.md) and [docs/STAGE_C_TODO.md](docs/STAGE_C_TODO.md).
-
-## Layout
+## Repository
 
 | Path | Contents |
 |---|---|
 | `cpp/` | `gd_core` C++20 engine, unit tests, fuzzer |
 | `python/gd/` | pybind11 package (`gd._gd_core`) |
 | `oracle/` | independent Python rules oracle, used only in tests |
-| `train/` | PPO trainer, history Transformer, KV caches (per-entry and paged), CUDA Graphs, Triton kernel, DDP actor ranks |
+| `train/` | PPO trainer, history Transformer, KV caches, CUDA Graphs, Triton kernel, actor ranks |
+| `eval/` | duplicate-deal arenas, external-agent bridges, test-time search, Botzone bot |
 | `bench/` | throughput benchmarks |
-| `docs/reports/` | one report per milestone or experiment |
+| `docs/` | rules, design, training guide and one report per experiment |
+
+Agent development: Codex reads [AGENTS.md](AGENTS.md); Claude Code imports the
+same instructions through [CLAUDE.md](CLAUDE.md). Start with the dated
+[project status](docs/STATUS.md), [documentation map](docs/README.md) and
+[report index](docs/reports/README.md).
 
 ## Build and test
 
@@ -62,4 +107,4 @@ cmake --build build -j
 python -m pytest -q tests oracle    # Python suites and oracle cross-checks
 ```
 
-The rules are specified in [docs/RULES.md](docs/RULES.md). Training entry points and readiness are in [docs/TRAINING.md](docs/TRAINING.md).
+The rules are specified in [docs/RULES.md](docs/RULES.md), the system design in [docs/DESIGN.md](docs/DESIGN.md), and training entry points in [docs/TRAINING.md](docs/TRAINING.md).

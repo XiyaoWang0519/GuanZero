@@ -1,46 +1,29 @@
 # Training and evaluation: Transformer self-play
 
-Current route, September 25, 2026: [DESIGN.md](DESIGN.md) v0.6 and
-[STAGE_C_TODO.md](STAGE_C_TODO.md) T0--T8. Train a randomly initialized
-history Transformer through self-play RL. Old MLPs are evaluation-only.
+Operator guide, reorganized October 6, 2026. Baseline: random-initialized
+history Transformer self-play; old MLPs are evaluation-only. The design
+boundary is in [DESIGN.md](DESIGN.md); dated readiness and research directions
+are in [STATUS.md](STATUS.md). Experiment chronology is in
+[TRAINING_EVIDENCE.md](TRAINING_EVIDENCE.md), not a launch configuration.
 
-## Implementation status and entrypoints
+## Choose the entrypoint
 
-T7 connection ablation is implemented with `response_mode=none|auxiliary|explicit`;
-the default remains `none`. The [three-arm plan](reports/history-response-plan-2026-09-26.md)
-defines the public response target, paired seeds, fixed endpoints and approved
-compute cap. `python -m infra.history_response_experiment prepare --output DIR`
-creates reviewable kits only. The $6 cloud campaign was corrected after same-host device measurements:
-CPU environment simulation with CUDA model inference and learning delivered
-1.80x concurrent decision throughput versus CPU (`--rollout-device` is optional;
-default shares the learner device).
-[Device-placement report](reports/history-device-placement-2026-09-26.md).
-The three-seed comparison finished on September 27 UTC ($3.84 of $6):
-`auxiliary` beat PPO-only by about +0.3 levels per round (exploratory, three
-seeds), `explicit` was not better than `auxiliary`, and all endpoints still lose
-to B11. [Results](reports/history-response-results-2026-09-27.md).
-
-The history-RL route completed a bounded RTX 4090 cold-start/resume/population
-pilot on September 26 UTC. The [T4 receipt](reports/history-t4-pilot-2026-09-26.md)
-records its measured configuration and limits. Larger runs still need their
-own measurement and explicit compute budget; legacy MLP configs do not apply.
-
-| Existing entrypoint/component | Current role |
+| Task | Owning module / document |
 |---|---|
-| `train.dmc`, `train.ppo`, M1/B8/B11 configs | Old MLP training path; not the new launch command |
-| `train.behaviour_probe` | Offline behavior-cloning/next-event diagnostic; no cold-start RL or strength claim |
-| `train.history_model` | T1 contract: `PublicStream`, `HistoryActor` (public-only `encode_stream`, full canonical candidate head), `HistoryCritic`, `history_ppo` checkpoint marker. CPU-verified 2026-09-25 |
-| `train.history_rollout`, `train.history_ppo`, `train.history_population` | Cold-start sequence trainer with same-lineage frozen seats, match-pinned assignment, learner-only rows, atomic optimizer/RNG/population resume, source/engine/token identity checks and device-local sampler. Verified in T4: 200 CUDA updates, real resume and 34,204 historical-policy decisions |
-| `train.history_ddp` | Opt-in data-parallel trainer (September 26): each rank is a full `HistoryTrainer` with its own environments; per-minibatch gradients averaged over gloo on CPU; parameter checksum verified across ranks every update; resume supported. `world_size = 1` is bitwise the base trainer. Engineering-verified; changes the effective batch, so it needs a development A/B before use as evidence ([run 2](reports/history-recipe2-2026-09-26.md)) |
-| `eval.history_policy` | T3 adapter: history policies receive every public action in every evaluator and reset per match/leg; `load_policy` returns it for `history_ppo` checkpoints |
-| `train.belief_experiment`, `train.memory_experiment` | Historical supervised experiments; not architecture gates |
-| `scripts/preflight.sh` | Existing MLP update/resume check; cannot certify the new sequence trainer |
-| `eval.arena`, `eval.duplicate`, `eval.batched`, `eval.danlm.arena` | Evaluators with history hooks (T3); `eval.probes`, `eval.tribute`, `eval.stage_b_baseline`, `eval.record_games` remain unhooked and fail explicitly with a history policy |
-| `infra.runpod`, `infra.watchdog`, `infra.sync` | Existing lifecycle components whose trainer wiring must be verified |
+| Sequence self-play PPO | `train.history_config`, `train.history_ppo`, `train.history_rollout`, `train.history_population` |
+| Multiple training ranks | `train.history_ddp`; check the run's actor/rank and batch semantics |
+| Load a history checkpoint for evaluation | `eval.history_policy`, `eval.policies` (`history_ppo` checkpoint marker) |
+| Frozen development evaluation | `eval.history_frozen`; scalar / batched backend parity is workload-specific |
+| External-agent evaluation | `eval.danlm.arena`; retain failed deals, exclusions and candidate-filter statistics |
+| Test-time search | `eval.search`; [search evidence](reports/strength-summary-2026-10-04.md) |
+| Botzone package | `eval/botzone/`; [deployment receipt](reports/botzone-search-2026-10-04.md) |
+| Legacy MLP path | `train.dmc`, `train.ppo`, M1/B8/B11 configs; historical, not the Transformer launch route |
 
-The old `infra/run_train.sh`/bootstrap path was built around MLP configs and
-preflight. Verify its actual module, config and lifecycle behavior before
-reusing it for the new trainer. No proposed config field is an implemented CLI.
+Inspect the module's current CLI/config and checkpoint source identity before
+launching. `scripts/preflight.sh` is the legacy MLP preflight. The old
+`infra/run_train.sh` wiring must be checked before reusing it for a sequence
+trainer. Local artifact paths and approved budgets in old reports do not
+identify today's checkpoint or authorize a new rental.
 
 Run configuration and CLI parsing live in `train.history_config`, which uses
 only the standard library; `train.history_ppo` owns the training lifecycle.
@@ -50,86 +33,6 @@ shared by training, caches, evaluators and historical log writers.
 `eval.history_policy` runs the actor. `train.advantages` supplies the shared GAE
 calculation; history rollout keeps its round-terminal, zero-bootstrap interface.
 The original module imports remain available as compatibility exports.
-
-## Verified bounded T4 workload
-
-The [T4 run contract](reports/history-t4-readiness-2026-09-26.md) records the
-prelaunch budget and frozen evaluators; the [completed receipt](reports/history-t4-pilot-2026-09-26.md)
-records the approved execution and teardown. `infra.history_pilot prepare --kit DIR`
-writes an allowlisted source archive, manifest, payload/setup.sh, payload/run.sh,
-config and a separate local evaluation directory. It does not allocate compute.
-Preparation uses Python 3.12 at `.work/external/danlm-venv/bin/python` on this
-checkout because `.venv` is absent. Run with `PYTHONPATH=python:oracle:.`.
-
-After explicit rental approval, `infra.runpod create` allocates the one reviewed
-resource and `infra.history_monitor` immediately starts an independent provider
-guard, waits for SSH, verifies the uploaded archive, builds and launches the
-bounded workload. Neither old preflight nor MLP training is invoked. The monitor
-syncs without deletion, inspects learning metrics every 30 seconds, checks
-completed artifacts against remote SHA-256 values, deletes only its owned pod
-and records provider readback. Guard availability still depends on this Mac
-and provider connectivity; it is not a provider-enforced TTL.
-
-`bench.history_ppo` first measures actual growing full-match prefixes for 4/8/16
-environments at width 64, two layers, FP32, no TF32 and no snapshot mixing. It
-reports all-seat collection decisions/sec, unique learned rows/sec, epoch
-exposures/sec, prefix lengths and CUDA peak allocated/reserved memory. A case
-must reach a mean prefix of at least 720, retain half of its throughput near
-144 tokens and reserve less than 70% of device memory. These are predeclared
-engineering stop rules, not universal hardware performance claims. A failed
-sweep ends the workload; batch KV cache work then needs full-prefix parity,
-weight-version invalidation and raw-history rebuild tests before another run.
-
-Only a passing measured configuration enters the bounded population pilot.
-The first completed updates create snapshots; a save/resume exercise restores
-actor, critic, optimizer, sampler and population, discards incomplete rounds
-and reconstructs new histories. The current implementation has no persistent
-cache. Evaluation reads only the frozen development deals through
-`python -m eval.history_frozen --freeze FILE --candidate FILE --output FILE`.
-It writes duplicate raw legs and same-seed full-match seat-swap pairs, with
-whole-pair bootstrap intervals. There is no final-test switch.
-
-The completed run selected eight environments: collection retained 67.2% of
-its speed as mean prefix grew from 166 to 754 tokens. It completed 200 updates
-and 63,948 learner training rows. All 54 remote artifacts were hash-verified,
-the pod was deleted, and independent provider readback showed zero pods / $0
-hourly spend. Initial/final development scores improved but full-match wins
-remained 0/16 against each frozen MLP. This is no playing-strength promotion.
-
-The population pilot reached 2,403-token prefixes and 24.31 GB allocator
-reservation despite only 1.55 GB peak allocated tensor memory. The short-sweep
-memory margin therefore does not certify sustained headroom. Profile before
-scaling; no persistent KV cache or asymptotic scaling improvement is claimed.
-
-## Recipe runs after T4 (September 26)
-
-Five bounded CPU-on-pod recipe runs are summarized in
-[the recipe summary](reports/history-recipe-summary-2026-09-26.md). Development
-findings, all against the batch-size kit's A-arm control with in-pod controls:
-two PPO epochs is a seed-robust improvement (the `HistoryPPOConfig` default is
-already `epochs=2`; the T4/batch kits overrode it to 1); data-parallel
-collection and current-policy-only self-play speed learning further; four
-epochs, a 16-snapshot population, GAE lambda 1.0 and critic lr 1e-3 were worse.
-None is a strength claim. The kit tooling (`prepare.py`, `arm.py`,
-`arm_ddp.py`, `recipe.py`, `lifecycle.py`, `analyze.py`, `pooled.py`) lives in
-`.work/history-recipe-kits/`; `lifecycle.py` keeps the cumulative ledger.
-The small history model trains faster on the pod's CPUs than on its GPU;
-training on CPU is the FP32 reference path covered by the equivalence tests.
-
-## Speed options after the refactor (September 29)
-
-The [refactor report](reports/training-stack-refactor-2026-09-29.md) adds
-four opt-in, resume-overridable options: `--rollout-paged-cache` (one page
-pool for every identity's public KV cache; bitwise on CPU; replaces
-`--rollout-triton-cache`), `--batch-snapshot-encoder` (one merged snapshot
-encode per step), `--learner-length-groups N` (learner encode in length
-groups, each stream only as far as its rows read) and `--rollout-page-span`
-(page-padded rather than power-of-two attention spans). The last three are
-tier 2. Default behaviour is bitwise unchanged on CPU. On an M4 Pro CPU all
-four together took 87 s per 10 production-architecture updates against
-149 s; GPU speed is unmeasured. `python -m bench.history_arms` compares
-options in-run from a checkpoint without touching the lineage; the report
-lists the GPU gate and A/B commands.
 
 ## Local development checks
 
@@ -300,7 +203,36 @@ remaining hourly spend/resources. Stopping Python is not stopping billing.
 Do not keep a failed node running indefinitely because artifact transfer failed;
 follow the bounded shutdown plan and report any loss.
 
+Main-lineage archive (October 6, 2026). `.work/lineage/main/` keeps one main-path
+checkpoint per 100M self-play decisions plus the named milestones (u675 ...
+u35588), as `u<update>-<decisions>M.pt` with `.work/lineage/index.json`
+(source, decisions, sha256). `python .work/lineage/archive.py --apply` adds new
+ones: local files are hard links, Velocity files are pulled over the UW VPN
+and checked for lineage id and progress. Run it whenever a remote run is
+checked or synced; cluster home directories are wiped each term, and
+pre-u675 snapshots were lost to an earlier cleanup. Cleanup scripts must treat
+`.work/lineage/` as protected. Side arms (wide, lr-decay, aux-control, ...)
+share the lineage id but are not on the main path and are not archived there.
+
 ## Independent evaluation
+
+**Yardsticks from October 3, 2026.** B11 is saturated (the lineage wins ~86% of
+matches; the three Oct 3 arms were indistinguishable on 256 deals while DanLM
+separated them), so a nightly report uses: the external yardstick, DanLM on
+4,000 deals (±0.035); the internal yardstick, the new endpoint against the
+previous lineage endpoint on 2,000 deals (`python -m eval.lineage_eval`,
+batched MPS, about 7 minutes; identical checkpoints score exactly 0); and B11 on
+256 deals as a one-line sanity check only. `scripts/eval_night.sh SEGMENT NAME
+BASELINE.pt` runs all three plus a checkpoint curve against the baseline
+(`scripts/eval_night_summary.py` prints it). First use: u15094 vs u9989 +0.198
+[0.141, 0.259] on 2,000 deals; then u20264 vs u15094 +0.243 [0.184, 0.298].
+
+**Engine digest, version 2 (October 3, 2026).** `infra.history_artifacts.engine_digest`
+covers the game-dynamics sources only (`cpp/include/gd/*.h`, `cpp/src/*.cpp`
+minus the evaluation-only `search.h`/`search.cpp`; `python/bindings.cpp` is out).
+A resume accepts an older checkpoint when the version-2 digest recomputed from
+its recorded per-file hashes matches (`engine_compatible`); frozen evaluation
+files may carry either digest; the B11 freeze was rewritten with the new one.
 
 Freeze MLP evaluator checkpoint hashes and their exact policy semantics before
 the pilot. An old checkpoint may load its own reference inside the evaluator
@@ -346,3 +278,35 @@ mapping failures and rule limitations are documented in
 failures/exclusions visible and do not claim the adapter makes legal sets
 identical. Historical training commands/results remain in Git history and
 dated reports; they are not the new experiment's launch instructions.
+
+## Implementation and experiment receipts
+
+These headings remain for existing links; the detailed chronology moved.
+
+## Implementation status and entrypoints
+
+See [the dated record](TRAINING_EVIDENCE.md#implementation-status-and-entrypoints).
+
+## Verified bounded T4 workload
+
+See [the dated record](TRAINING_EVIDENCE.md#verified-bounded-t4-workload).
+
+## Recipe runs after T4 (September 26)
+
+See [the dated record](TRAINING_EVIDENCE.md#recipe-runs-after-t4-september-26).
+
+## Speed options after the refactor (September 29)
+
+See [the dated record](TRAINING_EVIDENCE.md#speed-options-after-the-refactor-september-29).
+
+## Auxiliary heads on the shared encoder (October 2)
+
+See [the dated record](TRAINING_EVIDENCE.md#auxiliary-heads-on-the-shared-encoder-october-2).
+
+## Learning-rate decay (October 4)
+
+See [the dated record](TRAINING_EVIDENCE.md#learning-rate-decay-october-4).
+
+## Planted-habit diagnostic (September 30)
+
+See [the dated record](TRAINING_EVIDENCE.md#planted-habit-diagnostic-september-30).

@@ -352,8 +352,7 @@ class TritonHistoryCache(BatchedHistoryCache):
         if retired:
             self.copy_stats["table_prunes"] += 1
 
-    @torch.no_grad()
-    def encode(self, keys, streams, **kwargs):
+    def _on_owner_stream(self, call, *args, **kwargs):
         # Unchanged prefixes skip _append; growth copies old allocations inside
         # _entry. Reject a different stream before either path can touch them.
         owner = self._owner_stream
@@ -363,12 +362,20 @@ class TritonHistoryCache(BatchedHistoryCache):
         if device.type == "cuda" and owner is None:
             self._owner_stream = torch.cuda.current_stream(device)
         try:
-            return super().encode(keys, streams, **kwargs)
+            return call(*args, **kwargs)
         finally:
             # Base invalidation can call clear() before an eager-only encode.
             # Bind partially completed/error paths as well as successful ones.
             if device.type == "cuda" and self._owner_stream is None:
                 self._owner_stream = torch.cuda.current_stream(device)
+
+    @torch.no_grad()
+    def encode(self, keys, streams, **kwargs):
+        return self._on_owner_stream(super().encode, keys, streams, **kwargs)
+
+    @torch.no_grad()
+    def prefill(self, keys, streams):
+        return self._on_owner_stream(super().prefill, keys, streams)
 
     def _supported_entries(self, entries, counts):
         actor, cfg = self.actor, self.actor.config

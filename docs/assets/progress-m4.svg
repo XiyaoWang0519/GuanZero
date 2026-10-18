@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 444" width="880" height="444" role="img" aria-labelledby="t d">
+<title id="t">GuanZero against the strongest published Guandan agent</title><desc id="d">Net levels per round against the strongest published Guandan agent on 4,000 duplicate deals, rising from −2.05 at 172M self-play decisions to −1.56 at 989M, −1.36 at 1.33B, −1.15 at 1.83B, −0.87 at 2.33B, −0.66 at 2.84B and −0.55 at 3.33B; with test-time search −1.71 at 172M, −1.33 at 989M and −0.51 at 2.84B on 200-800 paired deals. 0 would be parity.</desc>
+<style>
+.bg{fill:#fbf8f3}.ink{fill:#1d1a16}.ink2{fill:#5b5650}.mute{fill:#8a847b}
+.grid{stroke:#e7e1d7;stroke-width:1}.axis{stroke:#bdb5a8;stroke-width:1}
+.ln{stroke:#c0392b;stroke-width:2.25;fill:none;stroke-linejoin:round;stroke-linecap:round}
+.dot{fill:#c0392b;stroke:#fbf8f3;stroke-width:2}.ci{stroke:#c0392b;stroke-opacity:.45;stroke-width:1.5}
+.hol{fill:#fbf8f3;stroke:#c0392b;stroke-width:2.25}.ref{stroke:#8a847b;stroke-width:1.25;stroke-dasharray:4 5}
+.lead{stroke:#bdb5a8;stroke-width:1}
+.sl{stroke:#2f5f9e;stroke-width:2.25;fill:none;stroke-dasharray:6 5;stroke-linecap:round}.sh{fill:#fbf8f3;stroke:#2f5f9e;stroke-width:2.25}.sci{stroke:#2f5f9e;stroke-opacity:.45;stroke-width:1.5}
+text{font-family:ui-sans-serif,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif}
+.serif{font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif}
+</style>
+<rect class="bg" width="880" height="444" rx="14"/>
+<text class="ink serif" x="76" y="34" font-size="19">Closing the gap to the strongest published agent</text>
+<text class="ink2" x="76" y="54" font-size="12.5">Net levels per round on duplicate deals · 0 = equal strength</text>
+<line class="grid" x1="76" x2="820" y1="348.9" y2="348.9"/>
+<text class="mute" x="66" y="352.9" font-size="11.5" text-anchor="end">−2.0</text>
+<line class="grid" x1="76" x2="820" y1="317.8" y2="317.8"/>
+<text class="mute" x="66" y="321.8" font-size="11.5" text-anchor="end">−1.8</text>
+<line class="grid" x1="76" x2="820" y1="286.7" y2="286.7"/>
+<text class="mute" x="66" y="290.7" font-size="11.5" text-anchor="end">−1.6</text>
+<line class="grid" x1="76" x2="820" y1="255.6" y2="255.6"/>
+<text class="mute" x="66" y="259.6" font-size="11.5" text-anchor="end">−1.4</text>
+<line class="grid" x1="76" x2="820" y1="224.4" y2="224.4"/>
+<text class="mute" x="66" y="228.4" font-size="11.5" text-anchor="end">−1.2</text>
+<line class="grid" x1="76" x2="820" y1="193.3" y2="193.3"/>
+<text class="mute" x="66" y="197.3" font-size="11.5" text-anchor="end">−1.0</text>
+<line class="grid" x1="76" x2="820" y1="162.2" y2="162.2"/>
+<text class="mute" x="66" y="166.2" font-size="11.5" text-anchor="end">−0.8</text>
+<line class="grid" x1="76" x2="820" y1="131.1" y2="131.1"/>
+<text class="mute" x="66" y="135.1" font-size="11.5" text-anchor="end">−0.6</text>
+<line class="axis" x1="76" x2="820" y1="380" y2="380"/>
+<text class="mute" x="76.0" y="400" font-size="11.5" text-anchor="middle">0</text>
+<text class="mute" x="182.3" y="400" font-size="11.5" text-anchor="middle">500M</text>
+<text class="mute" x="288.6" y="400" font-size="11.5" text-anchor="middle">1B</text>
+<text class="mute" x="394.9" y="400" font-size="11.5" text-anchor="middle">1.5B</text>
+<text class="mute" x="501.1" y="400" font-size="11.5" text-anchor="middle">2B</text>
+<text class="mute" x="607.4" y="400" font-size="11.5" text-anchor="middle">2.5B</text>
+<text class="mute" x="713.7" y="400" font-size="11.5" text-anchor="middle">3B</text>
+<text class="mute" x="820.0" y="400" font-size="11.5" text-anchor="middle">3.5B</text>
+<text class="ink2" x="820" y="422" font-size="12" text-anchor="end">self-play decisions</text>
+<line class="ref" x1="76" x2="820" y1="354.0" y2="354.0"/>
+<text class="ink2" x="410.8" y="370.0" font-size="11.5">our strongest MLP agent  −2.03  ·  trained on ≈1.0B decisions</text>
+<text class="mute" x="820" y="54" font-size="11.5" text-anchor="end">equal strength is 0, above the frame ↑</text>
+<line class="ci" x1="112.5" x2="112.5" y1="360.8" y2="350.8"/>
+<line class="ci" x1="119.1" x2="119.1" y1="355.5" y2="345.2"/>
+<line class="ci" x1="125.3" x2="125.3" y1="354.6" y2="344.9"/>
+<line class="ci" x1="130.9" x2="130.9" y1="352.6" y2="342.7"/>
+<line class="ci" x1="136.1" x2="136.1" y1="351.8" y2="341.8"/>
+<line class="ci" x1="140.9" x2="140.9" y1="348.2" y2="337.7"/>
+<line class="ci" x1="144.3" x2="144.3" y1="347.2" y2="337.1"/>
+<line class="ci" x1="167.6" x2="167.6" y1="339.3" y2="328.7"/>
+<line class="ci" x1="188.2" x2="188.2" y1="321.9" y2="310.9"/>
+<line class="ci" x1="215.1" x2="215.1" y1="312.2" y2="301.3"/>
+<line class="ci" x1="286.3" x2="286.3" y1="285.8" y2="274.4"/>
+<line class="ci" x1="358.3" x2="358.3" y1="254.4" y2="242.6"/>
+<line class="ci" x1="464.7" x2="464.7" y1="222.7" y2="210.9"/>
+<line class="ci" x1="571.8" x2="571.8" y1="178.6" y2="167.1"/>
+<line class="ci" x1="678.9" x2="678.9" y1="147.1" y2="135.4"/>
+<line class="ci" x1="784.3" x2="784.3" y1="128.3" y2="117.0"/>
+<path class="ln" d="M112.5,355.9 L119.1,350.3 L125.3,349.8 L130.9,347.6 L136.1,347.2 L140.9,343.0 L144.3,342.2 L167.6,334.1 L188.2,316.4 L215.1,306.7 L286.3,280.1 L358.3,248.6 L464.7,216.8 L571.8,172.9 L678.9,141.2 L784.3,122.7"/>
+<circle class="dot" cx="112.5" cy="355.9" r="4.5"/>
+<circle class="dot" cx="119.1" cy="350.3" r="4.5"/>
+<circle class="dot" cx="125.3" cy="349.8" r="4.5"/>
+<circle class="dot" cx="130.9" cy="347.6" r="4.5"/>
+<circle class="dot" cx="136.1" cy="347.2" r="4.5"/>
+<circle class="dot" cx="140.9" cy="343.0" r="4.5"/>
+<circle class="dot" cx="144.3" cy="342.2" r="4.5"/>
+<circle class="dot" cx="167.6" cy="334.1" r="4.5"/>
+<circle class="dot" cx="188.2" cy="316.4" r="4.5"/>
+<circle class="dot" cx="215.1" cy="306.7" r="4.5"/>
+<circle class="dot" cx="286.3" cy="280.1" r="4.5"/>
+<circle class="dot" cx="358.3" cy="248.6" r="4.5"/>
+<circle class="dot" cx="464.7" cy="216.8" r="4.5"/>
+<circle class="dot" cx="571.8" cy="172.9" r="4.5"/>
+<circle class="dot" cx="678.9" cy="141.2" r="4.5"/>
+<circle class="dot" cx="784.3" cy="122.7" r="4.5"/>
+<line class="sci" x1="112.5" x2="112.5" y1="327.7" y2="279.6"/>
+<line class="sci" x1="144.3" x2="144.3" y1="316.6" y2="268.4"/>
+<line class="sci" x1="167.6" x2="167.6" y1="308.1" y2="257.1"/>
+<line class="sci" x1="188.3" x2="188.3" y1="295.7" y2="243.6"/>
+<line class="sci" x1="215.1" x2="215.1" y1="276.3" y2="233.4"/>
+<line class="sci" x1="286.3" x2="286.3" y1="267.2" y2="222.9"/>
+<line class="sci" x1="464.7" x2="464.7" y1="223.7" y2="170.7"/>
+<line class="sci" x1="571.8" x2="571.8" y1="184.8" y2="130.7"/>
+<line class="sci" x1="678.9" x2="678.9" y1="129.9" y2="103.7"/>
+<path class="sl" d="M112.5,303.9 L144.3,292.9 L167.6,283.0 L188.3,269.8 L215.1,255.1 L286.3,245.1 L464.7,196.8 L571.8,157.6 L678.9,116.9"/>
+<circle class="sh" cx="112.5" cy="303.9" r="5"/>
+<circle class="sh" cx="144.3" cy="292.9" r="5"/>
+<circle class="sh" cx="167.6" cy="283.0" r="5"/>
+<circle class="sh" cx="188.3" cy="269.8" r="5"/>
+<circle class="sh" cx="215.1" cy="255.1" r="5"/>
+<circle class="sh" cx="286.3" cy="245.1" r="5"/>
+<circle class="sh" cx="464.7" cy="196.8" r="5"/>
+<circle class="sh" cx="571.8" cy="157.6" r="5"/>
+<circle class="sh" cx="678.9" cy="116.9" r="5"/>
+<text class="ink" x="100.5" y="307.9" font-size="12.5" text-anchor="end" font-weight="600">−1.71</text>
+<text class="ink" x="276.3" y="235.1" font-size="12.5" text-anchor="end" font-weight="600">−1.33</text>
+<text class="ink" x="668.9" y="108.9" font-size="12.5" text-anchor="end" font-weight="600">−0.51</text>
+<text class="ink" x="294.3" y="300.1" font-size="12.5" text-anchor="start" font-weight="600">−1.56</text>
+<text class="ink2" x="294.3" y="315.1" font-size="11" text-anchor="start" font-weight="400">+ auxiliary heads</text>
+<text class="ink2" x="106.5" y="373.9" font-size="11.5" text-anchor="end" font-weight="400">−2.05</text>
+<text class="ink" x="366.3" y="268.6" font-size="12.5" text-anchor="start" font-weight="600">−1.36</text>
+<text class="ink" x="796.3" y="126.7" font-size="12.5" text-anchor="start" font-weight="600">−0.55</text>
+<line x1="76" x2="102" y1="82" y2="82" class="ln"/><circle class="dot" cx="89" cy="82" r="4"/>
+<text class="ink2" x="110" y="86" font-size="12">policy alone · 4,000 deals</text>
+<line x1="296" x2="322" y1="82" y2="82" class="sl"/><circle class="sh" cx="309" cy="82" r="4"/>
+<text class="ink2" x="330" y="86" font-size="12">with test-time search · 200–800 paired deals</text>
+</svg>

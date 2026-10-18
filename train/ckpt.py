@@ -22,7 +22,11 @@ def restore_rng(state: dict[str, Any], rng: np.random.Generator) -> None:
     rng.bit_generator.state = state["numpy"]
     torch.set_rng_state(state["torch"].cpu())
     if state.get("cuda") and torch.cuda.is_available():
-        torch.cuda.set_rng_state_all([item.cpu() for item in state["cuda"]])
+        # A resume can see fewer devices than the save did (a rank pinned to
+        # one GPU after a save that saw all four); unseen devices have no
+        # generator to restore.
+        for index, item in enumerate(state["cuda"][:torch.cuda.device_count()]):
+            torch.cuda.set_rng_state(item.cpu(), index)
 
 
 def save_checkpoint(path: str | Path, payload: dict[str, Any]) -> None:

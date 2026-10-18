@@ -173,7 +173,12 @@ def test_resume_under_other_source_only_on_request(tmp_path):
                                             source_sha256="old-source", revision="old"))
     with pytest.raises(ValueError, match="identity mismatch"):
         HistoryTrainer(small_config(updates=2), tmp_path / "strict", resume=older)
-    for name, identity in (("engine.pt", dict(engine_digest="other-engine")),
+    # An engine mismatch is a changed dynamics source (the recorded digest alone
+    # may differ across digest versions; the per-file hashes decide).
+    other_engine = dict(good["run_identity"]["source"],
+                        files=dict(good["run_identity"]["source"]["files"],
+                                   **{"cpp/src/rules.cpp": "0" * 64}))
+    for name, identity in (("engine.pt", dict(engine_digest="other-engine", source=other_engine)),
                            ("tokens.pt", dict(token_schema=99))):
         with pytest.raises(ValueError, match="identity mismatch"):
             HistoryTrainer(small_config(updates=2), tmp_path / name[:-3], resume=variant(name, **identity),
@@ -268,3 +273,25 @@ def test_cprofile_hook_profiles_the_cli_trainer(tmp_path, monkeypatch):
     stats = pstats.Stats(str(tmp_path / "prof" / "rank-0.prof"))
     ours = {name for path, _, name in stats.stats if path.endswith("history_ppo.py")}
     assert {"run", "update", "collect", "learn", "save"} <= ours
+
+
+def test_lr_decay_is_linear_absolute_and_set_on_resume(tmp_path):
+    output = tmp_path / "run"
+    trainer = HistoryTrainer(small_config(updates=2), output)
+    trainer.run()
+    assert trainer.lr_scale(5) == 1.0, "no schedule: constant rates"
+    overrides = history_ppo.parse_resume_overrides(
+        ["lr_final=3e-5", "lr_decay_start=2", "lr_decay_updates=4"])
+    resumed = HistoryTrainer(small_config(updates=4), output / "resumed",
+                             resume=output / "latest.pt", resume_overrides=overrides)
+    assert resumed.lr_scale(0) == pytest.approx(1.0)
+    assert resumed.lr_scale(4) == pytest.approx(1.0 - 0.9 * 0.5)
+    assert resumed.lr_scale(6) == pytest.approx(0.1) == resumed.lr_scale(100)
+    lines = []
+    for _ in range(2):
+        lines.append(resumed.update())
+    assert [l["lr_scale"] for l in lines] == pytest.approx([1.0, 1.0 - 0.9 * 0.25])
+    assert resumed.actor_optimizer.param_groups[0]["lr"] == pytest.approx(3e-4 * (1 - 0.9 * 0.25))
+    assert resumed.critic_optimizer.param_groups[0]["lr"] == pytest.approx(3e-4 * (1 - 0.9 * 0.25))
+    with pytest.raises(ValueError):
+        small_config(lr_decay_updates=4, lr_final=1e-3)

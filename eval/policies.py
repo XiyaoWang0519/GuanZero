@@ -230,7 +230,8 @@ def load_policy(spec: str, device: str = "cpu", margin: float = 0.0) -> Policy:
                 key, _, value = item.partition("=")
                 if key not in names or not value:
                     raise ValueError(f"unknown search setting {item!r}")
-                overrides[key] = float(value) if "." in value else int(value)
+                overrides[key] = (value if key in ("selection", "trigger") else
+                                  float(value) if "." in value else int(value))
         if not checkpoint_path:
             raise ValueError("search policy requires a checkpoint path")
         return SearchPolicy(load_policy(checkpoint_path, device, margin), SearchConfig(**overrides))

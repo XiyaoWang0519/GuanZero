@@ -1,6 +1,8 @@
 # Stage C: Transformer self-play from scratch
 
-Current plan, September 25, 2026. Source: [DESIGN.md](DESIGN.md), especially
+Baseline milestone plan, September 25, 2026. Navigation reviewed October 6.
+See [STATUS.md](STATUS.md) for later directions and [TRAINING.md](TRAINING.md)
+for operations. Detailed rows below retain their receipt dates. Source: [DESIGN.md](DESIGN.md), especially
 sections 1, 7--9. This replaces the old C0--C8 execution order and G6--G12
 promotion gates; those labels in dated reports retain their historical meaning.
 
@@ -20,14 +22,18 @@ exposing an opponent's engine-private forced-pass/legality flag.
 
 ## Current implementation boundary
 
-The engine, public event logging, basic Transformer/cache prototypes, old PPO
-utilities and evaluation adapters exist. `train/behaviour_probe.py` is an
-offline diagnostic, not a cold-start RL trainer. `train/ppo.py` still requires
-the old MLP reference and its collector/buffer do not establish sequence RL.
-The newly planned tasks below are pending unless an explicit receipt is added.
-Existing partial code or tests in another session are not completion evidence.
+The sequence actor, collector, PPO trainer, Transformer population and
+history-aware evaluators have dated implementation receipts in T1--T5 below.
+Later cache, CUDA and actor-parallel engineering is indexed in
+[PERF_TODO.md](PERF_TODO.md) and [TRAINING_EVIDENCE.md](TRAINING_EVIDENCE.md).
+These receipts describe tested scopes; verify the owning code for today's task.
+`train/behaviour_probe.py` is an offline diagnostic and `train/ppo.py` is the
+legacy MLP path. Neither is the new sequence trainer's launch command.
 
 ## Work queue
+
+Baseline milestone IDs and dated receipts; use [STATUS.md](STATUS.md) for
+later directions.
 
 | ID | Work | Depends on | Acceptance | Status |
 |---|---|---|---|---|
