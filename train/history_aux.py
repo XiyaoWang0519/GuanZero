@@ -92,6 +92,23 @@ _SEAT_FIELD, _TYPE_FIELD = _CATEGORICAL.index("seat"), _CATEGORICAL.index("type"
 CARD_TOKENS = slice(CARDS1.start, CARDS2.stop)
 CARD_LOGITS = slice(NEXT_SLICES["cards1"].start, NEXT_SLICES["cards2"].stop)
 assert CARDS1.stop == CARDS2.start and NEXT_SLICES["cards1"].stop == NEXT_SLICES["cards2"].start
+# Compact loss: every categorical field's logits padded to a common width with
+# an appended -inf column (index NEXT_LOGITS), so one log-softmax covers all six.
+_PAD = max(NEXT_SLICES[name].stop - NEXT_SLICES[name].start for name in _CATEGORICAL)
+_LOGIT_LAYOUT = [list(range(NEXT_SLICES[name].start, NEXT_SLICES[name].stop))
+                 + [NEXT_LOGITS] * (_PAD - (NEXT_SLICES[name].stop - NEXT_SLICES[name].start))
+                 for name in _CATEGORICAL]
+_LOGIT_LAYOUT_CACHE: dict[torch.device, Tensor] = {}
+
+
+def _logit_layout(device: torch.device) -> Tensor:
+    """The compact loss's constant column index, uploaded once per device (not per
+    call: a tensor from Python data is a host-to-device copy, a stream sync on CUDA)."""
+    if device not in _LOGIT_LAYOUT_CACHE:
+        with torch.inference_mode(False):
+            _LOGIT_LAYOUT_CACHE[device] = torch.tensor(_LOGIT_LAYOUT, dtype=torch.long,
+                                                       device=device).reshape(-1)
+    return _LOGIT_LAYOUT_CACHE[device]
 
 
 def next_token_targets(tokens: Tensor) -> list[Tensor]:
@@ -167,6 +184,32 @@ def next_token_loss(logits: Tensor, tokens: Tensor, valid: Tensor) -> dict[str, 
     loss = loss + stats["next_bomb_loss"]
     stats["next_loss"] = loss / NEXT_FIELDS
     stats.update(_next_token_rates(logits, tokens, targets, weight, total))
+    return stats
+
+
+def next_token_loss_compact(logits: Tensor, tokens: Tensor) -> dict[str, Tensor]:
+    """``next_token_loss`` over rows that are all valid positions, fused
+    (``learner_compact_next``, tier 2): one log-softmax over the six
+    categorical fields padded to a common width with ``-inf``, one binary
+    cross-entropy over the 108 card bits and one column sum for the eight
+    field means. Same statistics, FP32 reduction order differs."""
+    logits = logits.reshape(-1, NEXT_LOGITS).float()
+    tokens = tokens.reshape(-1, TOKEN_DIM)
+    count = len(logits)
+    targets = next_token_targets(tokens)
+    wide = torch.cat((logits, logits.new_full((count, 1), float("-inf"))), 1)
+    log_probs = wide.index_select(1, _logit_layout(logits.device)).view(
+        count, len(_CATEGORICAL), _PAD).log_softmax(-1)
+    nll = -log_probs.gather(-1, torch.stack(targets, 1)[..., None])[..., 0]  # [N, 6]
+    cards = tokens[:, CARD_TOKENS].to(logits.dtype)
+    bce = F.binary_cross_entropy_with_logits(logits[:, CARD_LOGITS], cards, reduction="none")
+    bce = bce.view(count, len(MULTI_HOT_FIELDS), NUM_CARDS).mean(-1)        # [N, 2]
+    total = max(count, 1)
+    per_field = torch.cat((nll, bce), 1).sum(0) / total
+    names = (*_CATEGORICAL, *(name for name, _ in MULTI_HOT_FIELDS))
+    stats = {f"next_{name}_loss": value for name, value in zip(names, per_field.unbind())}
+    stats["next_loss"] = per_field.sum() / NEXT_FIELDS
+    stats.update(_next_token_rates(logits, tokens, targets, None, total))
     return stats
 
 

@@ -9,7 +9,12 @@ are fused with integer-exact reductions, and the auxiliary mode's zero response
 bridge keeps only its (zero) gradient. All of that is bitwise: a full two-epoch
 ``learn()`` reproduces the reference implementation (frozen below as it was at
 commit 090f337) in every parameter, Adam moment and logged statistic.
+
+``learner_compact_next`` is the one tier-2 switch here (fused next-token loss on
+valid positions only): checked against the default path with tolerances.
 """
+from dataclasses import replace
+import json
 import math
 import pickle
 
@@ -22,10 +27,12 @@ from torch.utils._python_dispatch import TorchDispatchMode
 from train import history_model
 from train.history_aux import (BOMB, BOMB_CLASSES, MULTI_HOT_FIELDS, NEXT_FIELDS, NEXT_LOGITS,
                                NEXT_SLICES, ONE_HOT_FIELDS, belief_loss, next_token_loss,
-                               next_token_targets, outcome_loss, round_outcomes)
+                               next_token_loss_compact, next_token_targets, outcome_loss,
+                               round_outcomes)
 from train.history_model import (HistoryActor, HistoryPolicyConfig, RESPONSE_CLASSES,
                                   position_table, sinusoidal)
-from train.history_ppo import HistoryPPOConfig, HistoryTrainer, segment_entropy
+from train.history_ppo import (HistoryPPOConfig, HistoryTrainer, RESUME_OVERRIDES, build_parser,
+                               parse_resume_overrides, segment_entropy)
 from train.history_response import opponent_response_labels
 from train.logs import TOKEN_DIM
 
@@ -348,8 +355,9 @@ def dispatched(trainer: HistoryTrainer, rows) -> list[str]:
     return mode.names
 
 
-def test_forward_and_backward_never_wait_for_the_device(tmp_path, collected):
-    trainer = finalized(tmp_path, collected)
+@pytest.mark.parametrize("compact", [False, True])
+def test_forward_and_backward_never_wait_for_the_device(tmp_path, collected, compact):
+    trainer = finalized(tmp_path, collected, learner_compact_next=compact)
     rows = next(iter(trainer.minibatches()))
     trainer.minibatch_loss(rows)            # caches built (position table, field layouts)
     names = dispatched(trainer, rows)
@@ -502,3 +510,70 @@ def test_training_batch_plans_rows_and_next_token_mask(tmp_path, collected):
         assert inputs.next_weight.dtype == torch.float32
         assert torch.equal(inputs.next_weight, mask.float())
         assert inputs.next_positions == int(mask.sum()) > 0
+
+
+# ---- learner_compact_next (tier 2) ---------------------------------------------------
+
+def test_compact_next_loss_matches_the_default_path(tmp_path, collected, exact_cpu):
+    trainer = finalized(tmp_path, collected, **WIDE)
+    rows = next(iter(trainer.minibatches()))
+    params = list(trainer.actor.parameters())
+    results = []
+    for compact in (False, True):
+        trainer.config = replace(trainer.config, learner_compact_next=compact)
+        terms = trainer.minibatch_loss(rows)
+        grads = torch.autograd.grad(terms["policy_total"], params, allow_unused=True)
+        results.append((terms, grads))
+    (ref, ref_grads), (compact, grads) = results
+    assert ref.keys() == compact.keys()
+    worst = 0.0
+    for key in ref:
+        if key.startswith("next_") or key in ("aux_loss", "policy_total"):
+            scale = max(ref[key].abs().item(), 1e-6)
+            worst = max(worst, (compact[key] - ref[key]).abs().item() / scale)
+            torch.testing.assert_close(compact[key], ref[key], rtol=1e-5, atol=1e-6, msg=key)
+        else:
+            assert torch.equal(compact[key], ref[key]), key   # untouched by the head
+    names = [name for name, _ in trainer.actor.named_parameters()]
+    for name, a, b in zip(names, grads, ref_grads):
+        assert (a is None) == (b is None), name
+        if b is not None:
+            torch.testing.assert_close(a, b, rtol=1e-4, atol=1e-7, msg=name)
+    assert worst < 1e-5
+
+
+def test_compact_loss_alone_matches_next_token_loss():
+    generator = torch.Generator().manual_seed(9)
+    tokens = random_tokens(4000, generator)
+    valid = torch.rand(4000, generator=generator) < 0.7
+    logits = torch.randn(4000, NEXT_LOGITS, generator=generator) * 3
+    a = logits.clone().requires_grad_()
+    ref = next_token_loss(a, tokens, valid)
+    ref["next_loss"].backward()
+    b = logits[valid].clone().requires_grad_()
+    compact = next_token_loss_compact(b, tokens[valid])
+    compact["next_loss"].backward()
+    assert ref.keys() == compact.keys()
+    for key in ref:
+        torch.testing.assert_close(compact[key], ref[key], rtol=1e-5, atol=1e-6, msg=key)
+    torch.testing.assert_close(b.grad, a.grad[valid], rtol=1e-4, atol=1e-9)
+    assert not a.grad[~valid].any()
+    empty = next_token_loss_compact(logits[:0].clone().requires_grad_(), tokens[:0])
+    assert all(value.item() == 0.0 for value in empty.values())
+
+
+def test_compact_switch_defaults_off_and_is_resumable(tmp_path):
+    assert HistoryPPOConfig().learner_compact_next is False
+    assert build_parser().parse_args(["--output", "x"]).learner_compact_next is False
+    assert build_parser().parse_args(["--output", "x", "--learner-compact-next"]).learner_compact_next
+    with pytest.raises(ValueError):
+        HistoryPPOConfig(learner_compact_next=True)            # needs length groups
+    assert "learner_compact_next" in RESUME_OVERRIDES
+    assert parse_resume_overrides(["learner_compact_next=true"]) == {"learner_compact_next": True}
+    from bench.history_arms import SWITCHABLE
+    assert "learner_compact_next" in SWITCHABLE
+    trainer = HistoryTrainer(HistoryPPOConfig(**{**LEARNER, **TINY, "learner_compact_next": True}),
+                             tmp_path)
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert manifest["inference"]["learner_compact_next"] is True
+    assert trainer.config.learner_compact_next
