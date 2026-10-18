@@ -98,3 +98,23 @@ def test_two_rank_arms_share_the_launcher_and_accept_spread_gpus(tmp_path):
     assert summary["world_size"] == 2 and summary["spread_gpus"] is True
     assert (output / "rank-1" / "metrics.jsonl").read_text().count("\n") == len(rows)
 
+
+def test_two_rank_arms_switch_gradient_transport_and_adam_live(tmp_path):
+    """ddp_reduce and adam_fused switch inside the running ranks: the shared
+    mapping is created (and self-checked) on first use, the optimizers' Adam
+    implementation follows the arm."""
+    source = tmp_path / "source"
+    config = HistoryPPOConfig(width=32, layers=1, heads=4, num_envs=3, steps_per_update=40,
+                              snapshot_updates=1, minibatch_matches=1, updates=1)
+    HistoryTrainer(config, source).run()
+    output = tmp_path / "arms"
+    assert history_arms.main(["--resume", str(source / "latest.pt"), "--output", str(output),
+                              "--device", "cpu", "--world-size", "2", "--warmup", "1",
+                              "--blocks", "2", "--block-updates", "1", "--arm", "base=",
+                              "--arm", "fast=ddp_reduce=shm,adam_fused=true"]) == 0
+    rows = [json.loads(line) for line in (output / "arms.jsonl").open()]
+    assert [r["arm"] for r in rows] == ["base", "base", "fast", "fast", "base"]
+    lines = [json.loads(line) for line in (output / "metrics.jsonl").open()]
+    assert [line["ddp_reduce"] for line in lines] == ["gloo", "gloo", "shm", "shm", "gloo"]
+    manifest = json.loads((output / "manifest.json").read_text())
+    assert manifest["inference"]["ddp_reduce_fallback"] is None

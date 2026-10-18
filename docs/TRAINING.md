@@ -99,6 +99,23 @@ are folded into their Python callers' own time; `GUANZERO_CPROFILE_BUILTINS=1`
 lists them, but under Python 3.12 some torch C calls then drop the enclosing
 frames (`run`, `update`, `collect`) from the call tree.
 
+Learner step options (October 18, 2026; CPU-verified, GPU speed unmeasured).
+`--ddp-reduce shm` (history_ddp; default `gloo`; resume-settable and
+switchable in `bench.history_arms`) replaces gloo's TCP ring for the gradient
+all-reduce with a same-node `/dev/shm` mapping (`train/history_shm_reduce.py`)
+that adds in gloo's ring order, so the sums equal `dist.all_reduce` bit for bit
+at any world size (CPU tests at 2-4 ranks, trainer parameters included). The
+order model is empirical: at start-up seeded probes of the real size must
+reduce to gloo's bits, and a mismatch or a `/dev/shm` without room keeps the
+run on gloo; the manifest (`ddp_reduce_active`, `ddp_reduce_fallback`) and each
+metrics line (`ddp_reduce`) say which transport ran. It needs about
+`(W + 2) x 8.6 MB` of `/dev/shm` for the main lineage's model. `--adam-fused`
+(default off, resume-settable) uses fused Adam kernels: tier 2 (FP32 order),
+needs the usual in-run A/B before adoption. Optimizer state loads in either
+direction; resumed runs now keep the default path's Adam step counters on the
+CPU instead of where `map_location` put them (bitwise; it removes per-step
+`.item()` reads of GPU counters).
+
 Use the existing Python environment with the matching C++ extension. Fresh
 installation uses Python 3.11+, C++20, CMake 3.24+ and Ninja:
 

@@ -40,7 +40,7 @@ import signal
 from pathlib import Path
 import sys
 import time
-from typing import Any, Iterator
+from typing import Any, Iterator, Sequence
 import uuid
 
 import gd
@@ -55,7 +55,7 @@ from train.history_model import (extend_actor, STAGE, TOKEN_SCHEMA_VERSION,
                                  checkpoint_payload, config_record, count_parameters,
                                  fresh_player, load_history_checkpoint, save_history_checkpoint)
 from train.history_rollout import (CollectStats, HistoryCollector, MatchEventStore,
-                                   SequenceRolloutBuffer, _PhaseTimer)
+                                   SequenceRolloutBuffer, TrainingBatch, _PhaseTimer)
 from train.history_population import HistoryPopulation
 from train.history_response import RESPONSE_SCHEMA, opponent_response_labels
 from train.history_aux import (AUX_HEADS, belief_loss, next_token_loss, outcome_loss,
@@ -190,6 +190,15 @@ class HistoryPPOConfig:
     # data parallel (train/history_ddp.py): normalize advantages and weight the
     # loss over the union of the ranks' minibatches, as one minibatch would be
     ddp_global_minibatch: bool = False
+    # Gradient all-reduce transport of the data-parallel ranks: "gloo" (TCP ring)
+    # or "shm" (same-node /dev/shm mapping, fixed rank-order sum,
+    # train/history_shm_reduce.py). shm equals gloo bitwise at two ranks; with
+    # more ranks the FP32 summation order differs (tier 2).
+    ddp_reduce: str = "gloo"
+    # torch.optim.Adam(fused=True) for both optimizers: one fused kernel per step
+    # with device-resident step counters; FP32 arithmetic differs from the
+    # foreach path (tier 2). Checkpoint optimizer state loads either way.
+    adam_fused: bool = False
     # Planted-habit diagnostic (train/history_habit.py; approved exceptions, never
     # the main lineage). habit_pack: frozen base checkpoint of the styled opponent
     # pack (empty: off). habit_init: checkpoint the learner continues from.
@@ -232,6 +241,8 @@ class HistoryPPOConfig:
                              'snapshot policies')
         if self.rollout_wide_projection and not self.rollout_batched_attention:
             raise ValueError('rollout_wide_projection requires rollout_batched_attention')
+        if self.ddp_reduce not in ("gloo", "shm"):
+            raise ValueError("ddp_reduce must be gloo or shm")
         if self.rollout_device not in (None, 'cpu', 'cuda'):
             raise ValueError('rollout_device must be cpu, cuda, or None')
         if self.learner_length_groups < 0 or (self.learner_length_groups and self.window):
@@ -378,10 +389,12 @@ def parse_arm_schedule(schedule: str) -> list[tuple[int, bool]]:
 # batched learner cache prefill are tier 2), the learn-phase profile (timing only),
 # the learner's length-grouped
 # encode and chosen-only auxiliary response head (tier 2: same loss, learner
-# float-order noise), plus snapshot_updates,
+# float-order noise), the data-parallel gradient transport and fused Adam (tier 2:
+# FP32 order), plus snapshot_updates,
 # which changes dynamics.
 RESUME_OVERRIDES = frozenset({"num_envs", "num_threads", "minibatch_matches", "torch_threads",
-                              "checkpoint_updates", "ddp_global_minibatch",
+                              "checkpoint_updates", "ddp_global_minibatch", "ddp_reduce",
+                              "adam_fused",
                               "rollout_graph_budget_mb", "rollout_graph_policy_budget_mb",
                               "rollout_triton_min_batch", "snapshot_updates",
                               "profile_collection", "profile_collection_warmup",
@@ -522,8 +535,10 @@ class HistoryTrainer:
         self.actor.batched_match_attention = config.learner_batched_attention
         self.critic = critic.to(self.device).train()
         critic_lr = config.critic_lr if config.critic_lr is not None else config.lr
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=config.lr)
-        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=critic_lr)
+        fused = True if config.adam_fused else None
+        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=config.lr, fused=fused)
+        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=critic_lr,
+                                                 fused=fused)
         self.rng = np.random.default_rng(config.seed)
         self.generator = torch.Generator(device=self.rollout_device)
         self.generator.manual_seed(config.seed)
@@ -568,6 +583,7 @@ class HistoryTrainer:
             self.generator.set_state(rng["sampler"].cpu())
         elif config.aux_heads:
             self.progress["aux_start_update"] = 0
+        self.apply_adam_policy()
         self.session_first_update = int(self.progress["updates"])
         env_offset = self.rank_streams()
         self.env = gd.VecEnv(num_envs=config.num_envs, num_threads=config.num_threads,
@@ -603,6 +619,30 @@ class HistoryTrainer:
         anything is written: share the lineage and reseed this rank's streams.
         Returns the environment seed offset; a single process is rank 0."""
         return 0
+
+    def apply_adam_policy(self) -> None:
+        """Make both optimizers follow ``config.adam_fused``, whatever state they loaded.
+
+        ``Optimizer.load_state_dict`` adopts the saved param-group settings, so a
+        checkpoint written under the other setting would silently switch the
+        implementation; this restores the configured one (both directions load).
+        Adam's step counters are exact integers in float32 and move without a
+        value change: to the parameter's device for fused (as fused Adam keeps
+        them), to the CPU otherwise, where Adam creates them. A checkpoint loaded
+        with ``map_location=cuda`` would otherwise leave them on the GPU, and the
+        foreach path reads every counter with ``.item()`` at every step.
+        """
+        fused = bool(self.config.adam_fused)
+        for optimizer in (self.actor_optimizer, self.critic_optimizer):
+            for group in optimizer.param_groups:
+                group["fused"] = True if fused else None
+                if fused:
+                    group["foreach"] = None
+                on_device = fused or bool(group.get("capturable"))
+                for p in group["params"]:
+                    state = optimizer.state.get(p)
+                    if state and torch.is_tensor(state.get("step")):
+                        state["step"] = state["step"].to(p.device if on_device else "cpu")
 
     def make_collector(self) -> HistoryCollector:
         """The rollout collector over this trainer's env, store and buffer."""
@@ -801,6 +841,8 @@ class HistoryTrainer:
                           "learner_batched_attention": self.actor.batched_match_attention,
                           "learner_length_groups": self.config.learner_length_groups,
                           "learner_chosen_response": self.config.learner_chosen_response,
+                          **self.reduce_record(),
+                          "adam_fused": self.config.adam_fused,
                           "rollout_graph_budget_mb": self.config.rollout_graph_budget_mb,
                           "rollout_graph_policy_budget_mb": self.config.rollout_graph_policy_budget_mb,
                           "rollout_triton_cache": self.collector.triton_cache,
@@ -835,6 +877,11 @@ class HistoryTrainer:
             "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
         }
         (self.output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+
+    def reduce_record(self) -> dict[str, Any]:
+        """Manifest fields of the gradient all-reduce (requested transport here;
+        data-parallel training adds the active one)."""
+        return {"ddp_reduce": self.config.ddp_reduce}
 
     # -- one iteration ----------------------------------------------------------
 
@@ -908,19 +955,32 @@ class HistoryTrainer:
     def minibatches(self) -> Iterator[np.ndarray]:
         return self.buffer.minibatches(self.config.minibatch_matches, self.rng)
 
-    def minibatch_loss(self, rows: np.ndarray) -> dict[str, torch.Tensor]:
+    def prepare_minibatch(self, rows: np.ndarray) -> TrainingBatch:
+        """The minibatch's host collation and upload: response labels, outcome
+        targets and style extras, then ``training_batch``'s packed copy. Depends
+        only on ``rows`` and the buffer/store, which ``learn`` never changes, so
+        ``learn`` prepares the next minibatch while this one's backward runs."""
         cfg = self.config
-        predict = cfg.response_mode != "none"
         extra = ({"response_target": opponent_response_labels(
-            self.buffer, self.store, rows, round_streams=cfg.habit_round)} if predict else {})
+            self.buffer, self.store, rows, round_streams=cfg.habit_round)}
+                 if cfg.response_mode != "none" else {})
         if "outcome" in self.actor.aux_head_names:
             extra["outcome_target"] = round_outcomes(self.buffer, rows)
         extra.update(self.habit_extra(rows))
         # Actor inputs, stored row data and response targets: one packed upload.
-        batch = self.buffer.training_batch(rows, self.store, self.device, extra=extra or None,
-                                           length_groups=cfg.learner_length_groups,
-                                           width=cfg.width, round_streams=cfg.habit_round)
-        self.learn_mark("batch_and_upload")
+        return self.buffer.training_batch(rows, self.store, self.device, extra=extra or None,
+                                          length_groups=cfg.learner_length_groups,
+                                          width=cfg.width, round_streams=cfg.habit_round)
+
+    def minibatch_loss(self, rows: np.ndarray, batch: TrainingBatch | None = None
+                       ) -> dict[str, torch.Tensor]:
+        """Loss terms of ``rows``; ``batch`` is their ``prepare_minibatch`` (made
+        here when not given)."""
+        cfg = self.config
+        predict = cfg.response_mode != "none"
+        if batch is None:
+            batch = self.prepare_minibatch(rows)
+            self.learn_mark("batch_and_upload")
         inputs, chosen, row = batch.inputs, batch.chosen, batch.fields
         inputs.style = row.get("style")
         response_stats = {}
@@ -1081,11 +1141,17 @@ class HistoryTrainer:
         """One epoch's minibatch rows; ``None`` is a step without local data."""
         return self.minibatches()
 
-    def backward_minibatch(self, rows: np.ndarray | None) -> dict[str, torch.Tensor] | None:
-        """Loss terms of ``rows`` with their gradients accumulated."""
-        terms = self.minibatch_loss(rows)
-        terms["policy_total"].backward()
-        terms["value_total"].backward()
+    def backward_minibatch(self, rows: np.ndarray | None, batch: TrainingBatch | None = None
+                           ) -> dict[str, torch.Tensor] | None:
+        """Loss terms of ``rows`` (prepared as ``batch`` if given) with their
+        gradients accumulated.
+
+        One backward call over policy + value: the actor and critic graphs are
+        disjoint and the sum's backward passes the seed gradient to each
+        unchanged, so every gradient is bitwise the one of two separate calls.
+        """
+        terms = self.minibatch_loss(rows, batch)
+        (terms["policy_total"] + terms["value_total"]).backward()
         self.learn_mark("backward")
         return terms
 
@@ -1096,6 +1162,54 @@ class HistoryTrainer:
     def collective(self) -> bool:
         """Whether learning runs collectives, so every step happens on every rank."""
         return False
+
+    def clip_actor_gradients(self, parameters: list[torch.nn.Parameter],
+                             encoder_index: list[int]
+                             ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """``clip_grad_norm_(parameters, grad_clip)`` and the squared gradient norms
+        of the encoder tensors (``parameters[i]`` for ``i`` in ``encoder_index``, in
+        that order) from ONE per-tensor norm pass instead of two.
+
+        Bitwise the same as the separate calls: ``clip_grad_norm_`` is
+        ``_foreach_norm`` over the present gradients, ``vector_norm`` of their
+        stack and ``clip_grads_with_norm_`` (coefficient ``clamp(max_norm /
+        (total + 1e-6), max=1)``, one foreach multiply), and a tensor's foreach
+        norm does not depend on the other tensors in the call. Returns the total
+        norm (a CPU zero without gradients, as ``clip_grad_norm_``) and the
+        encoder's squared norms (None without encoder gradients).
+        """
+        position: dict[int, int] = {}
+        grads = []
+        for index, p in enumerate(parameters):
+            if p.grad is not None:
+                position[index] = len(grads)
+                grads.append(p.grad)
+        if not grads:
+            return torch.tensor(0.0), None
+        norms = torch._foreach_norm(grads, 2.0)
+        total = torch.linalg.vector_norm(torch.stack(norms), 2.0)
+        torch.nn.utils.clip_grads_with_norm_(parameters, self.config.grad_clip, total)
+        encoder = [norms[position[i]] for i in encoder_index if i in position]
+        return total, (torch.stack(encoder) ** 2 if encoder else None)
+
+    def stats_to_host(self, values: list[torch.Tensor],
+                      encoder: torch.Tensor | None) -> list[float]:
+        """``[*values[:2], *encoder, *values[2:]]`` as host floats in one transfer.
+
+        The values are FP32 scalars on the learner device already; only a CPU
+        zero (a module without gradients) or another dtype is converted, as the
+        per-value ``.to(device, float32)`` did. Stacking copies, so the floats
+        are the same."""
+        kind = self.device.type
+        ready = [v if v.dtype == torch.float32 and v.device.type == kind
+                 else v.to(self.device, torch.float32) for v in values]
+        with torch.no_grad():
+            parts = [torch.stack(ready[:2])]
+            if encoder is not None:
+                parts.append(encoder)
+            if len(ready) > 2:
+                parts.append(torch.stack(ready[2:]))
+            return torch.cat(parts).tolist()
 
     def learn(self) -> dict[str, Any]:
         cfg = self.config
@@ -1114,29 +1228,38 @@ class HistoryTrainer:
                 if key not in ("actor_grad_norm", "encoder_grad_norm", "critic_grad_norm")]
         totals = {key: 0.0 for key in self.STAT_KEYS}
         count = steps = 0
-        encoder_parameters = list(self.actor.stream.parameters())
+        actor_parameters = list(self.actor.parameters())
+        critic_parameters = list(self.critic.parameters())
+        actor_index = {id(p): index for index, p in enumerate(actor_parameters)}
+        encoder_index = [actor_index[id(p)] for p in self.actor.stream.parameters()]
         for _ in range(cfg.epochs):
-            for rows in self.epoch_batches(samples):
+            # The epoch's minibatch rows up front (the same permutation draw).
+            batches = list(self.epoch_batches(samples))
+            ready = None
+            for index, rows in enumerate(batches):
                 self.actor_optimizer.zero_grad(set_to_none=True)
                 self.critic_optimizer.zero_grad(set_to_none=True)
                 mark("minibatch_setup")
-                terms = self.backward_minibatch(rows)
+                terms = self.backward_minibatch(rows, ready)
+                # Collate and upload the next minibatch now, while this backward
+                # still runs on the device, instead of after the optimizer step:
+                # the same batch from the same rows, only earlier on the host.
+                following = batches[index + 1] if index + 1 < len(batches) else None
+                ready = None if following is None else self.prepare_minibatch(following)
+                if following is not None:
+                    mark("batch_and_upload")
                 reduced = self.reduce_gradients(terms is not None)
                 mark("gradient_reduce")
                 if reduced == 0:
                     continue
-                # Per-tensor encoder norms in one foreach call rather than a few
-                # kernels per tensor; squared and summed as before.
-                grads = [p.grad.detach().float() for p in encoder_parameters
-                         if p.grad is not None]
-                encoder = (torch.stack(torch._foreach_norm(grads)) ** 2).unbind() if grads else ()
-                actor = torch.nn.utils.clip_grad_norm_(self.actor.parameters(), cfg.grad_clip)
-                critic = torch.nn.utils.clip_grad_norm_(self.critic.parameters(), cfg.grad_clip)
+                # The encoder's per-tensor norms (squared and summed as before)
+                # come from the actor clip's own per-tensor norm pass.
+                actor, encoder = self.clip_actor_gradients(actor_parameters, encoder_index)
+                critic = torch.nn.utils.clip_grad_norm_(critic_parameters, cfg.grad_clip)
                 present = [key for key in keys if terms is not None and key in terms]
-                # clip_grad_norm_ returns a CPU zero when a module has no gradient.
-                host = torch.stack([value.detach().to(self.device, torch.float32) for value in
-                                    (actor, critic, *encoder,
-                                     *(terms[key] for key in present))]).tolist()
+                host = self.stats_to_host([actor, critic, *(terms[key] for key in present)],
+                                          encoder)
+                encoders = 0 if encoder is None else len(encoder)
                 actor, critic = host[0], host[1]
                 if not (math.isfinite(actor) and math.isfinite(critic)):
                     raise FloatingPointError("non-finite gradient; stopping before the step")
@@ -1148,9 +1271,9 @@ class HistoryTrainer:
                 if terms is None:
                     continue
                 encoder_total = 0.0
-                for value in host[2:2 + len(encoder)]:
+                for value in host[2:2 + encoders]:
                     encoder_total += value
-                for key, value in zip(present, host[2 + len(encoder):]):
+                for key, value in zip(present, host[2 + encoders:]):
                     totals[key] += value
                 totals["actor_grad_norm"] += actor
                 totals["encoder_grad_norm"] += math.sqrt(encoder_total)
@@ -1332,9 +1455,11 @@ class HistoryTrainer:
                        config_changes=self.config_changes)
         return payload
 
-    def save(self, path: str | Path | None = None) -> Path:
+    def save(self, path: str | Path | None = None, copies: Sequence[str | Path] = ()) -> Path:
+        """Write the checkpoint to ``path`` (default ``latest.pt``) and the same
+        bytes, from one payload and one serialization, to each of ``copies``."""
         path = Path(path) if path is not None else self.output / "latest.pt"
-        save_history_checkpoint(path, self.payload())
+        save_history_checkpoint(path, self.payload(), copies)
         return path
 
     def run(self) -> None:
@@ -1346,8 +1471,7 @@ class HistoryTrainer:
                                                     "decisions_per_sec", "mean_prefix")}),
                   flush=True)
             if self.progress["updates"] % self.config.checkpoint_updates == 0:
-                self.save()
-                self.save(self.output / f"update-{self.progress['updates']:06d}.pt")
+                self.save(copies=[self.output / f"update-{self.progress['updates']:06d}.pt"])
         self.save()
 
 
@@ -1464,6 +1588,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--learner-chosen-response", action="store_true",
                         help="learner, auxiliary response mode: run the response head on "
                              "executed candidates only, the rows its loss reads (FP32; not bitwise)")
+    parser.add_argument("--adam-fused", action="store_true",
+                        help="fused Adam kernels for both optimizers (FP32; not bitwise)")
     parser.add_argument("--rollout-graph-budget-mb", type=int, default=512)
     parser.add_argument("--rollout-graph-policy-budget-mb", type=int, default=128,
                         help="per-policy private-graph cap within the total budget")

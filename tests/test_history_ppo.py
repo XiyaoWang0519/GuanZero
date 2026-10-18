@@ -161,6 +161,33 @@ def test_checkpoint_interruption_and_resume(tmp_path, monkeypatch):
     assert final["progress"]["updates"] == 3 and final["lineage"] == good["lineage"]
 
 
+def test_checkpoint_copies_come_from_one_serialization(tmp_path, monkeypatch):
+    """run() writes latest.pt and update-N.pt from one payload and one torch.save:
+    the two files are identical and are the bytes save_checkpoint writes."""
+    import train.history_model as history_model
+    from train.ckpt import checkpoint_bytes
+    output = tmp_path / "run"
+    trainer = HistoryTrainer(small_config(updates=2), output)
+    payloads, writes = [], []
+    payload, write = trainer.payload, history_model.write_checkpoint_bytes
+    monkeypatch.setattr(trainer, "payload", lambda: payloads.append(1) or payload())
+    monkeypatch.setattr(history_model, "write_checkpoint_bytes",
+                        lambda path, data: writes.append((Path(path).name, data)) or write(path, data))
+    trainer.run()
+    assert len(payloads) == 3                     # two checkpoints and the final save
+    assert [name for name, _ in writes] == ["latest.pt", "update-000001.pt",
+                                            "latest.pt", "update-000002.pt"]
+    assert writes[0][1] == writes[1][1] and writes[2][1] == writes[3][1]
+    assert (output / "update-000002.pt").read_bytes() == writes[3][1]
+    assert not [p for p in output.iterdir() if p.name.startswith(".")]
+    actor, _, loaded = load_history_checkpoint(output / "update-000001.pt")
+    assert loaded["progress"]["updates"] == 1
+    # The same payload through save_checkpoint gives the same bytes.
+    fixed = trainer.payload()
+    save_checkpoint(tmp_path / "streamed.pt", fixed)
+    assert (tmp_path / "streamed.pt").read_bytes() == checkpoint_bytes(fixed)
+
+
 def test_resume_under_other_source_only_on_request(tmp_path):
     trainer = HistoryTrainer(small_config(updates=1), tmp_path / "run")
     trainer.run()
