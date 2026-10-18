@@ -46,6 +46,16 @@ not project the whole history again; ``causal_prefill`` rebuilds streams from
 BOS in one causal pass per length group. ``encode_rollout`` returns the
 learner's memory for those layouts as a ``history_model.RolloutMemory``.
 
+``attention_kernel`` (opt-in, tier 2, default off) runs every append's
+attention as one Triton paged-attention call per layer
+(``train.history_paged_attention``) that reads each stream's keys and values
+in place from the pool pages up to its own end: no padded gather, no mask,
+no span groups. With ``private_kv`` the learner's one-query private attention
+reads its stored keys/values the same way. The kernel runs only where it can
+(CUDA FP32, or Triton's CPU interpreter, with a head depth and page size it
+tiles); anywhere else the switch is a no-op and every path is the gather +
+SDPA one, bit for bit.
+
 A pool is shared by the caches built on it: a cache releases its pages on
 ``clear``/``prune``. Page 0 is never allocated and stays zero. A pool grows by
 reallocation and does not shrink on its own; its reserved size is the
@@ -57,6 +67,7 @@ restores the size the pool had, in one step and without a copy.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -250,6 +261,38 @@ def span_plan(spans: np.ndarray, groups: int, min_share: float = 0.0, min_rows: 
     return plan[::-1]
 
 
+@dataclass(frozen=True)
+class KernelAttention:
+    """One append's (or rollout step's) inputs to the Triton paged attention
+    kernel: ``table`` page ids and ``[B]`` query ``starts`` and key ``ends`` on
+    the device; ``max_end`` (host) bounds the kernel's key splits."""
+    run: Callable[..., Tensor]
+    table: Tensor
+    starts: Tensor | None
+    ends: Tensor
+    page_tokens: int
+    max_end: int
+
+    def __call__(self, q: Tensor, kv: Tensor, starts: Tensor | None = None) -> Tensor:
+        """``q [B, H, W, D]`` attended over ``kv [rows, 2, H, D]`` pool rows."""
+        return self.run(q, kv, self.table, self.starts if starts is None else starts, self.ends,
+                        self.page_tokens, max_end=self.max_end)
+
+
+@dataclass(frozen=True)
+class PagedPrivateKV:
+    """Private attention over the learner's stored keys/values in place
+    (``PagedHistoryCache(private_kv=True, attention_kernel=True)``): decision
+    ``i`` attends to stream ``i``'s positions ``<= prefix[i]``. Fills
+    ``RolloutMemory.attend``."""
+    attention: KernelAttention
+    kv: Tensor                      # pool.private viewed as [rows, 2, heads, depth]
+
+    def __call__(self, q: Tensor, prefix: Tensor) -> Tensor:
+        """``q [n, heads, depth]`` -> ``[n, heads, depth]``."""
+        return self.attention(q[:, :, None], self.kv, prefix)[:, :, 0]
+
+
 # Span groups (``PagedHistoryCache(span_groups=G)``): an extra group must save
 # this share of the one-group padded rows, and this many rows, to be worth
 # its extra gather and SDPA launches per layer.
@@ -286,11 +329,21 @@ class PagedHistoryCache(BatchedHistoryCache):
     append per ``chunk_size`` tokens, and writes the same pool rows. Other
     entries take the chunked path. Same function of the same tokens; FP32
     reduction shapes differ (acceptance tier 2).
+
+    ``attention_kernel`` (opt-in): where ``kernel_active`` (see the module
+    notes), every append (chunked prefill and merged appends included) runs
+    one Triton paged-attention call per layer over its whole batch in input
+    order instead of the per-span-group gather + SDPA, and with
+    ``private_kv`` ``encode_rollout(projected=True)`` returns the stored
+    keys/values in place (``RolloutMemory.attend``) instead of gathering them.
+    Same masks and keys; the kernel's online softmax changes FP32 reduction
+    order (acceptance tier 2). Inactive, nothing changes.
     """
 
     def __init__(self, actor: HistoryActor, pool: KVPagePool | None = None,
                  chunk_size: int = 128, *, page_span: bool = False, span_groups: int = 1,
-                 private_kv: bool = False, causal_prefill: bool = False) -> None:
+                 private_kv: bool = False, causal_prefill: bool = False,
+                 attention_kernel: bool = False) -> None:
         super().__init__(actor, chunk_size)
         self.pool = pool if pool is not None else KVPagePool.for_actor(
             actor, private_width=2 * actor.config.width if private_kv else 0)
@@ -303,11 +356,27 @@ class PagedHistoryCache(BatchedHistoryCache):
             raise ValueError("private K/V pages need a pool with private_width = 2 * width")
         self.private_kv = bool(private_kv)
         self.causal_prefill = bool(causal_prefill)
+        self.attention_kernel = bool(attention_kernel)
+        # The kernel entry point where it can run here; None keeps the gather + SDPA path.
+        self._paged_kernel = None
+        if attention_kernel:
+            from train import history_paged_attention as kernel
+            if kernel.kernel_supported(self.pool.device, self.pool.dtype, self.pool.depth,
+                                       self.pool.page_tokens):
+                self._paged_kernel = kernel.paged_append_attention_triton
         # Host counters of attention key rows: gathered (padded) and valid, for
         # appends and returned memory; how many appends ran in groups; padded
-        # positions of causal prefill passes.
+        # positions of causal prefill passes; appends and rollout steps whose
+        # attention ran in the paged kernel (which gathers nothing).
         self.span_rows = dict(append=0, append_valid=0, memory=0, memory_valid=0,
-                              grouped_appends=0, causal_padded=0)
+                              grouped_appends=0, causal_padded=0, kernel_appends=0,
+                              kernel_rollouts=0)
+
+    @property
+    def kernel_active(self) -> bool:
+        """Whether appends attend with the Triton paged kernel (``attention_kernel``
+        requested and runnable on this pool's device, dtype and geometry)."""
+        return self._paged_kernel is not None
 
     def _span(self, longest: int) -> int:
         """Attention keys and memory positions to materialize for ``longest``."""
@@ -437,13 +506,26 @@ class PagedHistoryCache(BatchedHistoryCache):
         ``span_groups`` end-sorted span groups, each padded only to its own
         longest stream, of top-layer memory or, ``projected``, the stored
         private attention keys/values (``private_kv``). With one group and no
-        projection the memory is exactly ``encode``'s."""
+        projection the memory is exactly ``encode``'s. Projected with the
+        paged kernel active, nothing is gathered: ``RolloutMemory.attend``
+        reads the stored keys/values in place (valid until the next append)."""
         if projected and not self.private_kv:
             raise ValueError("projected rollout memory needs a private_kv cache")
         targets = self._encode_targets(keys, streams, preuploaded_lengths, host_lengths)
         entries = self._extend(keys, streams, targets)
         source = self.pool.private if projected else self.pool.memory
         lengths = np.asarray(targets, np.int64)
+        if projected and self._paged_kernel is not None:
+            longest = int(lengths.max())
+            table, ends = upload_arrays((self._page_table(entries, longest), lengths),
+                                        self.pool.device)
+            pool = self.pool
+            attend = PagedPrivateKV(self._kernel_attention(table, None, ends, longest),
+                                    source.view(-1, 2, pool.heads, pool.depth))
+            self.span_rows["memory_valid"] += int(lengths.sum())
+            self.span_rows["kernel_rollouts"] += 1
+            return (self._stream_metadata(targets, preuploaded_lengths, source.device),
+                    RolloutMemory([], True, attend))
         order, plan = self._groups(lengths)
         ordered = entries if order is None else [entries[i] for i in order]
         tables = [self._page_table(ordered[a:b], span) for a, b, span in plan]
@@ -465,6 +547,20 @@ class PagedHistoryCache(BatchedHistoryCache):
         mask = torch.full(allowed.shape, float("-inf"), dtype=dtype, device=allowed.device)
         return mask.masked_fill_(allowed, 0.0)[:, None]
 
+    def _append_groups(self, ends: np.ndarray
+                       ) -> tuple[np.ndarray | None, list[tuple[int, int, int]]]:
+        """``_groups`` for an append's attention; one group in input order with the
+        paged kernel, which stops at every stream's own end."""
+        if self._paged_kernel is not None:
+            return None, [(0, len(ends), self._span(int(ends.max())))]
+        return self._groups(ends)
+
+    def _kernel_attention(self, table: Tensor, starts: Tensor | None, ends: Tensor,
+                          max_end: int) -> KernelAttention:
+        """The paged kernel's inputs for one append (built once, used by every layer)."""
+        return KernelAttention(self._paged_kernel, table, starts, ends, self.pool.page_tokens,
+                               max_end)
+
     def _attention_plan(self, plan: list[tuple[int, int, int]], positions: Tensor,
                         end_positions: Tensor, table: Tensor, key_positions: Tensor,
                         dtype: torch.dtype) -> list[tuple[int, int, int, Tensor, Tensor]]:
@@ -483,10 +579,13 @@ class PagedHistoryCache(BatchedHistoryCache):
         return groups
 
     @staticmethod
-    def _attend(q: Tensor, kv: Tensor, groups: list[tuple[int, int, int, Tensor, Tensor]]
-                ) -> Tensor:
+    def _attend(q: Tensor, kv: Tensor,
+                groups: list[tuple[int, int, int, Tensor, Tensor]] | KernelAttention) -> Tensor:
         """SDPA of queries ``q`` ``[batch, heads, width, depth]`` over the keys and
-        values gathered from pool rows ``kv`` per span group, in batch order."""
+        values gathered from pool rows ``kv`` per span group, in batch order; or
+        the paged kernel over the pool rows in place."""
+        if isinstance(groups, KernelAttention):
+            return groups(q, kv)
         heads, depth = kv.shape[2], kv.shape[3]
         parts = []
         for a, b, span, rows, mask in groups:
@@ -503,7 +602,7 @@ class PagedHistoryCache(BatchedHistoryCache):
         starts = np.asarray([e.length for e in entries], np.int64)
         count_array = np.asarray(counts, np.int64)
         ends = starts + count_array
-        order, plan = self._groups(ends)
+        order, plan = self._append_groups(ends)
         if order is not None:       # end-sorted; outputs go to the pool by row
             entries = [entries[i] for i in order]
             counts = [counts[i] for i in order]
@@ -546,8 +645,13 @@ class PagedHistoryCache(BatchedHistoryCache):
         position_table, key_positions = self._position_buffers(capacity)
         positions = start_positions[:, None] + key_positions[:width]
         state = state + position_table[positions.clamp(max=capacity - 1)]
-        groups = self._attention_plan(plan, positions, end_positions, table_d, key_positions,
-                                      dtype)
+        if self._paged_kernel is not None:
+            groups = self._kernel_attention(table_d, start_positions, end_positions,
+                                            int(ends.max()))
+            self.span_rows["kernel_appends"] += 1
+        else:
+            groups = self._attention_plan(plan, positions, end_positions, table_d,
+                                          key_positions, dtype)
         heads, depth = cfg.heads, cfg.width // cfg.heads
         for layer_index, layer in enumerate(actor.stream.layers):
             attention = layer.self_attn
@@ -713,13 +817,13 @@ def _merged_append(cache: PagedHistoryCache, entries: list[PagedEntry], counts: 
     weights. Padding rows are zero tokens whose outputs are never written.
     Attention runs over the real rows only, per span group with
     ``cache.span_groups`` (the entries then sorted by end before the slot
-    layout is laid out).
+    layout is laid out), or in the paged kernel when ``cache.kernel_active``.
     """
     from train.history_snapshot_batch import _linear, _norm
     pool, tensors, cfg, eps = cache.pool, heads.tensors, heads.config, heads.eps
     device = pool.device
-    order, plan = cache._groups(np.asarray([e.length for e in entries], np.int64)
-                                + np.asarray(counts, np.int64))
+    order, plan = cache._append_groups(np.asarray([e.length for e in entries], np.int64)
+                                       + np.asarray(counts, np.int64))
     if order is not None:
         entries = [entries[i] for i in order]
         counts = [counts[i] for i in order]
@@ -781,9 +885,14 @@ def _merged_append(cache: PagedHistoryCache, entries: list[PagedEntry], counts: 
     position_table, key_positions = cache._position_buffers(capacity)
     state = state + position_table[(starts_pad_d[:, None] + key_positions[:width])
                                    .clamp(max=capacity - 1)]
-    positions = start_positions[:, None] + key_positions[:width]
-    groups = cache._attention_plan(plan, positions, end_positions, table_d, key_positions,
-                                   state.dtype)
+    if cache.kernel_active:
+        groups = cache._kernel_attention(table_d, start_positions, end_positions,
+                                         int(ends.max()))
+        cache.span_rows["kernel_appends"] += 1
+    else:
+        positions = start_positions[:, None] + key_positions[:width]
+        groups = cache._attention_plan(plan, positions, end_positions, table_d, key_positions,
+                                       state.dtype)
     for index in range(cfg.layers):
         hidden = _norm(flat(state), tensors, f"e{index}_n1", S, eps)
         qkv = _linear(hidden, tensors, f"e{index}_in", S).view(R, width, 3, H, depth)

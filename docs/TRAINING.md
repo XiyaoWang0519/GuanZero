@@ -116,6 +116,29 @@ direction; resumed runs now keep the default path's Adam step counters on the
 CPU instead of where `map_location` put them (bitwise; it removes per-step
 `.item()` reads of GPU counters).
 
+Rollout paged attention kernel (October 18, 2026; verified under Triton's CPU
+interpreter, GPU unmeasured). `rollout_paged_attention_kernel`
+(`--rollout-paged-attention-kernel`, default off; needs `--rollout-paged-cache`
+and no private graphs; resume-settable, switchable in `bench.history_arms`, and
+recorded in the manifest's `inference` block with
+`rollout_paged_attention_kernel_active`) runs every paged-cache append's
+attention (learner steps, chunked learner prefill, merged snapshot appends) as
+one Triton call per layer (`train/history_paged_attention.py`) that reads
+keys/values in place from the pool pages up to each stream's own end, instead
+of the padded gather, mask and SDPA; span groups then no longer apply to
+appends. With `--rollout-private-kv-pages` the learner's one-query private
+attention also reads its stored keys/values in place. Tier 2 (FP32
+online-softmax order). CUDA only: without Triton, off CUDA, or for a head depth
+or page size that is not a power of two in 16-256 the switch is a no-op, bitwise
+the default path (CPU test). Under the interpreter, short real VecEnv rollouts
+with every paged option made identical choices with learner log-probabilities
+within 5e-7 of the default path (`tests/test_history_rollout_paged_kernel.py`).
+Before any run uses it, on the target GPU: `bench/paged_attention_bench.py`
+(speed, compile time, error against fp64), the CUDA cases of
+`tests/test_history_paged_attention.py` and
+`tests/test_history_rollout_paged_kernel.py`, the real-rollout log-probability
+gate, and an in-run `bench.history_arms` A/B.
+
 Use the existing Python environment with the matching C++ extension. Fresh
 installation uses Python 3.11+, C++20, CMake 3.24+ and Ninja:
 

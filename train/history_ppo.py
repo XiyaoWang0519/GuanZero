@@ -145,6 +145,12 @@ class HistoryPPOConfig:
     # from BOS in one causal pass per length group (no pool gather, no mask)
     # instead of one masked append per 128-token chunk. Tier 2 (learner seats).
     rollout_causal_prefill: bool = False
+    # Paged cache: run every cache append's attention (and, with private K/V
+    # pages, the learner's private attention) in the Triton paged-attention kernel,
+    # reading keys/values in place from the pool pages up to each stream's end
+    # (train/history_paged_attention.py). CUDA only: elsewhere a no-op (bitwise
+    # the default path). Tier 2 (FP32 softmax order); needs the GPU gate first.
+    rollout_paged_attention_kernel: bool = False
     profile_collection: bool = False   # synchronized phase timings; diagnostic only
     profile_learn: bool = False        # the same for the PPO update's phases
     profile_collection_warmup: int = 0  # unprofiled updates of this process before profiling
@@ -260,6 +266,10 @@ class HistoryPPOConfig:
                                                 and self.rollout_prefill_learner_cache):
             raise ValueError('rollout_causal_prefill requires rollout_paged_cache and '
                              'rollout_prefill_learner_cache')
+        if self.rollout_paged_attention_kernel and (not self.rollout_paged_cache
+                                                    or self.rollout_private_graphs):
+            raise ValueError('rollout_paged_attention_kernel requires rollout_paged_cache and '
+                             'no private graphs')
         if self.rollout_prefill_learner_cache and (not self.rollout_kv_cache
                                                    or self.habit_view == "round"):
             raise ValueError('rollout_prefill_learner_cache requires the match-keyed '
@@ -418,8 +428,8 @@ def parse_arm_schedule(schedule: str) -> list[tuple[int, bool]]:
 # (Triton copies: same attention inputs; paged pool: bitwise on CPU, but SDPA reads
 # strided K/V views, so tier 2 on CUDA for learner seats too until the CUDA gate says
 # otherwise; private graphs replay the same kernels; page-padded spans, span
-# groups, private K/V pages and the batched (or causal) learner cache prefill are
-# tier 2), the
+# groups, private K/V pages, the paged attention kernel and the batched (or causal)
+# learner cache prefill are tier 2), the
 # learn-phase profile (timing only),
 # the learner's length-grouped
 # encode, chosen-only auxiliary response head and compact next-token loss (tier 2:
@@ -440,7 +450,7 @@ RESUME_OVERRIDES = frozenset({"num_envs", "num_threads", "minibatch_matches", "t
                               "learner_compact_next",
                               "rollout_page_span", "rollout_prefill_learner_cache",
                               "rollout_span_groups", "rollout_private_kv_pages",
-                              "rollout_causal_prefill",
+                              "rollout_causal_prefill", "rollout_paged_attention_kernel",
                               "profile_learn",
                               "aux_heads", "aux_coef", "aux_warmup_updates",
                               "rollout_private_graphs",
@@ -713,7 +723,8 @@ class HistoryTrainer:
                                 prefill_learner_cache=config.rollout_prefill_learner_cache,
                                 span_groups=config.rollout_span_groups,
                                 private_kv_pages=config.rollout_private_kv_pages,
-                                causal_prefill=config.rollout_causal_prefill)
+                                causal_prefill=config.rollout_causal_prefill,
+                                paged_attention_kernel=config.rollout_paged_attention_kernel)
 
     def snapshot_batching(self) -> bool:
         """Merged snapshot inference for this update (the schedule's block, if any)."""
@@ -901,6 +912,10 @@ class HistoryTrainer:
                           "rollout_span_groups": self.collector.span_groups,
                           "rollout_private_kv_pages": self.collector.private_kv_pages,
                           "rollout_causal_prefill": self.collector.causal_prefill,
+                          "rollout_paged_attention_kernel":
+                              self.collector.paged_attention_kernel,
+                          "rollout_paged_attention_kernel_active":
+                              self.collector.paged_attention_kernel_active(),
                           "batch_snapshot_policies": self.config.batch_snapshot_policies,
                           "batch_snapshot_policies_schedule":
                               self.config.batch_snapshot_policies_schedule,
@@ -1729,6 +1744,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="with --rollout-paged-cache and --rollout-prefill-learner-cache: "
                              "prefill rebuilt learner streams in one causal pass per length "
                              "group (FP32; learner seats' reduction order differs)")
+    parser.add_argument("--rollout-paged-attention-kernel", action="store_true",
+                        help="with --rollout-paged-cache: cache appends (and, with "
+                             "--rollout-private-kv-pages, learner private attention) attend "
+                             "in the Triton paged kernel, reading K/V in place; CUDA only, "
+                             "a no-op elsewhere (FP32; not bitwise)")
     parser.add_argument("--profile-collection", action="store_true")
     parser.add_argument("--profile-learn", action="store_true",
                         help="synchronized wall time per learn phase (learn_phase_seconds)")

@@ -29,7 +29,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field, replace
 import math
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 import gd
 import numpy as np
@@ -412,10 +412,14 @@ class RolloutMemory:
     their streams' ``[n_g, span_g, features]`` values, zero past each length.
     ``projected`` False: top-layer memory, to which the actor applies
     ``kv_proj``; True: ``kv_proj(memory)`` stored per token at append time
-    (keys then values, as ``kv_proj`` lays them out).
+    (keys then values, as ``kv_proj`` lays them out). ``attend``, when set
+    (``groups`` then empty), is the whole private attention over those stored
+    keys/values read in place (the Triton paged kernel):
+    ``attend(q [n, heads, depth], prefix [n]) -> [n, heads, depth]``.
     """
     groups: list[tuple[Tensor | None, Tensor]]
     projected: bool = False
+    attend: Callable[[Tensor, Tensor], Tensor] | None = None
 
     def keys_values(self, kv_proj: nn.Linear, index: int = 0) -> tuple[Tensor, Tensor]:
         """``[n_g, span_g, width]`` keys and values of group ``index``."""
@@ -692,13 +696,16 @@ class HistoryActor(nn.Module):
         projections once over all rows, keys/values and SDPA per span group,
         each group padded only to its own longest stream. One ungrouped
         unprojected part is ``_attend_independent`` exactly; groups and stored
-        projections change FP32 reduction shapes only (acceptance tier 2)."""
+        projections change FP32 reduction shapes only (acceptance tier 2), as
+        does ``memory.attend`` (the paged kernel's softmax order)."""
         count = len(query)
         width, heads = self.config.width, self.config.heads
         depth = width // heads
         project = ((lambda layer, value: layer(value)) if self.wide_private_projection
                    else self._project_independent)
         q = project(self.q_proj, query).view(count, heads, depth)
+        if memory.attend is not None:
+            return project(self.out_proj, memory.attend(q, prefix).reshape(count, width))
         whole = len(memory.groups) == 1 and memory.groups[0][0] is None
         out = None if whole else q.new_empty(count, heads, depth)
         for index, (rows, part) in enumerate(memory.groups):
@@ -801,7 +808,7 @@ class HistoryActor(nn.Module):
         if isinstance(encoded, RolloutMemory):
             if not one_decision_per_stream:
                 raise ValueError("rollout memory serves one decision per stream")
-            if self.batched_private_attention and len(query) > 1:
+            if encoded.attend is not None or (self.batched_private_attention and len(query) > 1):
                 return self._attend_rollout(query, encoded, prefix)
             if len(encoded.groups) != 1 or encoded.groups[0][0] is not None:
                 raise ValueError("grouped rollout memory needs batched private attention")

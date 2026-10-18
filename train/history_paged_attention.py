@@ -1,8 +1,9 @@
 """Paged append attention read in place from ``KVPagePool`` pages (Triton).
 
-Standalone and not wired into any training path yet. It is meant to replace,
-behind a future opt-in switch, one layer's attention in
-``PagedHistoryCache._append``:
+Wired in behind the opt-in ``rollout_paged_attention_kernel`` switch
+(``PagedHistoryCache(attention_kernel=True)``), where it replaces one layer's
+attention in ``PagedHistoryCache._append`` and ``_merged_append`` (and, with
+private K/V pages, the learner's one-query private attention):
 
     rows = _rows(table, ends, arange(span))                    # [B, span]
     packed = index_select(kv, 0, rows).view(B, span, 2, H, D)  # zero-padded copy
@@ -33,9 +34,9 @@ without producing a NaN: an empty tile or split keeps ``max = -inf`` and
 Exactness: acceptance tier 2. The function is the reference's, but the FP32
 reduction order differs (online softmax, ``exp2``, split combine): the
 interpreter tests measure about 1e-7 absolute against the reference on unit
-logits. Integration must be an opt-in config switch that defaults to the
-reference path, recorded with the other inference options, and gated on
-real-rollout log-probability parity on the target GPU.
+logits. The integration is therefore the opt-in ``rollout_paged_attention_kernel``
+switch (default off, recorded with the other inference options); it must be
+gated on real-rollout log-probability parity on the target GPU before use.
 
 Limits (the dispatcher uses the reference unless the next four hold) and the
 caller's contract:
@@ -53,7 +54,9 @@ caller's contract:
   ``finish``'s ``transpose(1, 2).reshape`` is free.
 
 Verified: CPU interpreter (Triton 3.8) against the reference and a float64
-loop, tests/test_history_paged_attention.py; ahead-of-time compilation for
+loop, tests/test_history_paged_attention.py, and inside the rollout cache on
+real VecEnv rollouts (tests/test_history_rollout_paged_kernel.py: same
+choices, learner log-probabilities within 1e-6); ahead-of-time compilation for
 sm_89 with Triton 3.8 (FP32 FMA only, no MMA, no register spills; not a
 launch). Unverified: compilation and launch on the cluster's torch/Triton, GPU
 speed (bench/paged_attention_bench.py), the split heuristic's constants, and
@@ -292,19 +295,26 @@ def launch_config(batch: int, heads: int, width: int, pages: int, *,
                         4 if num_warps is None else int(num_warps))
 
 
+def kernel_supported(device: str | torch.device, dtype: torch.dtype, depth: int,
+                     page_tokens: int) -> bool:
+    """The static part of ``kernel_eligible``: Triton usable for ``device``
+    (CUDA, or anything under the interpreter), FP32, and a head depth and
+    page size the kernel tiles (powers of two in [16, 256])."""
+    if not KERNEL_AVAILABLE or dtype != torch.float32:
+        return False
+    if torch.device(device).type != "cuda" and not INTERPRETED:
+        return False
+    return all(16 <= n <= 256 and not n & (n - 1) for n in (depth, page_tokens))
+
+
 def kernel_eligible(q: Tensor, kv: Tensor, table: Tensor, starts: Tensor, ends: Tensor,
                     page_tokens: int) -> bool:
     """Whether ``paged_append_attention`` would run the Triton kernel."""
-    if not KERNEL_AVAILABLE or q.dtype != torch.float32 or kv.dtype != torch.float32:
-        return False
-    if q.device.type != "cuda" and not INTERPRETED:
+    if kv.dtype != q.dtype or not kernel_supported(q.device, q.dtype, q.shape[-1], page_tokens):
         return False
     if any(t.device != q.device for t in (kv, table, starts, ends)):
         return False
-    if any(t.dtype not in (torch.int32, torch.int64) for t in (table, starts, ends)):
-        return False
-    D = q.shape[-1]
-    return all(16 <= n <= 256 and not n & (n - 1) for n in (D, page_tokens))
+    return all(t.dtype in (torch.int32, torch.int64) for t in (table, starts, ends))
 
 
 def _check_inference(q: Tensor, kv: Tensor) -> None:

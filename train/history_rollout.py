@@ -850,7 +850,13 @@ class HistoryCollector:
     ``causal_prefill`` (opt-in, with ``prefill_learner_cache`` and
     ``paged_cache``) runs that prefill as one causal pass per length group for
     streams rebuilt from BOS instead of one masked pass per chunk; tier 2 on
-    learner seats.
+    learner seats. ``paged_attention_kernel`` (opt-in, with ``paged_cache``)
+    runs every cache append's attention in the Triton paged-attention kernel
+    (``train.history_paged_attention``), reading keys and values in place from
+    the pool pages, and with ``private_kv_pages`` the learner's private
+    attention too; tier 2 on every seat. It is a no-op (bitwise the default
+    path) where the kernel cannot run: without Triton, off CUDA, or for a head
+    depth or page size the kernel does not tile.
     """
 
     def __init__(self, env: Any, actor: HistoryActor, store: MatchEventStore,
@@ -873,7 +879,7 @@ class HistoryCollector:
                  row_style: Callable[[int, int], int] | None = None,
                  prefill_learner_cache: bool = False,
                  span_groups: int = 1, private_kv_pages: bool = False,
-                 causal_prefill: bool = False) -> None:
+                 causal_prefill: bool = False, paged_attention_kernel: bool = False) -> None:
         self.env = env
         self.actor = actor
         self.store = store
@@ -902,6 +908,9 @@ class HistoryCollector:
             raise ValueError("private K/V pages require the paged KV cache and no private graphs")
         if causal_prefill and (not paged_cache or not prefill_learner_cache):
             raise ValueError("causal prefill requires the paged KV cache and learner cache prefill")
+        if paged_attention_kernel and (not paged_cache or private_graphs):
+            raise ValueError("the paged attention kernel requires the paged KV cache and no "
+                             "private graphs")
         if triton_min_batch < 1:
             raise ValueError("Triton minimum batch must be positive")
         if private_graph_budget_mb < 1 or private_graph_policy_budget_mb < 1:
@@ -937,6 +946,7 @@ class HistoryCollector:
         self.span_groups = int(span_groups)
         self.private_kv_pages = bool(private_kv_pages)
         self.causal_prefill = bool(causal_prefill)
+        self.paged_attention_kernel = bool(paged_attention_kernel)
         self.batch_snapshot_policies = bool(batch_snapshot_policies)
         self.snapshot_heads = None      # stacked snapshot heads, created on first merged step
         if self.batch_snapshot_policies:
@@ -956,6 +966,18 @@ class HistoryCollector:
         self.choice_log: list[np.ndarray] | None = [] if record_choices else None
         self.started = False
         self.version = 0
+
+    def paged_attention_kernel_active(self) -> bool:
+        """Whether the learner actor's paged caches run the Triton kernel here
+        (``paged_attention_kernel`` requested and runnable on its device, dtype
+        and geometry); False when not requested or where it is a no-op."""
+        if not (self.paged_cache and self.paged_attention_kernel):
+            return False
+        from train.history_paged_attention import kernel_supported
+        from train.history_paged_cache import PAGE_TOKENS
+        cfg, prototype = self.actor.config, self.actor.bos
+        return kernel_supported(prototype.device, prototype.dtype, cfg.width // cfg.heads,
+                                PAGE_TOKENS)
 
     def cache_metrics(self) -> dict:
         metrics = dict(bytes=sum(c.bytes for c in self.caches.values()),
@@ -1048,7 +1070,8 @@ class HistoryCollector:
                         actor, private_width=2 * actor.config.width if private else 0))
                 cache = PagedHistoryCache(actor, getattr(self, name), page_span=self.page_span,
                                           span_groups=self.span_groups, private_kv=private,
-                                          causal_prefill=learner and self.causal_prefill)
+                                          causal_prefill=learner and self.causal_prefill,
+                                          attention_kernel=self.paged_attention_kernel)
             elif self.triton_cache:
                 from train.history_triton_cache import TritonHistoryCache
                 cache = TritonHistoryCache(actor, min_batch=self.triton_min_batch)
