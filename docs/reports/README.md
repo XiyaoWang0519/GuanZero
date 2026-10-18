@@ -26,6 +26,7 @@ Historical records stay at their existing paths to preserve references.
 - [Learning-rate decay and weight averaging (October 3-4, 2026)](lr-decay-weight-avg-2026-10-04.md)
 - [Opponent diversity: plan (October 3, 2026)](opponent-diversity-plan-2026-10-03.md)
 - [Paired per-deal evaluation, exclusion audit and checkpoint averaging (October 18, 2026)](paired-eval-checkpoint-average-2026-10-18.md)
+- [Paired DanLM rerun: u86800, m7 and a four-checkpoint average (October 18, 2026)](paired-eval-mac-2026-10-18.md)
 - [Search distillation: plan (October 6, 2026)](search-distillation-plan-2026-10-06.md)
 - [Strength against DanLM, summary (October 4, 2026, updated with u20264, the October 5 search curve and m1)](strength-summary-2026-10-04.md)
 - [VRPO / Q-boosting for the history trainer: design, October 4, 2026](vrpo-design-2026-10-04.md)
