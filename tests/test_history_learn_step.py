@@ -86,3 +86,60 @@ def test_one_backward_call_gives_the_two_calls_gradients(tmp_path):
             grads.append([None if p.grad is None else p.grad.clone() for p in params])
         for a, b in zip(*grads):
             assert (a is None) == (b is None) and (a is None or torch.equal(a, b))
+
+
+def _groups(trainer):
+    return [g for o in (trainer.actor_optimizer, trainer.critic_optimizer) for g in o.param_groups]
+
+
+def _steps_on(trainer, fused: bool) -> bool:
+    return all(state["step"].device == (p.device if fused else torch.device("cpu"))
+               for o in (trainer.actor_optimizer, trainer.critic_optimizer)
+               for p, state in o.state.items())
+
+
+def test_adam_fused_is_opt_in_and_optimizer_state_loads_both_ways(tmp_path):
+    assert HistoryPPOConfig().adam_fused is False
+    first = HistoryTrainer(config(updates=5, epochs=1), tmp_path / "a")
+    assert all(g["fused"] is None for g in _groups(first))
+    first.update()
+    path = first.save(tmp_path / "a.pt")
+    saved = torch.load(path, map_location="cpu", weights_only=False)["optimizer"]
+    # foreach checkpoint -> fused optimizer: same moments, fused groups, device steps.
+    fused = HistoryTrainer(config(updates=5, epochs=1), tmp_path / "b", resume=path,
+                           resume_overrides={"adam_fused": True})
+    assert fused.config.adam_fused and all(g["fused"] is True for g in _groups(fused))
+    assert _steps_on(fused, True)
+    params = list(fused.actor.parameters())
+    for index, state in saved["actor"]["state"].items():
+        loaded = fused.actor_optimizer.state[params[index]]
+        assert all(torch.equal(state[k].float(), loaded[k].float()) for k in state)
+    assert fused.config_changes[-1]["changes"]["adam_fused"] == [False, True]
+    fused.update()
+    path = fused.save(tmp_path / "b.pt")
+    assert torch.load(path, map_location="cpu", weights_only=False)[
+        "optimizer"]["actor"]["param_groups"][0]["fused"] is True
+    # fused checkpoint -> foreach optimizer, and without an override it stays fused.
+    back = HistoryTrainer(config(updates=5, epochs=1), tmp_path / "c", resume=path,
+                          resume_overrides={"adam_fused": False})
+    assert all(g["fused"] is None for g in _groups(back)) and _steps_on(back, False)
+    back.update()
+    kept = HistoryTrainer(config(updates=5, epochs=1), tmp_path / "d", resume=path)
+    assert kept.config.adam_fused and all(g["fused"] is True for g in _groups(kept))
+
+
+def test_adam_fused_changes_only_fp32_order(tmp_path):
+    """Tier 2: from the same start and data, fused Adam's parameters agree with the
+    default's up to FP32 noise (Adam lets noise on near-zero gradient elements
+    move a few elements by up to about lr per step)."""
+    a = HistoryTrainer(config(updates=1, epochs=1), tmp_path / "a")
+    b = HistoryTrainer(config(updates=1, epochs=1, adam_fused=True), tmp_path / "b")
+    la, lb = a.update(), b.update()
+    assert la["update_samples"] == lb["update_samples"]
+    assert abs(la["policy_loss"] - lb["policy_loss"]) <= 1e-6
+    diff = torch.cat([(x - y).detach().abs().reshape(-1) for x, y in
+                      zip([*a.actor.parameters(), *a.critic.parameters()],
+                          [*b.actor.parameters(), *b.critic.parameters()])])
+    assert diff.max() > 0                                   # really another kernel
+    assert float((diff <= 1e-6).float().mean()) > 0.999
+    assert float(diff.max()) <= 2 * a.config.lr * la["minibatches"]

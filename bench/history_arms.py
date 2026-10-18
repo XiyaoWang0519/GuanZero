@@ -50,7 +50,7 @@ SWITCHABLE = frozenset({"rollout_paged_cache", "rollout_page_span", "rollout_tri
                         "batch_snapshot_encoder", "batch_snapshot_policies",
                         "learner_length_groups", "learner_chosen_response",
                         "rollout_trim_cuda_cache", "rollout_prefill_learner_cache",
-                        "profile_collection", "profile_learn"})
+                        "profile_collection", "profile_learn", "ddp_reduce", "adam_fused"})
 
 
 def check_arms(arms: dict[str, dict]) -> None:
@@ -77,6 +77,12 @@ def switch(trainer, origin, settings: dict) -> None:
             and collector.device.type != "cuda"):
         raise ValueError("private graphs and Triton cache copies need a CUDA rollout device")
     trainer.config = config
+    # The gradient transport is read at every reduce; the shared mapping is
+    # created and self-checked now (collective: every rank switches at the same
+    # update). The Adam implementation is a group setting of the live optimizers.
+    if getattr(trainer, "world_size", 1) > 1 and config.ddp_reduce == "shm":
+        trainer.shm_reducer()
+    trainer.apply_adam_policy()
     for cache in collector.caches.values():
         cache.clear()
     collector.caches.clear()

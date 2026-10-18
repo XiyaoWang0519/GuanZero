@@ -527,8 +527,10 @@ class HistoryTrainer:
         self.actor.batched_match_attention = config.learner_batched_attention
         self.critic = critic.to(self.device).train()
         critic_lr = config.critic_lr if config.critic_lr is not None else config.lr
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=config.lr)
-        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=critic_lr)
+        fused = True if config.adam_fused else None
+        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=config.lr, fused=fused)
+        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=critic_lr,
+                                                 fused=fused)
         self.rng = np.random.default_rng(config.seed)
         self.generator = torch.Generator(device=self.rollout_device)
         self.generator.manual_seed(config.seed)
@@ -573,6 +575,7 @@ class HistoryTrainer:
             self.generator.set_state(rng["sampler"].cpu())
         elif config.aux_heads:
             self.progress["aux_start_update"] = 0
+        self.apply_adam_policy()
         self.session_first_update = int(self.progress["updates"])
         self.env = gd.VecEnv(num_envs=config.num_envs, num_threads=config.num_threads,
                              seed=config.seed + 1000 * self.progress["updates"],
@@ -600,6 +603,30 @@ class HistoryTrainer:
                                    cache="ephemeral; rebuilt from raw public histories" if config.rollout_kv_cache
                                          else "none; raw public histories restart with environments"))
         self.write_manifest()
+
+    def apply_adam_policy(self) -> None:
+        """Make both optimizers follow ``config.adam_fused``, whatever state they loaded.
+
+        ``Optimizer.load_state_dict`` adopts the saved param-group settings, so a
+        checkpoint written under the other setting would silently switch the
+        implementation; this restores the configured one (both directions load).
+        Adam's step counters are exact integers in float32 and move without a
+        value change: to the parameter's device for fused (as fused Adam keeps
+        them), to the CPU otherwise, where Adam creates them. A checkpoint loaded
+        with ``map_location=cuda`` would otherwise leave them on the GPU, and the
+        foreach path reads every counter with ``.item()`` at every step.
+        """
+        fused = bool(self.config.adam_fused)
+        for optimizer in (self.actor_optimizer, self.critic_optimizer):
+            for group in optimizer.param_groups:
+                group["fused"] = True if fused else None
+                if fused:
+                    group["foreach"] = None
+                on_device = fused or bool(group.get("capturable"))
+                for p in group["params"]:
+                    state = optimizer.state.get(p)
+                    if state and torch.is_tensor(state.get("step")):
+                        state["step"] = state["step"].to(p.device if on_device else "cpu")
 
     def make_collector(self) -> HistoryCollector:
         """The rollout collector over this trainer's env, store and buffer."""
