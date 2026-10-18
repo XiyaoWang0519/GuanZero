@@ -30,7 +30,7 @@ code, checkpoint identity and external state for the task at hand.
 | Direction | Recorded state / next evidence needed |
 |---|---|
 | Continued training and auxiliary heads | [Experiment review](reports/experiment-review-2026-10-04.md), [auxiliary heads](reports/aux-heads-2026-10-02.md): distinguish lineage progress from multi-seed causal evidence |
-| Evaluation reliability | The October 4 review identifies external-adapter exclusions and paired-record gaps; inspect current code before assuming these are still unfixed |
+| Evaluation reliability | The October 4 review identifies external-adapter exclusions and paired-record gaps. October 18 ([receipt](reports/paired-eval-checkpoint-average-2026-10-18.md)): per-deal arena records, `eval.paired` and `train.checkpoint_average` implemented and tested on synthetic checkpoints only; no real checkpoint or DanLM measured. The cause of the mini-ladder `their_choice_missing` exclusions is a static hypothesis (wild cards declared below the level rank), not yet checked against data |
 | History use and opponent diversity | [History ablation](reports/history-ablation-2026-09-29.md), [diversity proposal](reports/opponent-diversity-plan-2026-10-03.md); earlier-checkpoint findings do not establish current history dependence |
 | Planted-habit diagnostic | [Phase 1a](reports/history-habit-phase1a-2026-09-30.md): ORACLE and ROUND trained/evaluated; FULL not run; one training seed per arm, separate diagnostic lineage |
 | Cheaper search | [Fused search design](reports/fused-search-design-2026-10-05.md): explicitly design only, no implementation or measured gain claimed |
