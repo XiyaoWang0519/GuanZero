@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import hashlib
+import json
 import random
 from typing import Iterable, Sequence
 
@@ -70,6 +72,13 @@ def generate_deals(count: int, seed: int = 0, level: int | None = None) -> list[
         deal.leader = rng.randrange(4)
         deals.append(deal)
     return deals
+
+
+def deal_set_sha256(deals: Iterable[gd.DealSpec]) -> str:
+    """Identity of an ordered deal set: hands, levels, leader and previous order."""
+    records = [[[list(hand) for hand in deal.hands], int(deal.level), list(deal.team_levels),
+                int(deal.owner), int(deal.leader), list(deal.prev_order)] for deal in deals]
+    return hashlib.sha256(json.dumps(records, separators=(",", ":")).encode()).hexdigest()
 
 
 def play_round(engine: gd.Engine, state: gd.MatchState,

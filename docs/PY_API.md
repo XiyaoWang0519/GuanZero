@@ -59,6 +59,7 @@ b.hidden_counts -> np.ndarray [B, 3, 54] uint8
 env.step(choices)             # np.ndarray [B] int32, one index per pending row
 env.drain_finished_rounds()   # list[RoundResult]
 env.drain_public_actions()    # list[PublicActionEvent], only when logging enabled
+env.drain_public_batch()      # owned public-token arrays, same event queue
 env.row_actions(row)          # list[Action] of a pending row, after pending()
 env.set_styles(styles)        # np.ndarray [num_envs, 4, gd.STYLE_DIM] float32
 env.clear_styles()
@@ -123,8 +124,8 @@ copy remains there. This correction preserves the observation layout and
 dimensions; archived checkpoints load unchanged, but their inputs can differ
 on these exchange cases when evaluated with the corrected encoder.
 
-All batch arrays are read-only views backed by ordinary CPU memory. The batch
-keeps its environment alive, but its views must be copied before the next
+All `DecisionBatch` arrays are read-only views backed by ordinary CPU memory.
+The batch keeps its environment alive, but its views must be copied before the next
 `pending()`, `step()`, `reset()`, or `fork()`. This memory is **not CUDA-pinned**;
 CUDA learners explicitly copy into pinned staging tensors when using
 asynchronous transfers. With `encode=False`, `obs` and `cand` have shapes
@@ -173,6 +174,35 @@ environment and contain:
 | `encoded_action` | Owned float32 `[ACT_DIM]` array; private tribute flags `[146:]` are always zero |
 | `cards_left` | Actor's public remaining card count after the action |
 | `forced` | True for an automatically skipped pass |
+
+### Batched public history
+
+`env.drain_public_batch()` consumes the same queue as `drain_public_actions()`;
+use one of the two APIs for each drain. It returns a dictionary of owned,
+C-contiguous NumPy arrays. Later environment operations, another drain, or
+deleting the environment do not change the returned arrays.
+
+| Key | Shape / dtype | Meaning |
+|---|---|---|
+| `env_id`, `match_id`, `round_index` | `[N]`, int64 | Source trajectory, in scalar event order |
+| `phase` | `[N]`, int64 | Phase before the action |
+| `tokens` | `[N, 186]`, uint8 | The same bytes as `train.logs.public_token(event)` |
+
+The token contains four seat bits, 154 action features and 28 cards-left bits.
+Private tribute flags (token columns 150 through 157) are zeroed while copying;
+no forced-pass flag, observation, legal candidate set or hidden hand is read
+into this batch. Forced and voluntary passes have the same public encoding.
+Empty drains retain these shapes with `N = 0`; logging and `log_env_limit`
+have the same behavior as the scalar API.
+
+`MatchEventStore.ingest_batch()` validates one complete batch and appends
+contiguous runs to their match streams, retaining each match's event order.
+`PublicStream.extend_tokens(tokens, rounds, phases)` provides the corresponding
+validated append for a single stream. Both copy their input, and old read-only
+stream views remain unchanged after append, capacity growth and reset.
+`HistoryCollector` uses the batched drain for the standard `MatchEventStore`.
+Specialized stores, including `RoundEventStore`, keep their scalar `ingest`
+override; environments without the new method also keep the scalar path.
 
 ## Round-log schema 2
 

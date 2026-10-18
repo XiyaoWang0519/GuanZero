@@ -83,6 +83,47 @@ class MatchEventStore:
             self.stream(event.env_id, event.match_id).append(event)
         return len(events)
 
+    def ingest_batch(self, batch: dict[str, np.ndarray]) -> int:
+        """Append the public-only arrays returned by ``VecEnv.drain_public_batch``.
+
+        Validate the complete batch once, then copy contiguous match runs into
+        their own streams. Run order preserves the scalar API's per-match event
+        order, including a round or match ending between two drained events.
+        """
+        tokens, rounds, phases = PublicStream._validated_batch(
+            batch["tokens"], batch["round_index"], batch["phase"])
+        env_id = np.asarray(batch["env_id"], np.int64)
+        match_id = np.asarray(batch["match_id"], np.int64)
+        n = len(tokens)
+        if env_id.shape != (n,) or match_id.shape != (n,):
+            raise ValueError("environment and match ids need one entry per public token")
+        if not n:
+            return 0
+        cuts = np.flatnonzero((env_id[1:] != env_id[:-1])
+                             | (match_id[1:] != match_id[:-1])) + 1
+        # A bad final run must not create a stream or append earlier runs.
+        # Match stream() exactly: an existing older match remains readable;
+        # only a newly encountered key advances/checks the latest match id.
+        runs = []
+        new_keys: set[tuple[int, int]] = set()
+        latest: dict[int, int] = {}
+        start = 0
+        for end in (*cuts.tolist(), n):
+            key = (int(env_id[start]), int(match_id[start]))
+            if key not in self.streams and key not in new_keys:
+                previous = latest.get(key[0], self.current.get(key[0], -1))
+                if key[1] < previous:
+                    raise ValueError(f"match id went backwards for environment {key[0]}: "
+                                     f"{key[1]} after {previous}")
+                new_keys.add(key)
+                latest[key[0]] = key[1]
+            runs.append((key, start, end))
+            start = end
+        for key, start, end in runs:
+            self.stream(*key)._extend_validated(
+                tokens[start:end], rounds[start:end], phases[start:end])
+        return n
+
     def prefix(self, env_id: int, match_id: int) -> int:
         return self.stream(env_id, match_id).prefix
 
@@ -945,7 +986,14 @@ class HistoryCollector:
 
     def _drain(self, stats: CollectStats) -> None:
         """Contract order: public events, then ended rounds (before this batch's rows)."""
-        self.store.ingest(self.env.drain_public_actions())
+        # Specialized stores can override ingest (e.g. per-round habit streams).
+        # Retain that contract and support older extensions/custom environments.
+        drain_batch = (getattr(self.env, "drain_public_batch", None)
+                       if type(self.store) is MatchEventStore else None)
+        if callable(drain_batch):
+            self.store.ingest_batch(drain_batch())
+        else:
+            self.store.ingest(self.env.drain_public_actions())
         results = self.env.drain_finished_rounds()
         self.buffer.finish_rounds(results)
         for r in results:

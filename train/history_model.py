@@ -36,7 +36,6 @@ import gd
 import numpy as np
 import torch
 from torch import Tensor, nn
-from torch.nn import functional as F
 
 from train.ckpt import load_checkpoint, save_checkpoint
 from train.public_history import TOKEN_DIM, TOKEN_SCHEMA_VERSION, PublicStream, public_token
@@ -44,10 +43,12 @@ from train.model import mlp
 from train.history_response import RESPONSE_CLASSES
 from train.history_aux import (HIDDEN_SEATS, NEXT_LOGITS, NUM_CARDS, canonical_aux_heads,
                                parse_aux_heads)
+from train.history_attention import private_sdpa
 
 STAGE = "history_ppo"
 PLAY_PHASE = int(gd.Phase.Play)
 HIDDEN_DIM = 3 * 54
+PRIVATE_QK_NORMS = ("none", "query", "qk")
 
 
 @dataclass(frozen=True)
@@ -76,6 +77,11 @@ class HistoryPolicyConfig:
     # They read the encoder/decision state and never enter the scoring path.
     # Recorded in checkpoints only when non-empty (``config_record``).
     aux_heads: str = ""
+    # Private cross-attention logit bound (A/B arm, never the main lineage
+    # unless adopted): "query" LayerNorms the q_proj input; "qk" LayerNorms q
+    # and k per head (over the head depth) after projection. Recorded in
+    # checkpoints only when not "none" (``config_record``).
+    private_qk_norm: str = "none"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "aux_heads", canonical_aux_heads(self.aux_heads))
@@ -90,6 +96,8 @@ class HistoryPolicyConfig:
             raise ValueError("observation and action widths must match the engine")
         if self.response_mode not in ("none", "auxiliary", "explicit"):
             raise ValueError("response_mode must be none, auxiliary or explicit")
+        if self.private_qk_norm not in PRIVATE_QK_NORMS:
+            raise ValueError(f"private_qk_norm must be one of {PRIVATE_QK_NORMS}")
 
     @property
     def aux_head_names(self) -> tuple[str, ...]:
@@ -97,14 +105,16 @@ class HistoryPolicyConfig:
 
 
 def config_record(config: HistoryPolicyConfig) -> dict[str, Any]:
-    """``asdict(config)`` without ``style_input`` when it is off and without
-    ``aux_heads`` when empty, so every other checkpoint keeps its exact
-    architecture record."""
+    """``asdict(config)`` without ``style_input`` when it is off, without
+    ``aux_heads`` when empty and without ``private_qk_norm`` when "none", so
+    every other checkpoint keeps its exact architecture record."""
     record = asdict(config)
     if not record["style_input"]:
         del record["style_input"]
     if not record["aux_heads"]:
         del record["aux_heads"]
+    if record["private_qk_norm"] == "none":
+        del record["private_qk_norm"]
     return record
 
 
@@ -338,6 +348,14 @@ class HistoryActor(nn.Module):
             # After the base actor, so every other parameter keeps its initialisation and order.
             self.style_embedding = nn.Embedding(3, width)
             nn.init.zeros_(self.style_embedding.weight)
+        # LayerNorm init draws no random numbers, so every other parameter (and
+        # the critic created after the actor) keeps its initialisation.
+        self.query_norm = nn.LayerNorm(width) if config.private_qk_norm == "query" else None
+        if config.private_qk_norm == "qk":
+            self.q_norm = nn.LayerNorm(width // config.heads)
+            self.k_norm = nn.LayerNorm(width // config.heads)
+        else:
+            self.q_norm = self.k_norm = None
         # Auxiliary heads come last (``extend_actor`` and the optimizer remap rely
         # on it) and draw from a forked RNG stream, so the base actor and the
         # critic created after it are initialised exactly as without heads.
@@ -430,19 +448,37 @@ class HistoryActor(nn.Module):
 
     # -- private side ---------------------------------------------------------
 
+    def project_query(self, query: Tensor, project=None) -> Tensor:
+        """Per-head attention queries ``[n, heads, depth]`` of private queries ``[n, w]``.
+        ``project(layer, value)`` replaces the plain ``q_proj`` call."""
+        heads = self.config.heads
+        if self.query_norm is not None:
+            query = self.query_norm(query)
+        q = self.q_proj(query) if project is None else project(self.q_proj, query)
+        q = q.view(len(query), heads, self.config.width // heads)
+        return q if self.q_norm is None else self.q_norm(q)
+
+    def project_keys_values(self, stream: Tensor) -> tuple[Tensor, Tensor]:
+        """Keys and values ``[..., S, w]`` of encoded positions ``[..., S, w]``."""
+        keys, values = self.kv_proj(stream).chunk(2, dim=-1)
+        if self.k_norm is not None:
+            heads = self.config.heads
+            keys = self.k_norm(keys.unflatten(-1, (heads, self.config.width // heads))).flatten(-2)
+        return keys, values
+
     def _attend(self, query: Tensor, keys: Tensor, values: Tensor, allowed: Tensor) -> Tensor:
         """query [n, w]; keys/values [1, S, w] shared or [n, S, w] per row; allowed [n, S]."""
         width, heads = self.config.width, self.config.heads
         depth = width // heads
-        q = self.q_proj(query).view(-1, heads, depth)
+        q = self.project_query(query)
         k = keys.view(keys.shape[0], keys.shape[1], heads, depth)
         v = values.view(values.shape[0], values.shape[1], heads, depth)
         if keys.shape[0] == 1:
-            out = F.scaled_dot_product_attention(
+            out = private_sdpa(
                 q.transpose(0, 1)[None], k[0].transpose(0, 1)[None], v[0].transpose(0, 1)[None],
                 attn_mask=allowed[None, None])[0].transpose(0, 1)
         else:
-            out = F.scaled_dot_product_attention(
+            out = private_sdpa(
                 q[:, :, None], k.transpose(1, 2), v.transpose(1, 2),
                 attn_mask=allowed[:, None, None])[:, :, 0]
         return self.out_proj(out.reshape(-1, width))
@@ -475,11 +511,10 @@ class HistoryActor(nn.Module):
         depth = width // heads
         project = ((lambda layer, value: layer(value)) if self.wide_private_projection
                    else self._project_independent)
-        q = project(self.q_proj, query)
-        q = q.view(count, heads, depth)[:, :, None]
+        q = self.project_query(query, project)[:, :, None]
         k = keys.view(count, keys.shape[1], heads, depth).transpose(1, 2)
         v = values.view(count, values.shape[1], heads, depth).transpose(1, 2)
-        out = F.scaled_dot_product_attention(q, k, v, attn_mask=allowed[:, None, None])
+        out = private_sdpa(q, k, v, attn_mask=allowed[:, None, None])
         out = out[:, :, 0].reshape(count, width)
         return project(self.out_proj, out)
 
@@ -503,22 +538,13 @@ class HistoryActor(nn.Module):
             starts = torch.cumsum(per_match, 0) - per_match
             rank = torch.empty_like(match_index)
             rank[order] = torch.arange(count, device=query.device) - starts[match_index[order]]
-        q = self.q_proj(query).view(count, heads, depth)
+        q = self.project_query(query)
         padded = q.new_zeros(matches, slots, heads, depth).index_put((match_index, rank), q)
         visible = prefix.new_zeros(matches, slots).index_put((match_index, rank), prefix)
         allowed = torch.arange(keys.shape[1], device=keys.device)[None, None] <= visible[..., None]
         k = keys.view(matches, keys.shape[1], heads, depth).transpose(1, 2)
         v = values.view(matches, values.shape[1], heads, depth).transpose(1, 2)
-        # Oct 15 2026: masked efficient SDPA backward amplified gradients on L40S / torch 2.11
-        # (training-fixture-backward report); grad-enabled CUDA calls use the math kernel.
-        from torch.nn.attention import SDPBackend, sdpa_kernel
-        if query.is_cuda and torch.is_grad_enabled():
-            with sdpa_kernel(SDPBackend.MATH):
-                out = F.scaled_dot_product_attention(padded.transpose(1, 2), k, v,
-                                                     attn_mask=allowed[:, None])
-        else:
-            out = F.scaled_dot_product_attention(padded.transpose(1, 2), k, v,
-                                                 attn_mask=allowed[:, None])
+        out = private_sdpa(padded.transpose(1, 2), k, v, attn_mask=allowed[:, None])
         out = out.transpose(1, 2)[match_index, rank].reshape(count, width)
         return self.out_proj(out)
 
@@ -540,7 +566,7 @@ class HistoryActor(nn.Module):
             query = query + self.style_embedding(inputs.style + 1)
         if self.config.window:
             stream, lengths = self._windowed(inputs)
-            keys, values = self.kv_proj(stream).chunk(2, dim=-1)
+            keys, values = self.project_keys_values(stream)
             allowed = torch.arange(stream.shape[1], device=stream.device)[None] <= lengths[:, None]
             attended = self._attend(query, keys, values, allowed)
         elif encoded is None and inputs.match_groups is not None:
@@ -560,7 +586,7 @@ class HistoryActor(nn.Module):
                         prefix: Tensor, one_decision_per_stream: bool,
                         rank: Tensor | None = None, slots: int = 0) -> Tensor:
         """Each decision's attention over its encoded stream, positions ``<= prefix``."""
-        keys, values = self.kv_proj(encoded).chunk(2, dim=-1)
+        keys, values = self.project_keys_values(encoded)
         positions = torch.arange(encoded.shape[1], device=encoded.device)
         if self.batched_private_attention and one_decision_per_stream and len(query) > 1:
             allowed = positions[None] <= prefix[:, None]

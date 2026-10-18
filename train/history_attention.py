@@ -4,8 +4,25 @@ Trailing padding cannot affect valid positions in a causal stream. Passing the
 causal hint directly avoids materializing a batch/head/length/length padding
 mask. This changes neither the checkpoint tensors nor the attention support.
 """
+import torch
 from torch import Tensor
 from torch.nn import functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
+
+
+def private_sdpa(query: Tensor, keys: Tensor, values: Tensor, *, attn_mask: Tensor) -> Tensor:
+    """Masked private attention with the verified CUDA backward workaround.
+
+    Masked efficient SDPA backward amplified gradients on L40S / torch 2.11
+    (docs/reports/training-fixture-backward-2026-10-14.md). Keep the math
+    backend for every grad-enabled CUDA private query, including singleton,
+    default per-match and windowed paths. Inference and CPU dispatch normally.
+    Public causal attention and frozen rollout-cache attention are unchanged.
+    """
+    if query.is_cuda and torch.is_grad_enabled():
+        with sdpa_kernel(SDPBackend.MATH):
+            return F.scaled_dot_product_attention(query, keys, values, attn_mask=attn_mask)
+    return F.scaled_dot_product_attention(query, keys, values, attn_mask=attn_mask)
 
 
 def project(layer, state: Tensor) -> tuple[Tensor, Tensor, Tensor]:

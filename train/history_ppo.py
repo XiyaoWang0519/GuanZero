@@ -85,7 +85,6 @@ def habit_init_player(config: HistoryPPOConfig
     critic.load_state_dict(base_critic.state_dict())
     return actor, critic, payload
 
-
 def load_extended_optimizers(trainer: "HistoryTrainer", payload: dict[str, Any], *,
                              keep_lr: bool) -> None:
     """Adam moments of a checkpoint whose actor had fewer parameters: the extra
@@ -105,7 +104,6 @@ def load_extended_optimizers(trainer: "HistoryTrainer", payload: dict[str, Any],
         if keep_lr:
             optimizer.param_groups[0]["lr"] = lr
 
-
 def load_habit_optimizers(trainer: "HistoryTrainer", payload: dict[str, Any]) -> dict[str, Any]:
     """Adam moments of the source checkpoint (new style embedding starts fresh);
     learning rates stay the configured ones. Returns the init record."""
@@ -120,7 +118,6 @@ def segment_entropy(log_probs: torch.Tensor, rows: torch.Tensor, count: int) -> 
     terms = -(log_probs.exp() * log_probs)
     return torch.zeros(count, device=log_probs.device, dtype=log_probs.dtype).index_add_(
         0, rows, terms)
-
 
 class HistoryTrainer:
     """Collect, learn, checkpoint. ``update()`` is one PPO iteration."""
@@ -151,6 +148,9 @@ class HistoryTrainer:
         extended = False
         if resume is not None:
             actor, critic, payload = load_history_checkpoint(resume, self.device)
+            if payload.get("averaged_from"):
+                raise ValueError("an averaged checkpoint (train.checkpoint_average) is for "
+                                 "evaluation only and cannot be resumed")
             saved_config = HistoryPPOConfig.from_payload(payload["config"], updates=config.updates)
             overrides = dict(resume_overrides or {})
             unknown = set(overrides) - RESUME_OVERRIDES
@@ -697,9 +697,11 @@ class HistoryTrainer:
                 logits = self.actor.next_logits(encoded[:, :count])
                 parts.append((logits.reshape(-1, logits.shape[-1]), tokens.reshape(-1, tokens.shape[-1]),
                               valid.reshape(-1)))
-            stats.update(next_token_loss(torch.cat([p[0] for p in parts]),
-                                         torch.cat([p[1] for p in parts]),
-                                         torch.cat([p[2] for p in parts])))
+            # A single encoded group is already flat and contiguous. Avoid
+            # cloning its logits, labels and mask just to concatenate one part.
+            next_inputs = (parts[0] if len(parts) == 1 else
+                           tuple(torch.cat([part[i] for part in parts]) for i in range(3)))
+            stats.update(next_token_loss(*next_inputs))
             total = total + stats["next_loss"]
         if "belief" in heads:
             stats.update(belief_loss(self.actor.belief_logits(state), row["hidden"]))
@@ -782,7 +784,8 @@ class HistoryTrainer:
                 if key not in ("actor_grad_norm", "encoder_grad_norm", "critic_grad_norm")]
         totals = {key: 0.0 for key in self.STAT_KEYS}
         count = steps = 0
-        encoder_parameters = list(self.actor.stream.parameters())
+        from train.history_gradients import ActorGradientClipper
+        clip_actor = ActorGradientClipper(self.actor.parameters(), self.actor.stream.parameters())
         for _ in range(cfg.epochs):
             for rows in self.epoch_batches(samples):
                 self.actor_optimizer.zero_grad(set_to_none=True)
@@ -793,12 +796,9 @@ class HistoryTrainer:
                 mark("gradient_reduce")
                 if reduced == 0:
                     continue
-                # Per-tensor encoder norms in one foreach call rather than a few
-                # kernels per tensor; squared and summed as before.
-                grads = [p.grad.detach().float() for p in encoder_parameters
-                         if p.grad is not None]
-                encoder = (torch.stack(torch._foreach_norm(grads)) ** 2).unbind() if grads else ()
-                actor = torch.nn.utils.clip_grad_norm_(self.actor.parameters(), cfg.grad_clip)
+                # Reuse the actor's tensor norms for encoder diagnostics; retain
+                # their original order and the existing FP32 overflow guard.
+                actor, encoder = clip_actor(cfg.grad_clip)
                 critic = torch.nn.utils.clip_grad_norm_(self.critic.parameters(), cfg.grad_clip)
                 present = [key for key in keys if terms is not None and key in terms]
                 # clip_grad_norm_ returns a CPU zero when a module has no gradient.
@@ -1013,14 +1013,12 @@ class HistoryTrainer:
                 self.save(self.output / f"update-{self.progress['updates']:06d}.pt")
         self.save()
 
-
 # ---- diagnostics ----------------------------------------------------------------
 
 CPROFILE_ENV = "GUANZERO_CPROFILE_DIR"
 TORCH_PROFILE_ENV = "GUANZERO_TORCH_PROFILE_DIR"
 TORCH_PROFILE_UPDATES_ENV = "GUANZERO_TORCH_PROFILE_UPDATES"
 CPROFILE_BUILTINS_ENV = "GUANZERO_CPROFILE_BUILTINS"
-
 
 def run_profiled(trainer: "HistoryTrainer", rank: int = 0) -> None:
     """``trainer.run()``; with ``GUANZERO_CPROFILE_DIR`` set, under cProfile.
@@ -1064,7 +1062,6 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGINT, stop)
     run_profiled(trainer)
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())

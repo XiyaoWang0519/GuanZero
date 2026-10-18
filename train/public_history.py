@@ -62,6 +62,18 @@ class PublicStream:
     def append(self, event: Any) -> None:
         self.append_token(public_token(event), int(event.round_index), int(event.phase))
 
+    def _reserve(self, length: int) -> None:
+        if length <= len(self._rounds):
+            return
+        n = self._length
+        capacity = max(self._INITIAL_CAPACITY, 2 * len(self._rounds), length)
+        tokens, rounds, phases = self._tokens, self._rounds, self._phases
+        self._new_buffers(capacity)
+        self._tokens[:n] = tokens[:n]
+        self._rounds[:n] = rounds[:n]
+        self._phases[:n] = phases[:n]
+        self._length = n
+
     def append_token(self, token: np.ndarray, round_index: int, phase: int) -> None:
         token = np.asarray(token, dtype=np.uint8)
         if token.shape != (TOKEN_DIM,):
@@ -73,17 +85,47 @@ class PublicStream:
         if round_index < 0 or phase < 0:
             raise ValueError("round index and phase must not be negative")
         n = self._length
-        if n == len(self._rounds):
-            capacity = max(self._INITIAL_CAPACITY, 2 * n)
-            tokens, rounds, phases = self._tokens, self._rounds, self._phases
-            self._new_buffers(capacity)
-            self._tokens[:n] = tokens[:n]
-            self._rounds[:n] = rounds[:n]
-            self._phases[:n] = phases[:n]
+        self._reserve(n + 1)
         self._tokens[n] = token
         self._rounds[n] = int(round_index)
         self._phases[n] = int(phase)
         self._length = n + 1
+
+    @staticmethod
+    def _validated_batch(tokens: np.ndarray, rounds: np.ndarray, phases: np.ndarray
+                         ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Validate public arrays once before distributing them among streams."""
+        tokens = np.asarray(tokens, dtype=np.uint8)
+        rounds = np.asarray(rounds, dtype=np.int64)
+        phases = np.asarray(phases, dtype=np.int64)
+        if tokens.ndim != 2 or tokens.shape[1] != TOKEN_DIM:
+            raise ValueError(f"public tokens must have shape [events, {TOKEN_DIM}]")
+        if rounds.shape != (len(tokens),) or phases.shape != (len(tokens),):
+            raise ValueError("rounds and phases need one entry per public token")
+        if ((tokens[:, :4].sum(1) != 1).any()
+                or (tokens[:, 158:].sum(1) != 1).any()):
+            raise ValueError("public token needs exactly one seat and one cards-left bit")
+        if tokens[:, 4 + 146:4 + 154].any():
+            raise ValueError("private tribute flags must not enter the public stream")
+        if (rounds < 0).any() or (phases < 0).any():
+            raise ValueError("round index and phase must not be negative")
+        return tokens, rounds, phases
+
+    def _extend_validated(self, tokens: np.ndarray, rounds: np.ndarray,
+                          phases: np.ndarray) -> None:
+        """Append a slice of arrays already checked by ``_validated_batch``."""
+        if not len(tokens):
+            return
+        start, end = self._length, self._length + len(tokens)
+        self._reserve(end)
+        self._tokens[start:end] = tokens
+        self._rounds[start:end] = rounds
+        self._phases[start:end] = phases
+        self._length = end
+
+    def extend_tokens(self, tokens: np.ndarray, rounds: np.ndarray, phases: np.ndarray) -> None:
+        """Append public token arrays, preserving old views and owning the new data."""
+        self._extend_validated(*self._validated_batch(tokens, rounds, phases))
 
     @staticmethod
     def _view(array: np.ndarray, length: int) -> np.ndarray:
