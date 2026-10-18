@@ -85,18 +85,77 @@ def _next_slices() -> dict[str, slice]:
 
 NEXT_SLICES = _next_slices()
 
+# The six categorical fields: the five one-hot fields, then the bomb size.
+# Card bits are one contiguous block in the token and in the logits.
+_CATEGORICAL = (*(name for name, _ in ONE_HOT_FIELDS), "bomb")
+_SEAT_FIELD, _TYPE_FIELD = _CATEGORICAL.index("seat"), _CATEGORICAL.index("type")
+CARD_TOKENS = slice(CARDS1.start, CARDS2.stop)
+CARD_LOGITS = slice(NEXT_SLICES["cards1"].start, NEXT_SLICES["cards2"].stop)
+assert CARDS1.stop == CARDS2.start and NEXT_SLICES["cards1"].stop == NEXT_SLICES["cards2"].start
+# Compact loss: every categorical field's logits padded to a common width with
+# an appended -inf column (index NEXT_LOGITS), so one log-softmax covers all six.
+_PAD = max(NEXT_SLICES[name].stop - NEXT_SLICES[name].start for name in _CATEGORICAL)
+_LOGIT_LAYOUT = [list(range(NEXT_SLICES[name].start, NEXT_SLICES[name].stop))
+                 + [NEXT_LOGITS] * (_PAD - (NEXT_SLICES[name].stop - NEXT_SLICES[name].start))
+                 for name in _CATEGORICAL]
+_LOGIT_LAYOUT_CACHE: dict[torch.device, Tensor] = {}
+
+
+def _logit_layout(device: torch.device) -> Tensor:
+    """The compact loss's constant column index, uploaded once per device (not per
+    call: a tensor from Python data is a host-to-device copy, a stream sync on CUDA)."""
+    if device not in _LOGIT_LAYOUT_CACHE:
+        with torch.inference_mode(False):
+            _LOGIT_LAYOUT_CACHE[device] = torch.tensor(_LOGIT_LAYOUT, dtype=torch.long,
+                                                       device=device).reshape(-1)
+    return _LOGIT_LAYOUT_CACHE[device]
+
+
+def next_token_targets(tokens: Tensor) -> list[Tensor]:
+    """``[N]`` int64 targets of the categorical fields, in ``_CATEGORICAL``
+    order: each one-hot field's argmax (an all-zero field gives 0), then the
+    bomb class (``BOMB_CLASSES - 1`` for "not a bomb"). The bomb target fills
+    the argmax where no size bit is set: the same integers as a ``where``."""
+    targets = [tokens[:, field].argmax(-1) for _, field in ONE_HOT_FIELDS]
+    bomb = tokens[:, BOMB]
+    targets.append(bomb.argmax(-1).masked_fill_(bomb.amax(-1) == 0, BOMB_CLASSES - 1))
+    return targets
+
+
+def _next_token_rates(logits: Tensor, tokens: Tensor, targets: list[Tensor],
+                      weight: Tensor | None, total) -> dict[str, Tensor]:
+    """Seat/type accuracy and ``next_cards_exact``. The indicators are 0/1, so
+    their weighted sums are exact integers in any order: one stacked column sum
+    gives each rate bit for bit as three separate masked means would."""
+    with torch.no_grad():
+        cards_right = ((logits[:, CARD_LOGITS] > 0) == (tokens[:, CARD_TOKENS] > 0)).all(-1)
+        right = torch.stack((logits[:, NEXT_SLICES["seat"]].argmax(-1) == targets[_SEAT_FIELD],
+                             logits[:, NEXT_SLICES["type"]].argmax(-1) == targets[_TYPE_FIELD],
+                             cards_right), 1).to(logits.dtype)
+        if weight is not None:
+            right = right * weight[:, None]
+        rates = right.sum(0) / total
+    seat, kind, cards = rates.unbind()
+    return {"next_seat_accuracy": seat, "next_type_accuracy": kind, "next_cards_exact": cards}
+
 
 def next_token_loss(logits: Tensor, tokens: Tensor, valid: Tensor) -> dict[str, Tensor]:
     """Factorised next-token loss over positions where ``valid`` is true.
 
     ``logits`` ``[..., NEXT_LOGITS]`` predict ``tokens`` ``[..., TOKEN_DIM]`` at
     the same index (the caller aligns position ``s`` with token ``s``);
-    ``valid`` ``[...]`` masks padding. Returns the field losses' mean
-    (``next_loss``; the mean over the eight fields keeps this head at the same
-    order of magnitude as the other heads, so ``aux_coef`` weighs them evenly),
-    each field's own mean, and type/seat accuracies plus the fraction of
-    positions whose 108 card bits are all right (``next_cards_exact``). Means
-    are over valid positions; an all-padding batch gives zeros.
+    ``valid`` ``[...]`` masks padding (bool, or the same mask as 0/1 floats).
+    Returns the field losses' mean (``next_loss``; the mean over the eight
+    fields keeps this head at the same order of magnitude as the other heads,
+    so ``aux_coef`` weighs them evenly), each field's own mean, and type/seat
+    accuracies plus the fraction of positions whose 108 card bits are all
+    right (``next_cards_exact``). Means are over valid positions; an
+    all-padding batch gives zeros.
+
+    Each field's loss is its own cross-entropy (one-hot fields, bomb size) or
+    mean binary cross-entropy (card fields), added in field order; the accuracy
+    statistics come from one integer-exact stacked sum, the same values as
+    separate masked means.
     """
     logits = logits.reshape(-1, NEXT_LOGITS).float()
     tokens = tokens.reshape(-1, TOKEN_DIM)
@@ -106,31 +165,51 @@ def next_token_loss(logits: Tensor, tokens: Tensor, valid: Tensor) -> dict[str, 
     def masked_mean(values: Tensor) -> Tensor:
         return (values * weight).sum() / total
 
+    targets = next_token_targets(tokens)
     stats: dict[str, Tensor] = {}
     loss = logits.new_zeros(())
-    for name, field in ONE_HOT_FIELDS:
-        target = tokens[:, field].argmax(-1)
+    for (name, _), target in zip(ONE_HOT_FIELDS, targets):
         part = logits[:, NEXT_SLICES[name]]
         stats[f"next_{name}_loss"] = masked_mean(F.cross_entropy(part, target, reduction="none"))
         loss = loss + stats[f"next_{name}_loss"]
-        if name in ("type", "seat"):
-            stats[f"next_{name}_accuracy"] = masked_mean((part.argmax(-1) == target).to(logits.dtype))
-    cards_right = torch.ones_like(weight, dtype=torch.bool)
+    cards = tokens[:, CARD_TOKENS].to(logits.dtype)
     for name, field in MULTI_HOT_FIELDS:
-        target = tokens[:, field].to(logits.dtype)
+        target = cards[:, field.start - CARD_TOKENS.start:field.stop - CARD_TOKENS.start]
         part = logits[:, NEXT_SLICES[name]]
         stats[f"next_{name}_loss"] = masked_mean(
             F.binary_cross_entropy_with_logits(part, target, reduction="none").mean(-1))
         loss = loss + stats[f"next_{name}_loss"]
-        cards_right &= ((part > 0) == (target > 0.5)).all(-1)
-    stats["next_cards_exact"] = masked_mean(cards_right.to(logits.dtype))
-    bomb = tokens[:, BOMB]
-    bomb_target = torch.where(bomb.sum(-1) > 0, bomb.argmax(-1),
-                              torch.full_like(bomb[:, 0], BOMB_CLASSES - 1, dtype=torch.long))
     stats["next_bomb_loss"] = masked_mean(
-        F.cross_entropy(logits[:, NEXT_SLICES["bomb"]], bomb_target, reduction="none"))
+        F.cross_entropy(logits[:, NEXT_SLICES["bomb"]], targets[-1], reduction="none"))
     loss = loss + stats["next_bomb_loss"]
     stats["next_loss"] = loss / NEXT_FIELDS
+    stats.update(_next_token_rates(logits, tokens, targets, weight, total))
+    return stats
+
+
+def next_token_loss_compact(logits: Tensor, tokens: Tensor) -> dict[str, Tensor]:
+    """``next_token_loss`` over rows that are all valid positions, fused
+    (``learner_compact_next``, tier 2): one log-softmax over the six
+    categorical fields padded to a common width with ``-inf``, one binary
+    cross-entropy over the 108 card bits and one column sum for the eight
+    field means. Same statistics, FP32 reduction order differs."""
+    logits = logits.reshape(-1, NEXT_LOGITS).float()
+    tokens = tokens.reshape(-1, TOKEN_DIM)
+    count = len(logits)
+    targets = next_token_targets(tokens)
+    wide = torch.cat((logits, logits.new_full((count, 1), float("-inf"))), 1)
+    log_probs = wide.index_select(1, _logit_layout(logits.device)).view(
+        count, len(_CATEGORICAL), _PAD).log_softmax(-1)
+    nll = -log_probs.gather(-1, torch.stack(targets, 1)[..., None])[..., 0]  # [N, 6]
+    cards = tokens[:, CARD_TOKENS].to(logits.dtype)
+    bce = F.binary_cross_entropy_with_logits(logits[:, CARD_LOGITS], cards, reduction="none")
+    bce = bce.view(count, len(MULTI_HOT_FIELDS), NUM_CARDS).mean(-1)        # [N, 2]
+    total = max(count, 1)
+    per_field = torch.cat((nll, bce), 1).sum(0) / total
+    names = (*_CATEGORICAL, *(name for name, _ in MULTI_HOT_FIELDS))
+    stats = {f"next_{name}_loss": value for name, value in zip(names, per_field.unbind())}
+    stats["next_loss"] = per_field.sum() / NEXT_FIELDS
+    stats.update(_next_token_rates(logits, tokens, targets, None, total))
     return stats
 
 

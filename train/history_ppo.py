@@ -58,8 +58,8 @@ from train.history_rollout import (CollectStats, HistoryCollector, MatchEventSto
                                    SequenceRolloutBuffer, TrainingBatch, _PhaseTimer)
 from train.history_population import HistoryPopulation
 from train.history_response import RESPONSE_SCHEMA, opponent_response_labels
-from train.history_aux import (AUX_HEADS, belief_loss, next_token_loss, outcome_loss,
-                               parse_aux_heads, round_outcomes)
+from train.history_aux import (AUX_HEADS, belief_loss, next_token_loss, next_token_loss_compact,
+                               outcome_loss, parse_aux_heads, round_outcomes)
 from train.history_transfers import runtime_settings
 from train.logs import TOKEN_DIM
 
@@ -112,6 +112,10 @@ class HistoryPPOConfig:
     # Auxiliary response head on the executed candidates only (the only rows its
     # loss reads); the policy still scores every candidate. FP32, not bitwise.
     learner_chosen_response: bool = False
+    # With length groups and the "next" head: run the head and a fused loss on
+    # the valid positions only (one log-softmax, one BCE, one column sum) instead
+    # of per field over every padded position. Same loss; FP32, not bitwise.
+    learner_compact_next: bool = False
     rollout_graph_budget_mb: int = 512
     rollout_graph_policy_budget_mb: int = 128  # per-policy cap inside the total budget
     rollout_triton_cache: bool = False  # lossless KV update/packing; requires Triton
@@ -277,6 +281,8 @@ class HistoryPPOConfig:
             raise ValueError("prediction arms require a positive response_coef")
         if self.learner_chosen_response and self.response_mode != "auxiliary":
             raise ValueError("learner_chosen_response needs the auxiliary response mode")
+        if self.learner_compact_next and not self.learner_length_groups:
+            raise ValueError("learner_compact_next needs learner_length_groups")
         parse_aux_heads(self.aux_heads)
         if not math.isfinite(self.aux_coef) or self.aux_coef < 0 or self.aux_warmup_updates < 0:
             raise ValueError("aux_coef must be finite and nonnegative; aux_warmup_updates >= 0")
@@ -388,9 +394,9 @@ def parse_arm_schedule(schedule: str) -> list[tuple[int, bool]]:
 # otherwise; private graphs replay the same kernels; page-padded spans and the
 # batched learner cache prefill are tier 2), the learn-phase profile (timing only),
 # the learner's length-grouped
-# encode and chosen-only auxiliary response head (tier 2: same loss, learner
-# float-order noise), the data-parallel gradient transport and fused Adam (tier 2:
-# FP32 order), plus snapshot_updates,
+# encode, chosen-only auxiliary response head and compact next-token loss (tier 2:
+# same loss, learner float-order noise), the data-parallel gradient transport and
+# fused Adam (tier 2: FP32 order), plus snapshot_updates,
 # which changes dynamics.
 RESUME_OVERRIDES = frozenset({"num_envs", "num_threads", "minibatch_matches", "torch_threads",
                               "checkpoint_updates", "ddp_global_minibatch", "ddp_reduce",
@@ -403,6 +409,7 @@ RESUME_OVERRIDES = frozenset({"num_envs", "num_threads", "minibatch_matches", "t
                               "rollout_paged_cache",
                               "rollout_triton_cache", "batch_snapshot_encoder",
                               "learner_length_groups", "learner_chosen_response",
+                              "learner_compact_next",
                               "rollout_page_span", "rollout_prefill_learner_cache",
                               "profile_learn",
                               "aux_heads", "aux_coef", "aux_warmup_updates",
@@ -433,6 +440,11 @@ def parse_resume_overrides(items: list[str] | None) -> dict[str, Any]:
         else:
             values[key] = int(raw)
     return values
+
+
+def _joined(parts: list[torch.Tensor]) -> torch.Tensor:
+    """``torch.cat(parts)``; a single part as it is (the same values, one copy fewer)."""
+    return parts[0] if len(parts) == 1 else torch.cat(parts)
 
 
 def segment_entropy(log_probs: torch.Tensor, rows: torch.Tensor, count: int) -> torch.Tensor:
@@ -841,6 +853,7 @@ class HistoryTrainer:
                           "learner_batched_attention": self.actor.batched_match_attention,
                           "learner_length_groups": self.config.learner_length_groups,
                           "learner_chosen_response": self.config.learner_chosen_response,
+                          "learner_compact_next": self.config.learner_compact_next,
                           **self.reduce_record(),
                           "adam_fused": self.config.adam_fused,
                           "rollout_graph_budget_mb": self.config.rollout_graph_budget_mb,
@@ -983,9 +996,16 @@ class HistoryTrainer:
             self.learn_mark("batch_and_upload")
         inputs, chosen, row = batch.inputs, batch.chosen, batch.fields
         inputs.style = row.get("style")
+        # Nothing below creates a device tensor from Python data (torch.tensor,
+        # new_tensor, as_tensor) or reads one back (.item(), float()): on CUDA
+        # either is a stream synchronization that stalls this minibatch's kernel
+        # queue (tests/test_history_learner_ops.py audits it).
         response_stats = {}
         aux_stats = {}
+        # Per-row 0/1 diagnostics, reduced together at the end (see below).
+        indicators: list[torch.Tensor] = []
         heads = self.actor.aux_head_names
+        candidate_rows = inputs.rows                # host-planned by training_batch
         if not predict and not heads:
             all_log_probs = self.actor.candidate_log_probs(inputs)
         else:
@@ -995,19 +1015,18 @@ class HistoryTrainer:
             chosen_only = cfg.learner_chosen_response
             logits, response = self.actor.candidate_outputs(
                 state, inputs.cand, inputs.offsets, predict=predict,
-                response_rows=chosen if (predict and chosen_only) else None, rows=inputs.rows)
-            all_log_probs = segment_log_softmax(logits, inputs.rows, inputs.decisions)
+                response_rows=chosen if (predict and chosen_only) else None, rows=candidate_rows)
+            all_log_probs = segment_log_softmax(logits, candidate_rows, inputs.decisions)
             if predict:
                 targets = row["response_target"]
                 # Outcomes exist ONLY for executed actions.
                 prediction = response if chosen_only else response[chosen]
-                response_stats = {"response_loss": F.cross_entropy(prediction, targets),
-                                  "response_accuracy": (prediction.argmax(-1) == targets).float().mean(),
-                                  "response_event_fraction": (targets != 0).float().mean()}
+                response_stats = {"response_loss": F.cross_entropy(prediction, targets)}
+                indicators += [prediction.argmax(-1) == targets, targets != 0]
             if heads:
                 aux_stats = self.auxiliary_losses(state, inputs, row, encoded_streams)
         log_prob = all_log_probs[chosen]
-        entropy = segment_entropy(all_log_probs, inputs.rows, inputs.decisions)
+        entropy = segment_entropy(all_log_probs, candidate_rows, inputs.decisions).mean()
         old, behaviour = row["logp"], row["behaviour_logp"]
         advantage, returns = row["advantage"], row["returns"]
         log_ratio = log_prob - old
@@ -1028,20 +1047,28 @@ class HistoryTrainer:
         clipped = torch.minimum(ratio * advantage,
                                 ratio.clamp(1 - cfg.clip, 1 + cfg.clip) * advantage)
         surrogate = -clipped.mean()
-        policy_total = surrogate - cfg.entropy * entropy.mean()
+        policy_total = surrogate - cfg.entropy * entropy
         if response_stats:
             policy_total = policy_total + cfg.response_coef * response_stats["response_loss"]
         if aux_stats:
             policy_total = policy_total + aux_stats["aux_coefficient"] * aux_stats["aux_loss"]
         value_loss = F.mse_loss(self.critic(inputs.obs, row["hidden"]), returns)
         with torch.no_grad():
-            approx_kl = ((ratio - 1) - log_ratio).mean()
-            clip_fraction = ((ratio - 1).abs() > cfg.clip).float().mean()
-            ratio_deviation = (ratio - 1).abs().max()
-            weight_capped = (raw_weight > cfg.behaviour_weight_cap).float().mean()
+            excess = ratio - 1
+            deviation = excess.abs()
+            approx_kl = (excess - log_ratio).mean()
+            ratio_deviation = deviation.max()
+            # Means of 0/1 indicators over the same rows: their float sums are
+            # exact integers in any order, so one stacked mean gives every rate
+            # bit for bit as separate means would.
+            rates = torch.stack([deviation > cfg.clip, raw_weight > cfg.behaviour_weight_cap,
+                                 *indicators], 1).float().mean(0).unbind()
+        clip_fraction, weight_capped = rates[:2]
+        if predict:
+            response_stats.update(response_accuracy=rates[2], response_event_fraction=rates[3])
         self.learn_mark("forward")
         return {"policy_total": policy_total, "value_total": cfg.value_coef * value_loss,
-                "policy_loss": surrogate, "value_loss": value_loss, "entropy": entropy.mean(),
+                "policy_loss": surrogate, "value_loss": value_loss, "entropy": entropy,
                 "approx_kl": approx_kl, "clip_fraction": clip_fraction,
                 "ratio_deviation": ratio_deviation, "behaviour_weight_mean": weight.mean(),
                 "behaviour_weight_cap_fraction": weight_capped, **response_stats, **aux_stats}
@@ -1065,33 +1092,10 @@ class HistoryTrainer:
         if "next" in heads:
             if not encoded_streams:
                 raise RuntimeError("the next-token head needs the encoded streams")
-            s = inputs.streams
-            parts = []
-            for encoded, group in encoded_streams:
-                # Positions up to each match's longest cited prefix count (the tokens
-                # some decision of the minibatch read), so the loss is the same set
-                # of positions whether or not the learner encodes in length groups.
-                if group is None:
-                    tokens, lengths = s.tokens, s.lengths
-                    cited = torch.zeros_like(lengths).scatter_reduce(
-                        0, inputs.match_index, inputs.prefix, reduce="amax")
-                else:
-                    n = group.tokens
-                    tokens = s.tokens[group.matches, :n]
-                    lengths = s.lengths[group.matches].clamp(max=n)
-                    cited = torch.zeros_like(lengths).scatter_reduce(
-                        0, group.local_match, inputs.prefix[group.rows], reduce="amax")
-                count = tokens.shape[1]
-                # Position s has seen s tokens and predicts token s; positions at or
-                # past a stream's length are padding.
-                limit = torch.minimum(lengths, cited)
-                valid = torch.arange(count, device=tokens.device)[None] < limit[:, None]
-                logits = self.actor.next_logits(encoded[:, :count])
-                parts.append((logits.reshape(-1, logits.shape[-1]), tokens.reshape(-1, tokens.shape[-1]),
-                              valid.reshape(-1)))
-            stats.update(next_token_loss(torch.cat([p[0] for p in parts]),
-                                         torch.cat([p[1] for p in parts]),
-                                         torch.cat([p[2] for p in parts])))
+            if self.config.learner_compact_next and inputs.next_weight is not None:
+                stats.update(self.compact_next_token_loss(inputs, encoded_streams))
+            else:
+                stats.update(next_token_loss(*self.next_token_inputs(inputs, encoded_streams)))
             total = total + stats["next_loss"]
         if "belief" in heads:
             stats.update(belief_loss(self.actor.belief_logits(state), row["hidden"]))
@@ -1100,8 +1104,62 @@ class HistoryTrainer:
             stats.update(outcome_loss(self.actor.outcome_value(state), row["outcome_target"]))
             total = total + stats["outcome_loss"]
         stats["aux_loss"] = total
-        stats["aux_coefficient"] = state.new_tensor(self.aux_coefficient())
+        # A fill with a scalar argument, not ``new_tensor``: a tensor built from
+        # Python data is a pageable host-to-device copy, which on CUDA waits for
+        # every kernel queued so far (the encoders and heads of this minibatch)
+        # before the PPO tail and the backward can be queued. Same FP32 value.
+        stats["aux_coefficient"] = torch.full((), self.aux_coefficient(), dtype=state.dtype,
+                                              device=state.device)
         return stats
+
+    def next_token_inputs(self, inputs, encoded_streams: list
+                          ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """``(logits, tokens, valid)`` of the next-token head over the encoded
+        positions, groups concatenated in plan order. Positions up to each
+        match's longest cited prefix count (the tokens some decision of the
+        minibatch read), so the loss is the same set of positions whether or not
+        the learner encodes in length groups; position s has seen s tokens and
+        predicts token s, positions at or past a stream's length are padding.
+        With length groups the mask comes planned from ``training_batch``."""
+        s = inputs.streams
+        planned = inputs.next_weight is not None and encoded_streams[0][1] is not None
+        logits, tokens, valid = [], [], []
+        for encoded, group in encoded_streams:
+            if group is None:
+                part, lengths = s.tokens, s.lengths
+                cited = torch.zeros_like(lengths).scatter_reduce(
+                    0, inputs.match_index, inputs.prefix, reduce="amax")
+            else:
+                n = group.tokens
+                part = s.tokens[group.matches, :n]
+                if not planned:
+                    lengths = s.lengths[group.matches].clamp(max=n)
+                    cited = torch.zeros_like(lengths).scatter_reduce(
+                        0, group.local_match, inputs.prefix[group.rows], reduce="amax")
+            count = part.shape[1]
+            if group is None or not planned:
+                limit = torch.minimum(lengths, cited)
+                valid.append((torch.arange(count, device=part.device)[None]
+                              < limit[:, None]).reshape(-1))
+            head = self.actor.next_logits(encoded[:, :count])
+            logits.append(head.reshape(-1, head.shape[-1]))
+            tokens.append(part.reshape(-1, part.shape[-1]))
+        return _joined(logits), _joined(tokens), inputs.next_weight if planned else _joined(valid)
+
+    def compact_next_token_loss(self, inputs, encoded_streams: list) -> dict[str, torch.Tensor]:
+        """``learner_compact_next`` (tier 2): the next-token head and its fused
+        loss (``next_token_loss_compact``) on the valid positions only, gathered
+        once over all length groups. The positions are the planned mask's
+        nonzeros at a host-known count, so finding them needs no host read."""
+        s = inputs.streams
+        hidden, tokens = [], []
+        for encoded, group in encoded_streams:
+            n = group.tokens
+            hidden.append(encoded[:, :n].reshape(-1, encoded.shape[-1]))
+            tokens.append(s.tokens[group.matches, :n].reshape(-1, s.tokens.shape[-1]))
+        index = torch.nonzero_static(inputs.next_weight, size=inputs.next_positions)[:, 0]
+        logits = self.actor.next_logits(_joined(hidden).index_select(0, index))
+        return next_token_loss_compact(logits, _joined(tokens).index_select(0, index))
 
     def learn_summary(self) -> tuple[dict[str, Any], int]:
         """Values, GAE and the update's data statistics; returns ``(stats, samples)``.
@@ -1588,6 +1646,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--learner-chosen-response", action="store_true",
                         help="learner, auxiliary response mode: run the response head on "
                              "executed candidates only, the rows its loss reads (FP32; not bitwise)")
+    parser.add_argument("--learner-compact-next", action="store_true",
+                        help="learner, with --learner-length-groups and the next-token head: "
+                             "head and fused loss on valid positions only (FP32; not bitwise)")
     parser.add_argument("--adam-fused", action="store_true",
                         help="fused Adam kernels for both optimizers (FP32; not bitwise)")
     parser.add_argument("--rollout-graph-budget-mb", type=int, default=512)

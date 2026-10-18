@@ -613,7 +613,9 @@ class SequenceRolloutBuffer:
         ``advantage``/``returns`` from ``finalize``) and ``extra`` host arrays,
         all uploaded with one packed copy. ``length_groups > 0`` plans the
         learner's grouped encode (``DecisionInputs.match_groups``) for an actor
-        of ``width``; streams are then only uploaded as far as a row reads."""
+        of ``width``; streams are then only uploaded as far as a row reads, and
+        the next-token head's position mask comes along (``next_weight``).
+        Candidate rows (``candidate_rows``) are always planned."""
         if length_groups > 0 and width < 1:
             raise ValueError("length groups need the actor width for their cost model")
         data = self.compact()
@@ -642,7 +644,7 @@ class SequenceRolloutBuffer:
         match_rank = np.empty_like(match_index)
         match_rank[order] = np.arange(len(rows)) - starts[match_index[order]]
         arrays = [stream.arrays() for stream in picked]
-        plan = []
+        plan, weights = [], []
         if length_groups > 0 and len(rows):
             from train.history_model import length_groups as plan_groups
             cited = np.zeros(len(unique), np.int64)
@@ -653,17 +655,27 @@ class SequenceRolloutBuffer:
             for matches in plan_groups(cited, length_groups, width):
                 local[matches] = np.arange(len(matches))
                 members = np.flatnonzero(np.isin(match_index, matches))
-                plan.append(((int(cited[matches].max()), int(per_match[matches].max())),
+                tokens = int(cited[matches].max())
+                plan.append(((tokens, int(per_match[matches].max())),
                              (matches.astype(np.int64), members, local[match_index[members]],
                               match_rank[members])))
+                # Next-token head positions of this group's encode: a match's
+                # position s counts while s < its cited prefix (the uploaded
+                # stream is truncated there, so that is also its length).
+                weights.append((np.arange(tokens)[None] < cited[matches][:, None]).reshape(-1))
+        next_weight = [np.concatenate(weights).astype(np.float32)] if plan else []
+        # Each candidate's decision row (``DecisionInputs.candidate_rows``), so
+        # the device does not rebuild it with arange + repeat_interleave.
+        candidate_rows = np.repeat(np.arange(len(rows), dtype=np.int64), counts)
         host = (*StreamBatch.host_arrays(arrays), match_index, prefix,
                 data["obs"][rows], data["seat"][rows], data["cand"][src], offsets,
                 offsets[:-1] + data["chosen"][rows], *named.values(), match_rank,
-                *(array for _, group in plan for array in group))
+                *(array for _, group in plan for array in group), candidate_rows, *next_weight)
         uploaded = upload_arrays(host, device)
         # Keep the existing floating-point fields at their original packed
         # offsets. Moving them by an odd number of int64 ranks changes their
         # CUDA vector alignment and can change reduction bits (e.g. advantages).
+        # New host-planned arrays therefore go after every existing one.
         fields_end = 11 + len(named)
         inputs = DecisionInputs(streams=StreamBatch(*uploaded[:4]), match_index=uploaded[4],
                                 prefix=uploaded[5], obs=uploaded[6], seat=uploaded[7],
@@ -675,6 +687,13 @@ class SequenceRolloutBuffer:
             inputs.match_groups = [MatchGroup(*uploaded[base + 4 * g:base + 4 * g + 3], tokens,
                                               uploaded[base + 4 * g + 3], slots)
                                    for g, ((tokens, slots), _) in enumerate(plan)]
+        planned = base + 4 * len(plan)
+        inputs.candidate_rows = uploaded[planned]
+        if next_weight:
+            # Its 0/1 values are only summed exactly or multiplied elementwise,
+            # so its own packed alignment cannot change any bit.
+            inputs.next_weight = uploaded[planned + 1]
+            inputs.next_positions = int(cited.sum())
         return TrainingBatch(inputs, uploaded[10], dict(zip(named, uploaded[11:fields_end])))
 
 
