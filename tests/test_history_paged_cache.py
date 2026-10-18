@@ -165,6 +165,112 @@ def test_merged_snapshot_encode_matches_per_identity_encodes(device):
         picks = [order[:cut], order[cut:cut + int(rng.integers(1, 7 - cut + 1))]]
 
 
+# ---- unconditional trims: bitwise against the frozen reference -------------------
+
+class PoisonedPool(KVPagePool):
+    """New storage is NaN: reading any row before it is written poisons every
+    attention output that row enters, masked or not."""
+
+    def _storage(self, rows, *shape):
+        return torch.full((rows, *shape), float("nan"), device=self.device, dtype=self.dtype)
+
+
+def live_rows(caches):
+    """Pool rows of every encoded position of the caches' entries."""
+    rows = []
+    for cache in caches:
+        P = cache.pool.page_tokens
+        for entry in cache.entries.values():
+            rows.extend(entry.pages[t // P] * P + t % P for t in range(entry.length))
+    return torch.as_tensor(rows, dtype=torch.long)
+
+
+def assert_same_pool_rows(new, old, caches):
+    rows = live_rows(caches).to(new.device)
+    assert torch.equal(new.memory[rows], old.memory[rows])
+    for a, b in zip(new.kv, old.kv):
+        assert torch.equal(a[rows], b[rows])
+
+
+@pytest.mark.parametrize("device", devices())
+@pytest.mark.parametrize("page_span", [False, True])
+def test_trims_match_the_frozen_reference_bitwise(device, page_span):
+    """The additive mask, page-major rows, query-only merged gather, uninitialized
+    pool growth and whole-page memory gathers change no bit: a random multi-step
+    workload of learner encodes and merged snapshot encodes (pool growth, page
+    reuse, stream resets, prunes, a weight change, a pool reset) returns the
+    same memory, zero past every length, and leaves the same live pool rows as
+    the frozen previous implementation. Pools grow NaN-poisoned, so a read of
+    any unwritten row would show."""
+    skip_without(device)
+    from history_paged_reference import LegacyPagedHistoryCache, LegacyPool, legacy_merged_encode
+    from train.history_paged_cache import merged_encode
+    from train.history_snapshot_batch import SnapshotHeads
+    config = HistoryPolicyConfig(width=32, layers=2, heads=4)
+    learner = fresh_player(config, 7)[0].to(device).train()
+    snapshots = [fresh_player(config, seed)[0].to(device).train() for seed in (1, 2, 3)]
+    heads = SnapshotHeads(encoder=True)
+    slots = [heads.slot(identity, actor) for identity, actor in zip((5, 9, 11), snapshots)]
+    pools, caches, merged = {}, {}, {}
+    for name, pool_type, cache_type in (("new", PoisonedPool, PagedHistoryCache),
+                                        ("old", LegacyPool, LegacyPagedHistoryCache)):
+        pools[name] = (pool_type.for_actor(learner, page_tokens=8, pages=2),
+                       pool_type.for_actor(learner, page_tokens=16, pages=2))
+        caches[name] = cache_type(learner, pools[name][0], chunk_size=16, page_span=page_span)
+        merged[name] = [cache_type(actor, pools[name][1], chunk_size=32, page_span=page_span)
+                        for actor in snapshots]
+    encode = {"new": merged_encode, "old": legacy_merged_encode}
+    rng = np.random.default_rng(11)
+    streams = {i: PublicStream(i) for i in range(7)}
+    for s, n in zip(streams.values(), [0, 3, 40, 150, 7, 90, 33]):
+        append(s, n)
+    for step in range(24):
+        picked = [int(i) for i in rng.permutation(7)[:rng.integers(1, 8)]]
+        keys = [(i, streams[i].match_id) for i in picked]
+        outputs = {name: caches[name].encode(keys, [streams[i] for i in picked])[1]
+                   for name in ("new", "old")}
+        assert torch.equal(outputs["new"], outputs["old"]), step
+        assert not outputs["new"].isnan().any()
+        order = [int(i) for i in rng.permutation(7)]
+        cut = int(rng.integers(1, 6))
+        picks = [order[:cut], order[cut:cut + int(rng.integers(1, 7 - cut + 1))]]
+        use = [0, 2] if step % 2 else [1, 2]
+        size = max(streams[i].prefix for pick in picks for i in pick) + 1 + step % 5
+        memory = {}
+        for name in ("new", "old"):
+            parts = [(merged[name][a], [(i, streams[i].match_id) for i in pick],
+                      [streams[i] for i in pick], slots[a]) for a, pick in zip(use, picks)]
+            memory[name] = encode[name](parts, heads, size)
+        assert torch.equal(memory["new"], memory["old"]), step
+        assert caches["new"].encoded_tokens == caches["old"].encoded_tokens
+        check_pool(pools["new"][0], [caches["new"]])
+        check_pool(pools["new"][1], merged["new"])
+        assert_same_pool_rows(pools["new"][0], pools["old"][0], [caches["new"]])
+        assert_same_pool_rows(pools["new"][1], pools["old"][1], merged["new"])
+        for i in picked + [i for pick in picks for i in pick]:
+            append(streams[i], int(rng.integers(0, 4)), offset=step)
+        if step == 6:       # a new match on environment 2 resets its stream
+            streams[2].reset(match_id=2)
+            append(streams[2], 5)
+        if step == 12:      # an assignment change prunes two matches
+            active = {(i, streams[i].match_id) for i in (0, 1, 2, 3, 6)}
+            for name in ("new", "old"):
+                caches[name].prune(active)
+                for cache in merged[name]:
+                    cache.prune(active)
+        if step == 16:      # a weight update invalidates the learner cache
+            with torch.no_grad():
+                learner.public.weight.add_(1e-3)
+        if step == 19:      # the learner pool is returned before a PPO update
+            for name in ("new", "old"):
+                caches[name].clear()
+                pools[name][0].reset()
+    assert all(pool.grows > 1 for pool in pools["new"])
+    for pool in pools["new"]:       # page 0 stays zero
+        assert not pool.memory[:pool.page_tokens].any()
+        assert not any(kv[:pool.page_tokens].any() for kv in pool.kv)
+
+
 # ---- collector wiring ------------------------------------------------------------
 
 @pytest.mark.parametrize("device", devices())

@@ -27,6 +27,17 @@ the next whole page past the longest stream instead of the next power of two.
 Position encodings are unchanged; the SDPA reduction shapes change, so this is
 acceptance tier 2 (on CPU most calls stay bitwise, single-token calls do not).
 
+Exactness of the unconditional trims (bitwise on CPU, checked against a frozen
+copy of the previous implementation in tests/history_paged_reference.py):
+the attention mask is built once per append as the additive float tensor SDPA
+would otherwise derive from the boolean mask in every layer; row indices are
+expanded page-major; the merged path gathers only queries; pool storage grows
+uninitialized; and memory is gathered a whole page at a time. The last two
+rest on the pool invariants below: no row is read before it is written,
+except page 0 and the memory rows of an entry's pages past its length, which
+are zeroed when the page is allocated. The gathered memory is therefore the
+same tensor as before, zero past each stream's length.
+
 A pool is shared by the caches built on it: a cache releases its pages on
 ``clear``/``prune``. Page 0 is never allocated and stays zero. A pool grows by
 reallocation and does not shrink on its own; its reserved size is the
@@ -69,6 +80,8 @@ class KVPagePool:
         self.device, self.dtype = torch.device(device), dtype
         self.kv: list[Tensor] = []
         self.memory = torch.zeros(0, width, device=self.device, dtype=dtype)
+        # Within-page row offsets, for page-major row expansion (``PagedHistoryCache._rows``).
+        self.offsets = torch.arange(page_tokens, device=self.device)
         self.pages = 0
         self.free: list[int] = []
         self.grows = 0
@@ -100,15 +113,24 @@ class KVPagePool:
     def used_pages(self) -> int:
         return max(self.pages - 1, 0) - len(self.free)
 
+    def _storage(self, rows: int, *shape: int) -> Tensor:
+        """New, uninitialized pool storage (see ``_grow``)."""
+        return torch.empty(rows, *shape, device=self.device, dtype=self.dtype)
+
     def _grow(self, pages: int) -> None:
+        # Uninitialized beyond the copied rows: no row is read before it is
+        # written, except page 0 (zeroed here once) and the memory rows of
+        # newly allocated pages (zeroed by ``zero_memory``).
         rows, old_rows = pages * self.page_tokens, self.pages * self.page_tokens
-        kv = [torch.zeros(rows, 2, self.heads, self.depth, device=self.device, dtype=self.dtype)
-              for _ in range(self.layers)]
-        memory = torch.zeros(rows, self.width, device=self.device, dtype=self.dtype)
+        kv = [self._storage(rows, 2, self.heads, self.depth) for _ in range(self.layers)]
+        memory = self._storage(rows, self.width)
         if old_rows:
             for new, old in zip(kv, self.kv):
                 new[:old_rows].copy_(old)
             memory[:old_rows].copy_(self.memory)
+        else:
+            for storage in (*kv, memory):
+                storage[:self.page_tokens].zero_()
         self.kv, self.memory = kv, memory
         # Page 0 stays unallocated: the zero rows every padded gather reads.
         self.free.extend(range(pages - 1, max(self.pages, 1) - 1, -1))
@@ -149,6 +171,12 @@ class KVPagePool:
 
     def release(self, pages: list[int]) -> None:
         self.free.extend(pages)
+
+    def zero_memory(self, pages: Tensor) -> None:
+        """Zero the memory rows of ``pages`` (int64, on the pool's device): a newly
+        allocated page holds no position yet, so whole-page memory gathers read
+        zeros past each stream's length, as the zero page gives."""
+        self.memory.view(self.pages, -1).index_fill_(0, pages, 0.0)
 
 
 @dataclass
@@ -223,21 +251,52 @@ class PagedHistoryCache(BatchedHistoryCache):
         return table
 
     def _rows(self, table: Tensor, lengths: Tensor, positions: Tensor) -> Tensor:
-        """Pool row of every position in ``positions`` (an ``arange``) for each table
-        row; row 0 (the zero page) at or past that row's length."""
+        """Pool row of every position in ``positions`` (an ``arange`` from 0) for each
+        table row; row 0 (the zero page) at or past that row's length. Expanded
+        page-major: ``table[b, j] * P + o`` for in-page offset ``o``."""
         P = self.pool.page_tokens
-        page = table[:, positions // P]
-        rows = page * P + positions % P
-        return torch.where(positions[None] < lengths[:, None], rows, torch.zeros_like(rows))
+        span = len(positions)
+        blocks = -(-span // P)
+        rows = (table[:, :blocks, None] * P + self.pool.offsets).view(len(table), blocks * P)
+        if blocks * P != span:
+            rows = rows[:, :span]
+        return torch.where(positions < lengths[:, None], rows, 0)
+
+    def _allocate(self, entries: list[PagedEntry], ends: np.ndarray) -> np.ndarray:
+        """Extend every entry's pages to cover ``ends``; returns the new page ids,
+        whose memory rows the caller zeroes (``KVPagePool.zero_memory``)."""
+        P, new = self.pool.page_tokens, []
+        for entry, end in zip(entries, ends.tolist()):
+            missing = -(-end // P) - len(entry.pages)
+            if missing > 0:
+                pages = self.pool.allocate(missing)
+                entry.pages.extend(pages)
+                new.extend(pages)
+        return np.asarray(new, np.int64)
 
     # -- encoding -----------------------------------------------------------
 
+    def _gather_pages(self, source: Tensor, entries: list[PagedEntry], size: int) -> Tensor:
+        """``[len(entries), size, features]`` rows of ``source`` (a ``[rows, features]``
+        pool tensor) at each entry's positions, gathered one whole page at a time.
+        Rows past an entry's length read zeros: page 0 or the zeroed tail of its
+        last page."""
+        P = self.pool.page_tokens
+        table, = upload_arrays((self._page_table(entries, size),), self.pool.device)
+        features = source.shape[1]
+        gathered = torch.index_select(source.view(-1, P * features), 0, table.view(-1))
+        gathered = gathered.view(len(entries), -1, features)
+        return gathered if gathered.shape[1] == size else gathered[:, :size].contiguous()
+
     def _gather_memory(self, entries: list[PagedEntry], size: int) -> Tensor:
-        table, lengths = upload_arrays(
-            (self._page_table(entries, size), np.asarray([e.length for e in entries], np.int64)),
-            self.pool.device)
-        rows = self._rows(table, lengths, torch.arange(size, device=self.pool.device))
-        return torch.index_select(self.pool.memory, 0, rows.view(-1)).view(len(entries), size, self.pool.width)
+        return self._gather_pages(self.pool.memory, entries, size)
+
+    @staticmethod
+    def _mask(allowed: Tensor, dtype: torch.dtype) -> Tensor:
+        """The additive ``[B, 1, W, span]`` mask SDPA derives from boolean ``allowed``
+        (``where(allowed, 0, -inf)``), built once per append, not once per layer."""
+        mask = torch.full(allowed.shape, float("-inf"), dtype=dtype, device=allowed.device)
+        return mask.masked_fill_(allowed, 0.0)[:, None]
 
     def _append(self, entries: list[PagedEntry], counts: list[int]) -> None:
         actor, cfg, pool = self.actor, self.actor.config, self.pool
@@ -249,10 +308,7 @@ class PagedHistoryCache(BatchedHistoryCache):
         capacity = bucket(int(ends.max()))
         span = self._span(int(ends.max()))
         P = pool.page_tokens
-        for entry, end in zip(entries, ends.tolist()):
-            missing = -(-end // P) - len(entry.pages)
-            if missing > 0:
-                entry.pages.extend(pool.allocate(missing))
+        new_pages = self._allocate(entries, ends)
         # Upload only new raw events, not the complete historical prefix.
         tokens = np.zeros((batch, width, TOKEN_DIM), np.uint8)
         rounds, phases = np.zeros((batch, width), np.int64), np.zeros((batch, width), np.int64)
@@ -274,9 +330,11 @@ class PagedHistoryCache(BatchedHistoryCache):
         write_rows = table[write_batch, position // P] * P + position % P
         fresh = np.flatnonzero(starts == 0)
         (t, r, p, start_positions, end_positions, table_d, write_batch_d, write_slot_d,
-         write_rows_d, fresh_d) = upload_arrays(
+         write_rows_d, fresh_d, new_pages_d) = upload_arrays(
             (tokens, rounds, phases, starts, ends, table, write_batch, write_slot, write_rows,
-             fresh), device)
+             fresh, new_pages), device)
+        if len(new_pages):
+            pool.zero_memory(new_pages_d)
         state = (actor.public(t.to(dtype)) + actor.round_embedding(r.clamp(0, cfg.max_rounds - 1))
                  + actor.phase_embedding(p.clamp(0, 3)))
         if len(fresh):
@@ -285,8 +343,8 @@ class PagedHistoryCache(BatchedHistoryCache):
         positions = start_positions[:, None] + key_positions[:width]
         state = state + position_table[positions.clamp(max=capacity - 1)]
         key_positions = key_positions[:span]
-        allowed = ((key_positions[None, None] <= positions[:, :, None])
-                   & (key_positions[None, None] < end_positions[:, None, None]))
+        mask = self._mask((key_positions[None, None] <= positions[:, :, None])
+                          & (key_positions[None, None] < end_positions[:, None, None]), dtype)
         rows = self._rows(table_d, end_positions, key_positions).view(-1)
         heads, depth = cfg.heads, cfg.width // cfg.heads
         for layer_index, layer in enumerate(actor.stream.layers):
@@ -300,7 +358,7 @@ class PagedHistoryCache(BatchedHistoryCache):
             # [batch * span, 2, heads, depth] -> keys/values [batch, heads, span, depth]
             packed = torch.index_select(kv, 0, rows).view(batch, span, 2, heads, depth).permute(2, 0, 3, 1, 4)
             attended = F.scaled_dot_product_attention(q, packed[0], packed[1],
-                                                      attn_mask=allowed[:, None], dropout_p=0.0)
+                                                      attn_mask=mask, dropout_p=0.0)
             state = finish(layer, state, attended)
         if actor.stream.norm is not None:
             state = actor.stream.norm(state)
@@ -384,10 +442,7 @@ def _merged_append(cache: PagedHistoryCache, entries: list[PagedEntry], counts: 
     capacity = bucket(int(ends.max()))
     span = cache._span(int(ends.max()))
     P = pool.page_tokens
-    for entry, end in zip(entries, ends.tolist()):
-        missing = -(-end // P) - len(entry.pages)
-        if missing > 0:
-            entry.pages.extend(pool.allocate(missing))
+    new_pages = cache._allocate(entries, ends)
     tokens = np.zeros((R, width, TOKEN_DIM), np.uint8)
     rounds, phases = np.zeros((R, width), np.int64), np.zeros((R, width), np.int64)
     starts_pad = np.zeros(R, np.int64)
@@ -409,9 +464,12 @@ def _merged_append(cache: PagedHistoryCache, entries: list[PagedEntry], counts: 
     write_rows = table[write_batch, position // P] * P + position % P
     fresh = np.flatnonzero(starts == 0)
     (t, r, p, starts_pad_d, start_positions, end_positions, table_d, pad_d, write_pad_d,
-     write_slot_d, write_rows_d, fresh_pad_d, fresh_slot_d) = upload_arrays(
+     write_slot_d, write_rows_d, fresh_pad_d, fresh_slot_d, new_pages_d) = upload_arrays(
         (tokens, rounds, phases, starts_pad, starts, ends, table, pad, pad[write_batch],
-         write_slot, write_rows, pad[fresh], np.asarray(slots, np.int64)[fresh]), device)
+         write_slot, write_rows, pad[fresh], np.asarray(slots, np.int64)[fresh], new_pages),
+        device)
+    if len(new_pages):
+        pool.zero_memory(new_pages_d)
     W, H = cfg.width, cfg.heads
     depth = W // H
     flat = lambda x: x.reshape(S, M * width, x.shape[-1])
@@ -426,18 +484,18 @@ def _merged_append(cache: PagedHistoryCache, entries: list[PagedEntry], counts: 
                                    .clamp(max=capacity - 1)]
     positions = start_positions[:, None] + key_positions[:width]
     key_positions = key_positions[:span]
-    allowed = ((key_positions[None, None] <= positions[:, :, None])
-               & (key_positions[None, None] < end_positions[:, None, None]))
+    mask = cache._mask((key_positions[None, None] <= positions[:, :, None])
+                       & (key_positions[None, None] < end_positions[:, None, None]), state.dtype)
     rows = cache._rows(table_d, end_positions, key_positions).view(-1)
     for index in range(cfg.layers):
         hidden = _norm(flat(state), tensors, f"e{index}_n1", S, eps)
         qkv = _linear(hidden, tensors, f"e{index}_in", S).view(R, width, 3, H, depth)
         kv = pool.kv[index]
         kv[write_rows_d] = qkv[write_pad_d, write_slot_d, 1:]
-        q = qkv[pad_d][:, :, 0].transpose(1, 2)
+        q = qkv[:, :, 0][pad_d].transpose(1, 2)        # the real rows' queries only
         packed = torch.index_select(kv, 0, rows).view(batch, span, 2, H, depth).permute(2, 0, 3, 1, 4)
         attended = F.scaled_dot_product_attention(q, packed[0], packed[1],
-                                                  attn_mask=allowed[:, None], dropout_p=0.0)
+                                                  attn_mask=mask, dropout_p=0.0)
         attended = state.new_zeros(R, width, W).index_copy_(
             0, pad_d, attended.transpose(1, 2).reshape(batch, width, W))
         state = state + _linear(flat(attended), tensors, f"e{index}_o", S).view(R, width, W)
