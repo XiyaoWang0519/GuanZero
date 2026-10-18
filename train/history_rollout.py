@@ -36,6 +36,8 @@ from __future__ import annotations
 
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
+from itertools import chain
+import sys
 from typing import Any, Callable, Iterator, Sequence
 import time
 
@@ -176,20 +178,69 @@ class Trajectory:
     reward: float = 0.0
 
 
+# Row storage: one array per field, rows (or candidates, for ``cand``) along
+# axis 0, in ``compact()``'s key order. Capacities double from these minimums.
+_FLOAT_FIELDS = ("logp", "behaviour_logp")
+_MIN_ROWS = 1024
+_MIN_CANDIDATES = 8192
+
+
+def _allocate_rows(rows: int, candidates: int, obs_dim: int, act_dim: int
+                   ) -> dict[str, np.ndarray]:
+    storage = {name: np.empty(rows, np.float32 if name in _FLOAT_FIELDS else np.int64)
+               for name in ROW_FIELDS}
+    storage["obs"] = np.empty((rows, obs_dim), np.uint8)
+    storage["hidden"] = np.empty((rows, HIDDEN_DIM), np.uint8)
+    storage["cand"] = np.empty((candidates, act_dim), np.uint8)
+    storage["cand_start"] = np.empty(rows, np.int64)
+    return storage
+
+
+def _in_use(storage: dict[str, np.ndarray]) -> bool:
+    """Whether anything besides ``storage`` holds one of its arrays. A numpy
+    view (or a tensor sharing the memory) holds its base array, so
+    ``compact()`` data a caller kept counts. Refcounts are compared with an
+    unshared probe's, so the interpreter's own temporary holds cancel."""
+    probe = {"probe": np.empty(0)}
+    alone = max(sys.getrefcount(array) for array in probe.values())
+    return any(sys.getrefcount(array) > alone for array in storage.values())
+
+
+def _take_rows(source: np.ndarray, index: np.ndarray, out: np.ndarray) -> None:
+    """``out[...] = source[index]``. Same-dtype rows are gathered straight into
+    ``out``; others are cast as ``astype`` casts them (the engine's binary
+    float32 observations to uint8), through one gathered temporary."""
+    if source.dtype == out.dtype and (
+            index.size == 0 or (index.min() >= 0 and index.max() < len(source))):
+        # ``raise`` mode would gather into a temporary first; bounds hold here.
+        np.take(source, index, axis=0, out=out, mode="clip")
+    else:
+        out[...] = source[index]
+
+
 class SequenceRolloutBuffer:
     """Learner rows grouped into ``(env, team, round)`` trajectories.
 
-    Rows are appended per vector step as small array chunks and concatenated
-    once by ``finalize``; that is fine for the CPU trainer and keeps every row
-    addressable by one global index. ``values`` are written by the learner
-    (current critic, at ``learn`` time) right before ``finalize``.
+    Every row keeps one global index into per-field storage arrays that
+    ``add_step`` fills in place (capacity doubles when full), so ``compact``
+    is O(1): views of the filled prefix. ``next_iteration`` gathers the
+    carried rows into a second storage of the same capacity and swaps the
+    two, so neither is reallocated or faulted in again across updates. The
+    second storage is overwritten only while nothing else holds it:
+    ``compact()`` arrays a caller keeps still hold the rows of their time,
+    as they did when rows were concatenated from per-step chunks. In-place
+    edits of ``compact()`` arrays edit the stored rows. ``values`` are written
+    by the learner (current critic, at ``learn`` time) right before
+    ``finalize``.
     """
 
     def __init__(self, obs_dim: int = int(gd.OBS_DIM), act_dim: int = int(gd.ACT_DIM)) -> None:
         self.obs_dim = int(obs_dim)
         self.act_dim = int(act_dim)
-        self.chunks: list[dict[str, np.ndarray]] = []
         self.n_rows = 0
+        self.n_cand = 0                 # stored candidate rows
+        self._rows = _allocate_rows(0, 0, self.obs_dim, self.act_dim)
+        self._spare: dict[str, np.ndarray] | None = None   # next_iteration's target
         self.trajectories: list[Trajectory] = []
         self.open: dict[tuple[int, int], int] = {}
         self.data: dict[str, np.ndarray] | None = None
@@ -225,35 +276,46 @@ class SequenceRolloutBuffer:
         chosen = np.asarray(chosen, np.int64)[rows]
         if ((chosen < 0) | (chosen >= counts)).any():
             raise ValueError("chosen index outside the row's candidate set")
-        traj = np.empty(rows.size, np.int64)
-        for i in range(rows.size):
-            key = (int(env[i]), int(seats[i]) % 2)
-            t = self.open.get(key)
+        begin = self.n_rows
+        trajectories, open_ = self.trajectories, self.open
+        traj = []
+        # Python ints up front: the per-row work is dict and list access only.
+        for row, (e, team, m, r) in enumerate(zip(env.tolist(), (seats % 2).tolist(),
+                                                  match.tolist(), rnd.tolist()), begin):
+            t = open_.get((e, team))
             if t is None:
-                t = len(self.trajectories)
-                self.trajectories.append(Trajectory(key[0], key[1], int(match[i]), int(rnd[i])))
-                self.open[key] = t
-            record = self.trajectories[t]
-            if record.match != int(match[i]) or record.round != int(rnd[i]):
+                t = len(trajectories)
+                trajectories.append(Trajectory(e, team, m, r))
+                open_[(e, team)] = t
+            record = trajectories[t]
+            if record.match != m or record.round != r:
                 raise ValueError("finish_round was not called before the next round's decisions")
-            record.rows.append(self.n_rows + i)
-            traj[i] = t
+            record.rows.append(row)
+            traj.append(t)
         src = ragged_index(offsets[rows], counts)
-        chunk = {
-            "env": env, "match": match, "round": rnd, "seat": seats,
-            "version": np.full(rows.size, int(version), np.int64),
-            "prefix": np.asarray(prefix, np.int64)[rows],
-            "phase": np.asarray(phase, np.int64)[rows], "traj": traj, "chosen": chosen,
-            "logp": np.asarray(logp, np.float32)[rows], "cand_count": counts,
-            "behaviour_logp": np.asarray(logp if behaviour_logp is None else behaviour_logp,
-                                         np.float32)[rows],
-            "obs": np.asarray(obs)[rows].astype(np.uint8, copy=True),
-            "hidden": np.asarray(hidden).reshape(len(offsets) - 1, HIDDEN_DIM)[rows]
-            .astype(np.uint8, copy=True),
-            "cand": np.asarray(cand)[src].astype(np.uint8, copy=True),
-        }
-        self.chunks.append(chunk)
-        self.n_rows += rows.size
+        end, cand_begin = begin + rows.size, self.n_cand
+        cand_end = cand_begin + src.size
+        self._reserve(end, cand_end)
+        s = self._rows
+        s["env"][begin:end] = env
+        s["match"][begin:end] = match
+        s["round"][begin:end] = rnd
+        s["seat"][begin:end] = seats
+        s["version"][begin:end] = int(version)
+        s["prefix"][begin:end] = np.asarray(prefix, np.int64)[rows]
+        s["phase"][begin:end] = np.asarray(phase, np.int64)[rows]
+        s["traj"][begin:end] = traj
+        s["chosen"][begin:end] = chosen
+        s["logp"][begin:end] = np.asarray(logp, np.float32)[rows]
+        s["cand_count"][begin:end] = counts
+        s["behaviour_logp"][begin:end] = np.asarray(
+            logp if behaviour_logp is None else behaviour_logp, np.float32)[rows]
+        _take_rows(np.asarray(obs), rows, s["obs"][begin:end])
+        _take_rows(np.asarray(hidden).reshape(len(offsets) - 1, HIDDEN_DIM), rows,
+                   s["hidden"][begin:end])
+        _take_rows(np.asarray(cand), src, s["cand"][cand_begin:cand_end])
+        s["cand_start"][begin:end] = cand_begin + np.cumsum(counts) - counts
+        self.n_rows, self.n_cand = end, cand_end
         self.data = None
         return rows.size
 
@@ -277,34 +339,53 @@ class SequenceRolloutBuffer:
 
     # -- storage -----------------------------------------------------------
 
+    def _reserve(self, rows: int, candidates: int) -> None:
+        """Grow the storage, doubling, to hold ``rows`` rows and ``candidates``
+        candidate rows; stored rows are copied over."""
+        old = self._rows
+        row_capacity, cand_capacity = len(old["env"]), len(old["cand"])
+        if rows <= row_capacity and candidates <= cand_capacity:
+            return
+        row_capacity = max(row_capacity, _MIN_ROWS)
+        while row_capacity < rows:
+            row_capacity *= 2
+        cand_capacity = max(cand_capacity, _MIN_CANDIDATES)
+        while cand_capacity < candidates:
+            cand_capacity *= 2
+        grown = _allocate_rows(row_capacity, cand_capacity, self.obs_dim, self.act_dim)
+        for name, array in grown.items():
+            used = self.n_cand if name == "cand" else self.n_rows
+            array[:used] = old[name][:used]
+        self._rows = grown
+
     def compact(self) -> dict[str, np.ndarray]:
-        """All rows as contiguous arrays (cached until the next append)."""
+        """All rows as contiguous arrays: views of the filled storage, cached
+        until the next append or carry-over."""
         if self.data is None:
             self._match_layout.clear()
-            if self.chunks:
-                data = {name: np.concatenate([c[name] for c in self.chunks])
-                        for name in (*ROW_FIELDS, "obs", "hidden", "cand")}
-            else:
-                data = {name: np.zeros(0, np.int64) for name in ROW_FIELDS}
-                data["logp"] = np.zeros(0, np.float32)
-                data["behaviour_logp"] = np.zeros(0, np.float32)
-                data["obs"] = np.zeros((0, self.obs_dim), np.uint8)
-                data["hidden"] = np.zeros((0, HIDDEN_DIM), np.uint8)
-                data["cand"] = np.zeros((0, self.act_dim), np.uint8)
-            data["cand_start"] = np.cumsum(data["cand_count"]) - data["cand_count"]
-            self.data = data
+            self.data = {name: array[:self.n_cand if name == "cand" else self.n_rows]
+                         for name, array in self._rows.items()}
         return self.data
 
     def __len__(self) -> int:
         return self.n_rows
 
+    def _completed(self) -> tuple[list[Trajectory], np.ndarray, np.ndarray]:
+        """Completed trajectories, their lengths and their rows (trajectory-major)."""
+        complete = [t for t in self.trajectories if t.complete]
+        lengths = np.fromiter((len(t.rows) for t in complete), np.int64, len(complete))
+        rows = np.fromiter(chain.from_iterable(t.rows for t in complete), np.int64,
+                           int(lengths.sum()))
+        return complete, lengths, rows
+
     def completed_rows(self) -> np.ndarray:
         """Rows of completed trajectories, trajectory-major, time order within."""
-        return np.asarray([r for t in self.trajectories if t.complete for r in t.rows], np.int64)
+        return self._completed()[2]
 
     def cited_matches(self) -> set[tuple[int, int]]:
-        data = self.compact()
-        return set(zip(data["env"].tolist(), data["match"].tolist()))
+        """``(env, match)`` of the stored rows. Every row cites its trajectory's
+        match (``add_step`` refuses a row of another match or round)."""
+        return {(t.env, t.match) for t in self.trajectories if t.rows}
 
     # -- learning -----------------------------------------------------------
 
@@ -321,33 +402,32 @@ class SequenceRolloutBuffer:
         self.done = np.zeros(self.n_rows, bool)
         self.advantage = np.zeros(self.n_rows, np.float32)
         self.returns = np.zeros(self.n_rows, np.float32)
-        complete = [t for t in self.trajectories if t.complete]
-        for t in complete:
-            last = t.rows[-1]
-            self.reward[last] = t.reward
-            self.done[last] = True
-        self.samples = self.completed_rows()
+        complete, lengths, flat = self._completed()
+        self.samples = flat
         if not complete:
             return 0
-        longest = max(len(t.rows) for t in complete)
-        shape = (len(complete), longest)
+        if not lengths.all():
+            raise ValueError("a completed trajectory has no rows")
+        ends = np.cumsum(lengths)
+        last = flat[ends - 1]
+        self.reward[last] = np.fromiter((t.reward for t in complete), np.float32, len(complete))
+        self.done[last] = True
+        # Trajectory i, step j sits at [i, j] of the padded GAE arrays.
+        which = np.repeat(np.arange(len(complete)), lengths)
+        step = np.arange(flat.size) - np.repeat(ends - lengths, lengths)
+        shape = (len(complete), int(lengths.max()))
         v = np.zeros(shape, np.float32)
         r = np.zeros(shape, np.float32)
         d = np.zeros(shape, bool)
         m = np.zeros(shape, bool)
-        for i, t in enumerate(complete):
-            rows = np.asarray(t.rows, np.int64)
-            n = rows.size
-            v[i, :n] = values[rows]
-            r[i, :n] = self.reward[rows]
-            d[i, :n] = self.done[rows]
-            m[i, :n] = True
+        v[which, step] = values[flat]
+        r[which, step] = self.reward[flat]
+        d[which, step] = self.done[flat]
+        m[which, step] = True
         adv, ret = compute_gae(v, r, d, gamma, lam, mask=m)
-        for i, t in enumerate(complete):
-            rows = np.asarray(t.rows, np.int64)
-            self.advantage[rows] = adv[i, :rows.size]
-            self.returns[rows] = ret[i, :rows.size]
-        return int(self.samples.size)
+        self.advantage[flat] = adv[which, step]
+        self.returns[flat] = ret[which, step]
+        return int(flat.size)
 
     def match_groups(self) -> dict[tuple[int, int], np.ndarray]:
         """Completed sample rows grouped by ``(env, match)``."""
@@ -398,29 +478,48 @@ class SequenceRolloutBuffer:
         """Discard completed trajectories, carry rows of rounds still in progress
         and return the ``(env, match)`` keys those rows still cite."""
         data = self.compact()
-        keep_traj = [i for i, t in enumerate(self.trajectories) if not t.complete]
-        remap = {old: new for new, old in enumerate(keep_traj)}
-        rows = np.asarray([r for i in keep_traj for r in self.trajectories[i].rows], np.int64)
-        rows.sort()
-        row_remap = {int(old): new for new, old in enumerate(rows.tolist())}
-        kept = []
-        for i in keep_traj:
-            t = self.trajectories[i]
-            kept.append(Trajectory(t.env, t.team, t.match, t.round,
-                                   [row_remap[r] for r in t.rows], False, 0.0))
-        self.trajectories = kept
+        trajectories = self.trajectories
+        keep_traj = [i for i, t in enumerate(trajectories) if not t.complete]
+        remap = dict(zip(keep_traj, range(len(keep_traj))))
+        # KeyError, as before, if an open trajectory was marked complete.
         self.open = {key: remap[t] for key, t in self.open.items()}
-        if rows.size:
-            counts = data["cand_count"][rows]
-            src = ragged_index(data["cand_start"][rows], counts)
-            chunk = {name: data[name][rows] for name in (*ROW_FIELDS, "obs", "hidden")}
-            chunk["traj"] = np.asarray([remap[int(t)] for t in data["traj"][rows]], np.int64)
-            chunk["cand"] = data["cand"][src]
-            self.chunks = [chunk]
-        else:
-            self.chunks = []
-        self.n_rows = int(rows.size)
+        lengths = [len(trajectories[i].rows) for i in keep_traj]
+        old_rows = np.fromiter(chain.from_iterable(trajectories[i].rows for i in keep_traj),
+                               np.int64, sum(lengths))
+        rows = np.sort(old_rows)
+        row_remap = np.full(self.n_rows, -1, np.int64)
+        row_remap[rows] = np.arange(rows.size)
+        new_rows = row_remap[old_rows].tolist()
+        kept, begin = [], 0
+        for i, length in zip(keep_traj, lengths):
+            t = trajectories[i]
+            kept.append(Trajectory(t.env, t.team, t.match, t.round,
+                                   new_rows[begin:begin + length], False, 0.0))
+            begin += length
+        self.trajectories = kept
+        k = int(rows.size)
+        counts = data["cand_count"][rows]
+        src = ragged_index(data["cand_start"][rows], counts)
+        # Gather into the spare storage and swap; reuse it only while no view
+        # of it survives (and it is as large as the storage in use).
+        spare, current = self._spare, self._rows
+        if (spare is None or len(spare["env"]) < len(current["env"])
+                or len(spare["cand"]) < len(current["cand"]) or _in_use(spare)):
+            spare = _allocate_rows(len(current["env"]), len(current["cand"]),
+                                   self.obs_dim, self.act_dim)
+        for name in (*ROW_FIELDS, "obs", "hidden"):
+            _take_rows(data[name], rows, spare[name][:k])
+        traj_remap = np.full(len(trajectories), -1, np.int64)
+        traj_remap[keep_traj] = np.arange(len(keep_traj))
+        carried_traj = traj_remap[spare["traj"][:k]]
+        if (carried_traj < 0).any():
+            raise KeyError("a carried row belongs to a completed trajectory")
+        spare["traj"][:k] = carried_traj
+        _take_rows(data["cand"], src, spare["cand"][:src.size])
+        spare["cand_start"][:k] = np.cumsum(counts) - counts
         self.data = None
+        self._rows, self._spare = spare, current
+        self.n_rows, self.n_cand = k, int(src.size)
         self.samples = np.zeros(0, np.int64)
         self.value = self.reward = self.advantage = self.returns = np.zeros(0, np.float32)
         self.done = np.zeros(0, bool)

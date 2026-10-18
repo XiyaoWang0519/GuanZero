@@ -31,12 +31,22 @@ def snapshot_weights(model: HistoryActor) -> dict[str, torch.Tensor]:
 
 
 def weights_digest(state: dict[str, torch.Tensor]) -> str:
+    """SHA-256 over the sorted names, each tensor's dtype and shape, and its
+    bytes in C order. Tensors on one accelerator are packed there and
+    copied to the host once (one sync, not one per tensor); the hashed bytes
+    are those of each tensor's ``.cpu().contiguous()``."""
     digest = hashlib.sha256()
-    for name, tensor in sorted(state.items()):
-        value = tensor.detach().cpu().contiguous()
+    names = sorted(state)
+    tensors = [state[name].detach() for name in names]
+    flat = [tensor.contiguous().view(-1).view(torch.uint8) for tensor in tensors]
+    devices = {tensor.device for tensor in flat}
+    if len(devices) == 1 and next(iter(devices)).type != "cpu":
+        packed = torch.cat(flat).cpu()
+        flat = list(packed.split([part.numel() for part in flat]))
+    for name, tensor, raw in zip(names, tensors, flat):
         digest.update(name.encode())
-        digest.update(str((str(value.dtype), tuple(value.shape))).encode())
-        digest.update(value.numpy().tobytes())
+        digest.update(str((str(tensor.dtype), tuple(tensor.shape))).encode())
+        digest.update(raw.cpu().numpy())
     return digest.hexdigest()
 
 

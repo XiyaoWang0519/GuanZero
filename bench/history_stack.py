@@ -94,7 +94,6 @@ def run_case(args) -> dict:
             with (args.output / "metrics.jsonl").open("a") as file:
                 file.write(json.dumps(line)+"\n")
             # Keep the diagnostic bounded without computing a learner update.
-            trainer.buffer.chunks.clear()
             trainer.buffer = type(trainer.buffer)()
             trainer.collector.buffer = trainer.buffer
             trainer.store.prune(set())
