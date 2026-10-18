@@ -26,6 +26,8 @@ No production CLI, checkpoint schema, or research boundary is changed.
 | Load a history checkpoint for evaluation | `eval.history_policy`, `eval.policies` (`history_ppo` checkpoint marker) |
 | Frozen development evaluation | `eval.history_frozen`; scalar / batched backend parity is workload-specific |
 | External-agent evaluation | `eval.danlm.arena`; retain failed deals, exclusions and candidate-filter statistics |
+| Paired checkpoint comparison | `eval.paired` on two `eval.danlm.arena duplicate` or two `eval.lineage_eval` outputs over one deal set |
+| Checkpoint weight averaging | `train.checkpoint_average`; evaluation-only output, never a resume point |
 | Test-time search | `eval.search`; [search evidence](reports/strength-summary-2026-10-04.md) |
 | Botzone package | `eval/botzone/`; [deployment receipt](reports/botzone-search-2026-10-04.md) |
 | Legacy MLP path | `train.dmc`, `train.ppo`, M1/B8/B11 configs; historical, not the Transformer launch route |
@@ -124,6 +126,20 @@ The Transformer-specific readiness checks must cover:
    parameters and population-state restore for the new trainer.
 8. Scalar/batched/external evaluators feed every available public event and
    reset history correctly; unsupported history policies fail explicitly.
+
+Private cross-attention audit and Q/K normalization (October 18, 2026;
+[report](reports/private-attention-audit-2026-10-18.md)).
+`python -m eval.private_attention_audit --out DIR CKPT...` collects one CPU
+self-play sample of whole matches (`--sampler`, `--save-sample`/`--load-sample`
+reuse it across checkpoints) and writes `audit.json` and `summary.md`:
+saturation, landing, history-swap sensitivity, math-SDPA q/k gradients, Adam
+state and dead ReLU units, stratified by round and tribute round. It is CPU
+only and launches no training. `--private-qk-norm none|query|qk`
+(`HistoryPolicyConfig.private_qk_norm`, default `none`) is an architecture
+arm for a fresh lineage: `none` keeps the current lineage's architecture
+record, state dict and outputs; a resume cannot change it; merged snapshot
+inference (`--batch-snapshot-policies`) and the Botzone NumPy actor refuse
+the other arms.
 
 ### Runtime refactor (2026-10-18)
 
@@ -277,6 +293,31 @@ batched MPS, about 7 minutes; identical checkpoints score exactly 0); and B11 on
 BASELINE.pt` runs all three plus a checkpoint curve against the baseline
 (`scripts/eval_night_summary.py` prints it). First use: u15094 vs u9989 +0.198
 [0.141, 0.259] on 2,000 deals; then u20264 vs u15094 +0.243 [0.184, 0.298].
+
+**Paired records and averaging (October 18, 2026).** `eval.danlm.arena duplicate`
+writes `per_deal`: both legs of every deal (our reward, round win, decisions,
+divergence counts and, for a failed leg, the fatal kind, its detail and any
+reading substitution earlier in that trick), plus `excluded_deal_ids`,
+`failed_legs_by_kind`, `deal_set_sha256`, `checkpoint_sha256` and
+`source_sha256`. Headline numbers and their bootstrap are unchanged.
+`eval.lineage_eval` adds `deal_set_sha256` and `excluded_deals` (always 0:
+one engine plays both sides). Two runs on the same deals, seed and opponent
+(DanLM spec, or lineage baseline SHA) pair deal by deal:
+
+```sh
+python -m eval.paired u86800-danlm.json m7-danlm.json --output u86800-minus-m7.json
+```
+
+It reports A − B on the deals both runs scored (whole-deal bootstrap and
+normal interval), the round-win-rate difference, the excluded deals of each
+run with reasons, a worst-case bound had they been scored, and the unpaired
+standard error and per-deal correlation, which show how much pairing helped.
+Arena outputs from before this date have no `per_deal` and must be rerun.
+`python -m train.checkpoint_average --output avg4.pt A.pt B.pt C.pt D.pt`
+writes the uniform mean of the actor and critic weights of N checkpoints of
+one lineage and architecture, recording its inputs under `averaged_from`. It
+has no optimizer state, and `train.history_ppo` refuses to resume it. See the
+[October 18 receipt](reports/paired-eval-checkpoint-average-2026-10-18.md).
 
 **Engine digest, version 2 (October 3, 2026).** `infra.history_artifacts.engine_digest`
 covers the game-dynamics sources only (`cpp/include/gd/*.h`, `cpp/src/*.cpp`

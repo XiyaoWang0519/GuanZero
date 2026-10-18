@@ -37,7 +37,7 @@ code, checkpoint identity and external state for the task at hand.
 | Direction | Recorded state / next evidence needed |
 |---|---|
 | Continued training and auxiliary heads | [Experiment review](reports/experiment-review-2026-10-04.md), [auxiliary heads](reports/aux-heads-2026-10-02.md): distinguish lineage progress from multi-seed causal evidence |
-| Evaluation reliability | The October 4 review identifies external-adapter exclusions and paired-record gaps; inspect current code before assuming these are still unfixed |
+| Evaluation reliability | The October 4 review identifies external-adapter exclusions and paired-record gaps. October 18 ([receipt](reports/paired-eval-checkpoint-average-2026-10-18.md)): per-deal arena records, `eval.paired` and `train.checkpoint_average` implemented and tested on synthetic checkpoints only; no real checkpoint or DanLM measured. The cause of the mini-ladder `their_choice_missing` exclusions is a static hypothesis (wild cards declared below the level rank), not yet checked against data |
 | History use and opponent diversity | [History ablation](reports/history-ablation-2026-09-29.md), [diversity proposal](reports/opponent-diversity-plan-2026-10-03.md); earlier-checkpoint findings do not establish current history dependence |
 | Planted-habit diagnostic | [Phase 1a](reports/history-habit-phase1a-2026-09-30.md): ORACLE and ROUND trained/evaluated; FULL not run; one training seed per arm, separate diagnostic lineage |
 | Cheaper search | [Fused search design](reports/fused-search-design-2026-10-05.md): explicitly design only, no implementation or measured gain claimed |
@@ -171,3 +171,11 @@ source identity rebuilt with `--allow-source-change`. Measured vs DanLM (4,000 d
 m8 u81344 −0.376 [−0.414, −0.340], u86800 −0.312 [−0.350, −0.277] (m7 −0.334);
 the model recovered, no rollback, and u86800 versus m7 is within error. This
 supersedes the "production unchanged / not restarted" statements above for the main run.
+
+October 18: [private-attention audit tooling](reports/private-attention-audit-2026-10-18.md)
+implemented (`eval/private_attention_audit.py`, CPU, multi-minibatch) together with
+an opt-in `private_qk_norm` architecture arm (default `none`, main lineage
+unchanged, fresh lineages only). Measured only on random-init and synthetic
+actors: m7/u86800/latest were not on that VM, so whether their saturation is
+global remains unresolved. Next: run the audit where the checkpoints are; any
+`qk` A/B lineage needs separate authorization.

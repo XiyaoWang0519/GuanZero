@@ -7,6 +7,9 @@ The internal yardstick of the nightly report (October 3, 2026): the new
 endpoint against the lineage's previous endpoint on a reproducible deal set,
 both sides greedy, every deal played twice with the teams swapped. The score
 is the candidate's net levels per round; identical checkpoints score exactly 0.
+One engine plays both sides, so no deal is ever excluded (a round past the
+decision bound raises instead). Two runs against the same baseline pair per
+deal with ``python -m eval.paired``.
 Batched VecEnv backend (eval/batched.py); the external yardstick stays DanLM.
 """
 from __future__ import annotations
@@ -18,7 +21,7 @@ from pathlib import Path
 import torch
 
 from eval.batched import EvalConfig, play_duplicate_batch
-from eval.duplicate import generate_deals, summarize_duplicates
+from eval.duplicate import deal_set_sha256, generate_deals, summarize_duplicates
 from eval.policies import load_policy
 from infra.history_artifacts import sha256, source_identity
 
@@ -31,12 +34,14 @@ def evaluate(candidate_path: Path, baseline_path: Path, deals: int, seed: int,
         if getattr(policy, "stage", None) != "history_ppo":
             raise ValueError(f"{name} must be a history_ppo checkpoint")
     config = EvalConfig(batch_size=batch_size, kv_cache=True)
-    scores = play_duplicate_batch(generate_deals(deals, seed), (candidate, candidate),
+    deal_specs = generate_deals(deals, seed)
+    scores = play_duplicate_batch(deal_specs, (candidate, candidate),
                                   (baseline, baseline), seed, config)
     summary = summarize_duplicates(scores, seed, 2000)
     return dict(candidate=str(candidate_path), candidate_sha256=sha256(candidate_path),
                 baseline=str(baseline_path), baseline_sha256=sha256(baseline_path),
-                deals=deals, seed=seed, duplicates=summary,
+                deals=deals, seed=seed, deal_set_sha256=deal_set_sha256(deal_specs),
+                excluded_deals=0, duplicates=summary,
                 mean_net_levels_per_round=summary["mean_net_levels_per_round"],
                 bootstrap_95_ci=summary["bootstrap_95_ci"],
                 evaluator=dict(backend="batched", device=device, batch_size=batch_size,
