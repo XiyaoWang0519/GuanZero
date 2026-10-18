@@ -143,3 +143,52 @@ def test_adam_fused_changes_only_fp32_order(tmp_path):
     assert diff.max() > 0                                   # really another kernel
     assert float((diff <= 1e-6).float().mean()) > 0.999
     assert float(diff.max()) <= 2 * a.config.lr * la["minibatches"]
+
+
+class InlineBatchTrainer(HistoryTrainer):
+    """Every minibatch collated and uploaded at its own step, as before the
+    prefetch (the prefetched batch is ignored)."""
+
+    def backward_minibatch(self, rows, batch=None):
+        return super().backward_minibatch(rows, None)
+
+
+class CountingTrainer(HistoryTrainer):
+    prefetched = inline = 0
+
+    def minibatch_loss(self, rows, batch=None):
+        if batch is None:
+            self.inline += 1
+        else:
+            self.prefetched += 1
+        return super().minibatch_loss(rows, batch)
+
+
+def test_prefetched_minibatch_matches_inline_preparation(tmp_path):
+    previous = (torch.are_deterministic_algorithms_enabled(),
+                torch.is_deterministic_algorithms_warn_only_enabled())
+    torch.use_deterministic_algorithms(True)
+    try:
+        options = dict(learner_length_groups=2, profile_learn=True)
+        new = CountingTrainer(config(**options), tmp_path / "new")
+        old = InlineBatchTrainer(config(**options), tmp_path / "old")
+        steps = 0
+        for _ in range(3):
+            a, b = new.update(), old.update()
+            assert a["minibatches"] == b["minibatches"] > 1
+            steps += a["minibatches"]
+            for key in HistoryTrainer.STAT_KEYS:
+                assert a[key] == b[key], key
+            phases = a["learn_phase_seconds"]
+            assert {"batch_and_upload", "forward", "backward", "gradient_reduce",
+                    "optimizer"} <= set(phases)
+            assert sum(phases.values()) <= a["learn_seconds"] * 1.05 + 0.05
+        # Each epoch's first minibatch is prepared at its step, every other one
+        # during the previous step.
+        assert new.inline == 3 * new.config.epochs and new.prefetched == steps - new.inline
+        for x, y in zip([*new.actor.parameters(), *new.critic.parameters()],
+                        [*old.actor.parameters(), *old.critic.parameters()]):
+            assert torch.equal(x, y)
+        assert new.rng.bit_generator.state == old.rng.bit_generator.state
+    finally:
+        torch.use_deterministic_algorithms(previous[0], warn_only=previous[1])

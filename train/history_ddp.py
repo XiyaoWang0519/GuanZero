@@ -309,15 +309,16 @@ class HistoryDDPTrainer(HistoryTrainer):
                                              dist.all_reduce(total, async_op=True)))
         return padded
 
-    def backward_minibatch(self, rows: np.ndarray | None) -> dict[str, torch.Tensor] | None:
+    def backward_minibatch(self, rows: np.ndarray | None, batch=None
+                           ) -> dict[str, torch.Tensor] | None:
         if self.world_size == 1:
-            return super().backward_minibatch(rows)
+            return super().backward_minibatch(rows, batch)
         scale = self.global_minibatch(rows)
         self.learn_mark("advantage_reduce")
         if rows is None:
             return None
         try:
-            terms = self.minibatch_loss(rows)
+            terms = self.minibatch_loss(rows, batch)
         finally:
             self.advantage_moments = None
         # One backward call over both disjoint graphs (bitwise, see the base).

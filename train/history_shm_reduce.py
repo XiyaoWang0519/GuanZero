@@ -13,9 +13,11 @@ with ``bytes = numel * 4``, ``segments = roundUp(max(2W, ceil(bytes / 1 MiB)), W
 * segment / 4`` elements, block ``b = [b * chunk, (b + 1) * chunk)`` (clipped) is
 summed as ``((x_s + x_{s-1}) + x_{s-2}) + ...`` over all ranks with
 ``s = (b - 1) mod W`` (indices mod W). IEEE addition commutes and nothing is
-contracted, so the fold is bitwise gloo's sum on every rank. The model is
-empirical; ``self_check`` compares seeded wide-exponent probes of the real size
-with ``dist.all_reduce`` and the trainer falls back to gloo on any difference.
+contracted, so the fold is bitwise gloo's sum on every rank (as long as the
+folding thread does not flush denormals, e.g. ``torch.set_flush_denormal(True)``,
+while gloo's threads do not). The model is empirical; ``self_check`` compares
+seeded wide-exponent probes of the real size with ``dist.all_reduce`` and the
+trainer falls back to gloo on any difference.
 
 Layout (``layout``): one 64-byte flag line per rank, then ``world`` float32
 slots and two result buffers, each padded to a cache line. The results
@@ -24,8 +26,8 @@ next.
 
 Lifecycle: rank 0 checks the free space, creates the file (``O_EXCL``, mode
 0600) and reserves its pages with ``posix_fallocate``, so a too-small
-``/dev/shm`` fails at start-up (on every rank) instead of raising SIGBUS
-mid-run. Every rank maps it; rank 0 unlinks it as soon as all ranks have mapped
+``/dev/shm`` fails at start-up (on every rank; the trainer then stays on gloo)
+instead of raising SIGBUS mid-run. Every rank maps it; rank 0 unlinks it as soon as all ranks have mapped
 it, so nothing is left in ``/dev/shm`` even if a rank is killed later. ``close``
 unmaps.
 
@@ -82,10 +84,6 @@ def layout(world: int, numel: int) -> tuple[int, int, int]:
         raise ValueError("world and numel must be positive")
     stride = -(-numel // ALIGN) * ALIGN
     return gloo_ring_chunk(numel, world), stride, 8 * FLAG_WORDS * world + 4 * stride * (world + 2)
-
-
-def mapping_bytes(world: int, numel: int) -> int:
-    return layout(world, numel)[2]
 
 
 def _create(directory: str, size: int) -> str:

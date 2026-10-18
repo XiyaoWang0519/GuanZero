@@ -55,7 +55,7 @@ from train.history_model import (extend_actor, STAGE, TOKEN_SCHEMA_VERSION,
                                  checkpoint_payload, config_record, count_parameters,
                                  fresh_player, load_history_checkpoint, save_history_checkpoint)
 from train.history_rollout import (CollectStats, HistoryCollector, MatchEventStore,
-                                   SequenceRolloutBuffer, _PhaseTimer)
+                                   SequenceRolloutBuffer, TrainingBatch, _PhaseTimer)
 from train.history_population import HistoryPopulation
 from train.history_response import RESPONSE_SCHEMA, opponent_response_labels
 from train.history_aux import (AUX_HEADS, belief_loss, next_token_loss, outcome_loss,
@@ -922,19 +922,32 @@ class HistoryTrainer:
     def minibatches(self) -> Iterator[np.ndarray]:
         return self.buffer.minibatches(self.config.minibatch_matches, self.rng)
 
-    def minibatch_loss(self, rows: np.ndarray) -> dict[str, torch.Tensor]:
+    def prepare_minibatch(self, rows: np.ndarray) -> TrainingBatch:
+        """The minibatch's host collation and upload: response labels, outcome
+        targets and style extras, then ``training_batch``'s packed copy. Depends
+        only on ``rows`` and the buffer/store, which ``learn`` never changes, so
+        ``learn`` prepares the next minibatch while this one's backward runs."""
         cfg = self.config
-        predict = cfg.response_mode != "none"
         extra = ({"response_target": opponent_response_labels(
-            self.buffer, self.store, rows, round_streams=cfg.habit_round)} if predict else {})
+            self.buffer, self.store, rows, round_streams=cfg.habit_round)}
+                 if cfg.response_mode != "none" else {})
         if "outcome" in self.actor.aux_head_names:
             extra["outcome_target"] = round_outcomes(self.buffer, rows)
         extra.update(self.habit_extra(rows))
         # Actor inputs, stored row data and response targets: one packed upload.
-        batch = self.buffer.training_batch(rows, self.store, self.device, extra=extra or None,
-                                           length_groups=cfg.learner_length_groups,
-                                           width=cfg.width, round_streams=cfg.habit_round)
-        self.learn_mark("batch_and_upload")
+        return self.buffer.training_batch(rows, self.store, self.device, extra=extra or None,
+                                          length_groups=cfg.learner_length_groups,
+                                          width=cfg.width, round_streams=cfg.habit_round)
+
+    def minibatch_loss(self, rows: np.ndarray, batch: TrainingBatch | None = None
+                       ) -> dict[str, torch.Tensor]:
+        """Loss terms of ``rows``; ``batch`` is their ``prepare_minibatch`` (made
+        here when not given)."""
+        cfg = self.config
+        predict = cfg.response_mode != "none"
+        if batch is None:
+            batch = self.prepare_minibatch(rows)
+            self.learn_mark("batch_and_upload")
         inputs, chosen, row = batch.inputs, batch.chosen, batch.fields
         inputs.style = row.get("style")
         response_stats = {}
@@ -1095,14 +1108,16 @@ class HistoryTrainer:
         """One epoch's minibatch rows; ``None`` is a step without local data."""
         return self.minibatches()
 
-    def backward_minibatch(self, rows: np.ndarray | None) -> dict[str, torch.Tensor] | None:
-        """Loss terms of ``rows`` with their gradients accumulated.
+    def backward_minibatch(self, rows: np.ndarray | None, batch: TrainingBatch | None = None
+                           ) -> dict[str, torch.Tensor] | None:
+        """Loss terms of ``rows`` (prepared as ``batch`` if given) with their
+        gradients accumulated.
 
         One backward call over policy + value: the actor and critic graphs are
         disjoint and the sum's backward passes the seed gradient to each
         unchanged, so every gradient is bitwise the one of two separate calls.
         """
-        terms = self.minibatch_loss(rows)
+        terms = self.minibatch_loss(rows, batch)
         (terms["policy_total"] + terms["value_total"]).backward()
         self.learn_mark("backward")
         return terms
@@ -1185,11 +1200,21 @@ class HistoryTrainer:
         actor_index = {id(p): index for index, p in enumerate(actor_parameters)}
         encoder_index = [actor_index[id(p)] for p in self.actor.stream.parameters()]
         for _ in range(cfg.epochs):
-            for rows in self.epoch_batches(samples):
+            # The epoch's minibatch rows up front (the same permutation draw).
+            batches = list(self.epoch_batches(samples))
+            ready = None
+            for index, rows in enumerate(batches):
                 self.actor_optimizer.zero_grad(set_to_none=True)
                 self.critic_optimizer.zero_grad(set_to_none=True)
                 mark("minibatch_setup")
-                terms = self.backward_minibatch(rows)
+                terms = self.backward_minibatch(rows, ready)
+                # Collate and upload the next minibatch now, while this backward
+                # still runs on the device, instead of after the optimizer step:
+                # the same batch from the same rows, only earlier on the host.
+                following = batches[index + 1] if index + 1 < len(batches) else None
+                ready = None if following is None else self.prepare_minibatch(following)
+                if following is not None:
+                    mark("batch_and_upload")
                 reduced = self.reduce_gradients(terms is not None)
                 mark("gradient_reduce")
                 if reduced == 0:
