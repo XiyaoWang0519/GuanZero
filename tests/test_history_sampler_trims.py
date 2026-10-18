@@ -410,3 +410,16 @@ def test_collector_replay_is_bitwise(device, merge, epsilon, monkeypatch):
         assert sum(s.epsilon_picks for s in fast_stats) > 0
     else:
         assert np.array_equal(data["behaviour_logp"], data["logp"])
+
+
+def test_arange_view_equals_arange_across_growth():
+    """The cached position arange the rollout attention reads is torch.arange
+    for every length, and slices taken before the buffer grows keep their values."""
+    from train import history_model as hm
+    hm._ARANGES.pop(torch.device("cpu"), None)
+    early = hm.arange_view(5, "cpu")
+    for n in (1, 7, 4096, 4097, 9000, 3):
+        assert torch.equal(hm.arange_view(n, "cpu"), torch.arange(n))
+        assert hm.arange_view(n, "cpu").dtype == torch.arange(n).dtype
+    assert torch.equal(early, torch.arange(5))
+

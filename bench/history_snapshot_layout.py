@@ -54,6 +54,11 @@ def fixture(group_count: int, rows_per_group: int, shared: bool) -> tuple:
 
 def assert_equal(actual, expected) -> None:
     for field in fields(actual):
+        if not hasattr(expected, field.name):
+            # Added after the reference source (span_order/span_groups, October 18,
+            # 2026): unset here because this bench never passes a span planner.
+            assert getattr(actual, field.name) is None, field.name
+            continue
         value, wanted = getattr(actual, field.name), getattr(expected, field.name)
         if field.name == "arrays":
             for name, array, reference in zip(snapshot.LAYOUT_FIELDS, value, wanted):
