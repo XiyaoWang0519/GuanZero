@@ -450,6 +450,9 @@ class HistoryTrainer:
         extended = False
         if resume is not None:
             actor, critic, payload = load_history_checkpoint(resume, self.device)
+            if payload.get("averaged_from"):
+                raise ValueError("an averaged checkpoint (train.checkpoint_average) is for "
+                                 "evaluation only and cannot be resumed")
             saved_config = HistoryPPOConfig.from_payload(payload["config"], updates=config.updates)
             overrides = dict(resume_overrides or {})
             unknown = set(overrides) - RESUME_OVERRIDES
