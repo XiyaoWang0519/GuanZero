@@ -110,14 +110,34 @@ def config_record(config: HistoryPolicyConfig) -> dict[str, Any]:
 
 # ---- public stream ----------------------------------------------------------
 
+def public_token_error(tokens: np.ndarray, rounds: np.ndarray,
+                       phases: np.ndarray) -> tuple[int, str] | None:
+    """The first row ``PublicStream.append_token`` would reject, with its
+    message, or ``None``. ``tokens`` is uint8 ``[k, TOKEN_DIM]``."""
+    bits = (tokens[:, :4].sum(1) != 1) | (tokens[:, 158:].sum(1) != 1)
+    private = tokens[:, 4 + 146:4 + 154].any(1)
+    negative = (np.asarray(rounds) < 0) | (np.asarray(phases) < 0)
+    bad = bits | private | negative
+    if not bad.any():
+        return None
+    row = int(bad.argmax())
+    if bits[row]:
+        return row, "public token needs exactly one seat and one cards-left bit"
+    if private[row]:
+        return row, "private tribute flags must not enter the public stream"
+    return row, "round index and phase must not be negative"
+
+
 class PublicStream:
     """Raw public events of one match for one environment, in order.
 
     ``append`` takes a ``gd.PublicActionEvent`` (or anything with ``seat``,
-    ``encoded_action``, ``cards_left``, ``round_index`` and ``phase``).
-    ``reset`` starts a new match. ``prefix`` is the number of tokens a
-    decision taken now may read. Streams never store observations,
-    candidates, hidden counts or the forced flag.
+    ``encoded_action``, ``cards_left``, ``round_index`` and ``phase``);
+    ``extend_tokens`` appends many ready-made tokens at once, exactly as
+    repeated ``append_token`` calls would. ``reset`` starts a new match.
+    ``prefix`` is the number of tokens a decision taken now may read.
+    Streams never store observations, candidates, hidden counts or the
+    forced flag.
 
     Events live in contiguous growable arrays, so ``arrays()`` and the
     ``tokens``/``rounds``/``phases`` properties are O(1) read-only views of
@@ -170,6 +190,45 @@ class PublicStream:
         self._rounds[n] = int(round_index)
         self._phases[n] = int(phase)
         self._length = n + 1
+
+    def extend_tokens(self, tokens: np.ndarray, rounds: np.ndarray, phases: np.ndarray) -> None:
+        """``append_token`` of every row in order, vectorized: the same checks,
+        error messages, stored bytes and capacity sequence. On a malformed row
+        the rows before it are appended and its ``append_token`` error raised."""
+        tokens = np.asarray(tokens, dtype=np.uint8)
+        if tokens.ndim != 2 or tokens.shape[1] != TOKEN_DIM:
+            raise ValueError(f"public token must have {TOKEN_DIM} entries")
+        rounds, phases = np.asarray(rounds), np.asarray(phases)
+        if rounds.shape != (len(tokens),) or phases.shape != (len(tokens),):
+            raise ValueError("one round index and phase per public token")
+        error = public_token_error(tokens, rounds, phases)
+        end = len(tokens) if error is None else error[0]
+        self._extend(tokens[:end], rounds[:end], phases[:end])
+        if error is not None:
+            raise ValueError(error[1])
+
+    def _extend(self, tokens: np.ndarray, rounds: np.ndarray, phases: np.ndarray) -> None:
+        """Unchecked bulk append for callers that validated the whole batch
+        (``public_token_error``). Grows by the same doubling as ``append_token``
+        (``max(64, 2 * capacity)`` until the rows fit), so the buffers, their
+        capacity and every earlier view are exactly as after per-row appends."""
+        k = len(rounds)
+        if not k:
+            return
+        n = self._length
+        capacity = len(self._rounds)
+        if n + k > capacity:
+            while capacity < n + k:
+                capacity = max(self._INITIAL_CAPACITY, 2 * capacity)
+            old_tokens, old_rounds, old_phases = self._tokens, self._rounds, self._phases
+            self._new_buffers(capacity)
+            self._tokens[:n] = old_tokens[:n]
+            self._rounds[:n] = old_rounds[:n]
+            self._phases[:n] = old_phases[:n]
+        self._tokens[n:n + k] = tokens
+        self._rounds[n:n + k] = rounds
+        self._phases[n:n + k] = phases
+        self._length = n + k
 
     @staticmethod
     def _view(array: np.ndarray, length: int) -> np.ndarray:

@@ -35,7 +35,7 @@ from torch import Tensor
 from train.history_model import (DecisionInputs, HistoryActor, PublicStream,
                                  load_history_checkpoint, segment_log_softmax)
 from train.history_population import weights_digest
-from train.history_rollout import MatchEventStore
+from train.history_rollout import MatchEventStore, public_event_runs
 
 STYLE_AXES = ("pass", "bomb", "lead_single")
 HABIT_VIEWS = ("full", "round", "oracle")
@@ -201,6 +201,17 @@ class RoundEventStore(MatchEventStore):
             self.stream(event.env_id, event.match_id).append(event)
             self.round_stream(event.env_id, event.match_id, event.round_index).append(event)
         return len(events)
+
+    def ingest_arrays(self, events) -> int:
+        """``ingest`` for ``VecEnv.drain_public_arrays()``: runs split by round
+        as well, each appended to its match stream and its round stream, so both
+        end exactly as with ``ingest`` (see ``MatchEventStore.ingest_arrays``)."""
+        tokens, rounds, phases, runs = public_event_runs(events, by_round=True)
+        for start, end, (env, match, round_index) in runs:
+            part = tokens[start:end], rounds[start:end], phases[start:end]
+            self.stream(env, match)._extend(*part)
+            self.round_stream(env, match, round_index)._extend(*part)
+        return len(rounds)
 
     def prune(self, cited: set[tuple[int, int]]) -> int:
         count = super().prune(cited)

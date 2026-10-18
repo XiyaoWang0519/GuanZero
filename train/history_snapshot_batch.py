@@ -35,6 +35,7 @@ unchanged; only the table they are added to carries float-order noise.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 import weakref
 
@@ -203,7 +204,9 @@ class SnapshotHeads:
     One slot per identity. ``slot(identity, actor)`` returns the identity's slot
     after checking that the slot was written from this very actor object
     (weak reference) with the same head parameter signature; otherwise it
-    (re)writes the slot first, so a stale stacked copy is never read.
+    (re)writes the slot first, so a stale stacked copy is never read. Inside
+    ``frozen_weights`` (the collector enters it with its own) that check runs
+    once per identity and again at the interval's end instead of every step.
     ``retain`` frees the slots of identities no longer assigned to any match,
     driven by the collector's cache-pruning signal. Only the head is stacked
     unless ``encoder`` is set, which also stacks the public stream encoder for
@@ -221,6 +224,7 @@ class SnapshotHeads:
         self.config = None
         self.slots: dict[int, _Slot] = {}
         self.writes = 0
+        self._frozen: dict[int, _Slot] | None = None    # slots used in a frozen interval
 
     @property
     def bytes(self) -> int:
@@ -239,12 +243,58 @@ class SnapshotHeads:
         used = {slot.index for slot in self.slots.values()}
         return next(i for i in range(len(used) + 1) if i not in used)
 
-    @torch.no_grad()
-    def slot(self, identity: int, actor: HistoryActor) -> int:
+    def _signature(self, actor: HistoryActor) -> tuple:
         signature = head_signature(actor)
         if self.encoder:
             signature += tuple((id(t), t._version, t.data_ptr(), t.dtype, t.device)
                                for t in encoder_parameters(actor))
+        return signature
+
+    @contextmanager
+    def frozen_weights(self):
+        """Caller-owned interval in which snapshot weights stay fixed.
+
+        The first ``slot`` call per identity checks and (re)writes the slot as
+        always; later calls for the same actor object and slot record return
+        the slot without rebuilding the weight signature. At exit every slot
+        used in the interval is re-signed: a changed actor drops its slot and
+        raises ``RuntimeError``, as the public KV cache's ``frozen_weights``
+        does (the rollout must be discarded). Same slots and stacked values as
+        signing on every call whenever the weights did stay fixed.
+        """
+        if self._frozen is not None:
+            raise RuntimeError("nested frozen-weight intervals are unsupported")
+        self._frozen = {}
+        try:
+            yield self
+        finally:
+            used, self._frozen = self._frozen, None
+            changed = []
+            for identity, record in used.items():
+                actor = record.actor()
+                if actor is not None and self._signature(actor) != record.signature:
+                    changed.append(identity)
+                    if self.slots.get(identity) is record:
+                        del self.slots[identity]
+            if changed:
+                raise RuntimeError("snapshot weights changed during frozen collection")
+
+    @torch.no_grad()
+    def slot(self, identity: int, actor: HistoryActor) -> int:
+        identity = int(identity)
+        used = self._frozen
+        if used is not None:
+            record = used.get(identity)
+            if (record is not None and record.actor() is actor
+                    and self.slots.get(identity) is record):
+                return record.index
+        index = self._sign_and_write(identity, actor)
+        if used is not None:
+            used[identity] = self.slots[identity]
+        return index
+
+    def _sign_and_write(self, identity: int, actor: HistoryActor) -> int:
+        signature = self._signature(actor)
         record = self.slots.get(int(identity))
         if record is not None and record.actor() is actor and record.signature == signature:
             return record.index

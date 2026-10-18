@@ -59,6 +59,7 @@ b.hidden_counts -> np.ndarray [B, 3, 54] uint8
 env.step(choices)             # np.ndarray [B] int32, one index per pending row
 env.drain_finished_rounds()   # list[RoundResult]
 env.drain_public_actions()    # list[PublicActionEvent], only when logging enabled
+env.drain_public_arrays()     # the same drain as a dict of arrays (see below)
 env.row_actions(row)          # list[Action] of a pending row, after pending()
 env.set_styles(styles)        # np.ndarray [num_envs, 4, gd.STYLE_DIM] float32
 env.clear_styles()
@@ -129,6 +130,13 @@ keeps its environment alive, but its views must be copied before the next
 CUDA learners explicitly copy into pinned staging tensors when using
 asynchronous transfers. With `encode=False`, `obs` and `cand` have shapes
 `[0, OBS_DIM]` and `[0, ACT_DIM]`; metadata and private labels are still present.
+
+`drain_public_arrays()` consumes the same queue as `drain_public_actions()`
+(call one of them per step) and returns, in the same order, `env_id`,
+`round_index`, `cards_left` (int32), `match_id` (int64), `seat` (int8),
+`phase` (uint8) and `encoded_action` `[n, ACT_DIM]` (float32). `action`,
+`step` and `forced` are not included. The public token layout stays in
+Python (`train.logs.public_tokens`).
 
 Call `reset()` before `pending()`, and call `pending()` before each `step()`.
 Choices must be a contiguous, one-dimensional NumPy `int32` array of exactly
