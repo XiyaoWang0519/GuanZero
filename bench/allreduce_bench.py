@@ -11,13 +11,15 @@ maximum over ranks. Per call:
   destination (standing in for the host-to-device copy; the division by the
   count runs on the device);
 - shm: the copy into this rank's slot of the mapping (where the device-to-host
-  copy lands), ``ShmAllReduce.all_reduce`` (barrier, fixed rank-order chunk sum,
-  barrier) and the same copy out. ``shm_fill`` is the slot copy alone and
-  ``shm_reduce`` the rest of ``all_reduce`` (two barriers and the chunk sum).
+  copy lands), ``ShmAllReduce.all_reduce`` (barrier, this rank's block folded
+  in gloo's ring order, barrier) and the same copy out. ``shm_fill`` is the
+  slot copy alone and ``shm_reduce`` the rest of ``all_reduce`` (two barriers
+  and the block fold).
 
 The default vector is the main lineage's actor + critic gradient (2,156,783
 float32) plus the count element: 8.63 MB. CPU only; the device copies of a GPU
-host are not included. Example::
+host are not included. The untimed warmup calls also check that both transports
+give the same bits. Example::
 
     PYTHONPATH=python:. python -m bench.allreduce_bench --world 4 --iters 30
 """
@@ -70,7 +72,7 @@ def _worker(rank: int, world: int, port: int, args, queue) -> None:
         shm_times: list[float] = []
         for iteration in range(args.warmup + args.iters):
             record = iteration >= args.warmup
-            check = world == 2 and iteration < args.warmup     # bitwise check, untimed
+            check = iteration < args.warmup                     # bitwise check, untimed
             order = (("gloo", gloo_call), ("shm", shm_call))
             if iteration % 2:
                 order = order[::-1]
@@ -91,7 +93,8 @@ def _worker(rank: int, world: int, port: int, args, queue) -> None:
                         times["shm_fill"].append(fill)
                         times["shm_reduce"].append(shm_times[-1] - fill)
             if check:
-                same &= torch.equal(outputs["gloo"], outputs["shm"])
+                same &= torch.equal(outputs["gloo"].view(torch.int32),
+                                    outputs["shm"].view(torch.int32))
         shm.close()
         queue.put(dict(rank=rank, times=times, same=same))
     finally:
@@ -128,8 +131,7 @@ def main(argv: list[str] | None = None) -> int:
         summary[f"{name}_median_ms"] = 1e3 * statistics.median(per_call)
         summary[f"{name}_min_ms"] = 1e3 * min(per_call)
     summary["speedup_median"] = summary["gloo_median_ms"] / summary["shm_median_ms"]
-    if args.world == 2:
-        summary["shm_equals_gloo_bitwise"] = all(r["same"] for r in results)
+    summary["shm_equals_gloo_bitwise"] = all(r["same"] for r in results)
     print(json.dumps(summary, indent=1))
     if args.json:
         with open(args.json, "w") as stream:

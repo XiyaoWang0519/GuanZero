@@ -1,6 +1,7 @@
-"""Shared-memory all-reduce (train/history_shm_reduce.py): every rank gets the same
-fixed rank-order sum, equal to gloo's at two ranks; the mapping is unlinked at
-start-up; barriers time out; a too-small /dev/shm fails on every rank."""
+"""Shared-memory all-reduce (train/history_shm_reduce.py): every rank gets
+gloo's ring sum bit for bit; the self-check catches a wrong order model; the
+mapping is unlinked at start-up; barriers time out; a too-small /dev/shm fails
+on every rank."""
 import hashlib
 import os
 import socket
@@ -11,7 +12,8 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
-from train.history_shm_reduce import ShmAllReduce, layout
+from train import history_shm_reduce
+from train.history_shm_reduce import ShmAllReduce, gloo_ring_chunk, layout
 
 
 def _spawn(target, world: int, *args) -> list[dict]:
@@ -44,47 +46,60 @@ def _bits(t: torch.Tensor) -> torch.Tensor:
 def _sum_worker(rank, world, port, queue, spin):
     _init(rank, world, port)
     try:
-        n = 1000 + 37                       # not a multiple of the chunk alignment
-        shm = ShmAllReduce(rank, world, n, spin=spin)
-        unlinked = not os.path.exists(shm.path)
-        g = torch.Generator().manual_seed(100 + rank)
-        ordered = gloo = True
-        digests = []
-        for call in range(24):
-            # Wide exponents and signed zeros, so the summation order shows in the bits.
-            x = (torch.randn(n, generator=g) * torch.exp(4 * torch.randn(n, generator=g))).float()
-            x[call % 5::17] = -0.0
-            if call % world == rank:
-                time.sleep(0.002 * (call % 4))       # skew the arrivals
-            out = shm.all_reduce(lambda slot: slot.copy_(x)).clone()
-            gathered = [torch.empty_like(x) for _ in range(world)]
-            dist.all_gather(gathered, x)
-            expected = gathered[0] + gathered[1]
-            for other in gathered[2:]:
-                expected = expected + other
-            ordered &= torch.equal(_bits(out), _bits(expected))
-            if world == 2:
-                reduced = x.clone()
-                dist.all_reduce(reduced)
-                gloo &= torch.equal(_bits(out), _bits(reduced))
-            digests.append(hashlib.sha256(_bits(out).numpy().tobytes()).hexdigest())
-        shm.close()
-        shm.close()                        # idempotent
+        report = dict(rank=rank, unlinked=True, mismatches=0, digests=[])
+        for numel in (1, 7, 1037, 300_001, 2_156_784):
+            shm = ShmAllReduce(rank, world, numel, spin=spin)
+            dist.barrier()                      # rank 0 has returned and unlinked
+            report["unlinked"] &= not os.path.exists(shm.path)
+            g = torch.Generator().manual_seed(100 + rank)
+            for call in range(4 if numel > 10**6 else 8):
+                # Wide exponents and signed zeros, so the summation order shows in the bits.
+                scale = torch.exp2(torch.randint(-20, 20, (numel,), generator=g).float())
+                x = torch.randn(numel, generator=g) * scale
+                x[call % 5::17] = -0.0
+                if call % 3 == 2 and rank == world - 1:
+                    x.zero_()                 # a rank without a real minibatch
+                if call % world == rank:
+                    time.sleep(0.002 * (call % 4))       # skew the arrivals
+                out = shm.all_reduce(lambda slot: slot.copy_(x)).clone()
+                dist.all_reduce(x)
+                report["mismatches"] += int((_bits(out) != _bits(x)).sum())
+                report["digests"].append(hashlib.sha256(_bits(out).numpy().tobytes()).hexdigest())
+            shm.close()
+            shm.close()                        # idempotent
         with pytest.raises(RuntimeError):
             shm.all_reduce(lambda slot: None)
-        queue.put(dict(rank=rank, unlinked=unlinked, ordered=ordered, gloo=gloo,
-                       digests=digests))
+        queue.put(report)
     finally:
         dist.destroy_process_group()
 
 
-@pytest.mark.parametrize("world,spin", [(2, True), (3, True), (2, False)])
-def test_rank_order_sum_identical_on_every_rank(world, spin):
+@pytest.mark.parametrize("world,spin", [(2, True), (3, True), (4, True), (3, False)])
+def test_sum_is_gloo_ring_sum_bitwise_on_every_rank(world, spin):
     results = _spawn(_sum_worker, world, spin)
     assert all(r["unlinked"] for r in results)
-    assert all(r["ordered"] for r in results)
-    assert all(r["gloo"] for r in results)          # two ranks: equal to gloo's sum bitwise
+    assert all(r["mismatches"] == 0 for r in results)
     assert all(r["digests"] == results[0]["digests"] for r in results)
+
+
+def _check_worker(rank, world, port, queue, corrupt):
+    _init(rank, world, port)
+    try:
+        if corrupt:       # blocks still cover the vector, but at the wrong boundaries
+            original = history_shm_reduce.gloo_ring_chunk
+            history_shm_reduce.gloo_ring_chunk = lambda n, w, e=4: original(n, w, e) + 1000
+        shm = ShmAllReduce(rank, world, 838_128)
+        queue.put(dict(rank=rank, mismatches=shm.self_check()))
+        shm.close()
+    finally:
+        dist.destroy_process_group()
+
+
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_self_check_detects_a_wrong_order_model(corrupt):
+    results = _spawn(_check_worker, 3, corrupt)
+    assert len({r["mismatches"] for r in results}) == 1      # every rank sees the total
+    assert (results[0]["mismatches"] > 0) == corrupt
 
 
 def _timeout_worker(rank, world, port, queue):
@@ -137,7 +152,13 @@ def test_too_small_shm_fails_on_every_rank():
         assert "--ddp-reduce shm needs" in r["message"] and "MiB" in r["message"]
 
 
-def test_layout_pads_chunks_to_cache_lines():
+def test_layout_follows_gloo_segments_and_pads_slots():
+    # Small vectors: 2W segments; large ones: segments of at most 1 MiB, W | segments.
+    assert gloo_ring_chunk(1000, 3) == 334 and gloo_ring_chunk(1, 3) == 2
+    assert gloo_ring_chunk(2_156_784, 8) == 269_598      # 16 segments of 539,196 B
+    for world in (2, 3, 4, 5, 8):
+        for numel in (1, 7, 1001, 2_156_784, 5_756_528):
+            assert world * gloo_ring_chunk(numel, world) >= numel
     chunk, stride, size = layout(3, 1000)
-    assert chunk == 336 and stride == 1008 and chunk % 16 == 0
+    assert chunk == 334 and stride == 1008
     assert size == 3 * 64 + 4 * 1008 * 5

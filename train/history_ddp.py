@@ -26,13 +26,17 @@ rank's shard; the data distribution is the same. Collectives run on host copies
 over gloo, so any number of ranks may share a GPU. ``python -m train.history_ddp
 --world-size W ...`` launches the ranks; rank 0 writes checkpoints to ``--output``.
 
-``ddp_reduce="shm"`` (opt-in, tier 2 beyond two ranks) moves the gradient
-all-reduce from gloo to a same-node shared-memory mapping
-(``train/history_shm_reduce.py``); the small collectives stay on gloo.
+``ddp_reduce="shm"`` (opt-in) moves the gradient all-reduce from gloo's TCP
+ring to a same-node shared-memory mapping that adds in gloo's ring order
+(``train/history_shm_reduce.py``), so the sums are bitwise gloo's. A start-up
+self-check against ``dist.all_reduce`` (and a ``/dev/shm`` that can hold the
+mapping) gates it; otherwise the run stays on gloo and the manifest and metrics
+record why. The small collectives stay on gloo.
 """
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import json
 import math
 import os
@@ -64,10 +68,15 @@ class HistoryDDPTrainer(HistoryTrainer):
         if world_size > 1 and not dist.is_initialized():
             raise RuntimeError("initialize torch.distributed before building a multi-rank trainer")
         self.shm: ShmAllReduce | None = None
+        self.shm_fallback: str | None = None    # why ddp_reduce=shm runs on gloo
+        # Per learn: every rank's minibatch count (gathered once) and, with
+        # ddp_global_minibatch, the epoch's in-flight advantage-moment all-reduces.
+        self.minibatch_counts: list[int] | None = None
+        self.pending_moments: deque = deque()
+        self.rank, self.world_size = int(rank), int(world_size)
         super().__init__(config, output, device=device, resume=resume,
                          allow_source_change=allow_source_change,
                          resume_overrides=resume_overrides)
-        self.rank, self.world_size = int(rank), int(world_size)
         if self.world_size == 1:
             return
         config = self.config
@@ -91,12 +100,13 @@ class HistoryDDPTrainer(HistoryTrainer):
             self.store.__init__()
             self.buffer.__init__()
             self.collector = self.make_collector()
-        self.write_manifest()
-        self.population_event(dict(event="ddp", rank=self.rank, world_size=self.world_size,
-                                   lineage=self.lineage, resumed=resume is not None))
         self.check_synchronized()
         if self.config.ddp_reduce == "shm":
-            self.shm_reducer()       # fail at start-up if /dev/shm is too small
+            self.shm_reducer()       # map and self-check at start-up
+        self.write_manifest()
+        self.population_event(dict(event="ddp", rank=self.rank, world_size=self.world_size,
+                                   lineage=self.lineage, resumed=resume is not None,
+                                   gradient_reduce=self.gradient_reduce()))
 
     def close(self) -> None:
         """Release the shared-memory mapping (if any); idempotent."""
@@ -117,15 +127,47 @@ class HistoryDDPTrainer(HistoryTrainer):
         if not torch.equal(high, low):
             raise RuntimeError("data-parallel ranks diverged: parameter checksum mismatch")
 
-    def shm_reducer(self) -> ShmAllReduce:
-        """The shared-memory gradient reducer, created on first use (collective:
-        every rank reaches it at the same step, also after a live switch)."""
+    def shm_reducer(self) -> ShmAllReduce | None:
+        """The shared-memory gradient reducer, or None when it is unavailable.
+
+        Created on first use (collective: every rank reaches it at the same step,
+        also after a live switch) and kept only if its sums equal
+        ``dist.all_reduce``'s bitwise on seeded probes of the real size. Any
+        failure (no room in /dev/shm, a rank cannot map it, a mismatch) is the
+        same on every rank: the run continues on gloo and records why.
+        """
         numel = sum(p.numel() for p in self.parameters_all()) + 1
-        if self.shm is None:
-            self.shm = ShmAllReduce(self.rank, self.world_size, numel)
-        elif self.shm.numel != numel:
+        if self.shm is None and self.shm_fallback is None:
+            try:
+                shm = ShmAllReduce(self.rank, self.world_size, numel)
+            except (RuntimeError, ValueError) as error:
+                self.shm_fallback = f"unavailable: {error}"
+            else:
+                mismatches = shm.self_check()
+                if mismatches:
+                    shm.close()
+                    self.shm_fallback = (f"self-check: {mismatches} probe elements differ "
+                                         "from dist.all_reduce")
+                else:
+                    self.shm = shm
+            if self.shm_fallback is not None:
+                if self.rank == 0:
+                    print(f"ddp_reduce=shm {self.shm_fallback}; reducing gradients over gloo",
+                          file=sys.stderr, flush=True)
+                self.write_manifest()
+        if self.shm is not None and self.shm.numel != numel:
             raise RuntimeError("the parameter count changed under the shared-memory reducer")
         return self.shm
+
+    def gradient_reduce(self) -> str:
+        """The transport this rank's gradient all-reduce uses now."""
+        if self.world_size > 1 and self.config.ddp_reduce == "shm" and self.shm is not None:
+            return "shm"
+        return "gloo"
+
+    def reduce_record(self) -> dict[str, Any]:
+        return dict(super().reduce_record(), ddp_reduce_active=self.gradient_reduce(),
+                    ddp_reduce_fallback=self.shm_fallback)
 
     def reduce_gradients(self, real: bool) -> int:
         """Average the gradients of ranks that had a real minibatch; returns that count.
@@ -137,9 +179,9 @@ class HistoryDDPTrainer(HistoryTrainer):
             return super().reduce_gradients(real)
         params = self.parameters_all()
         device = params[0].device
-        if self.config.ddp_reduce == "shm":
-            total = self.shm_reducer().all_reduce(
-                lambda slot: self.fill_gradient_slot(slot, params, real))
+        shm = self.shm_reducer() if self.config.ddp_reduce == "shm" else None
+        if shm is not None:
+            total = shm.all_reduce(lambda slot: self.fill_gradient_slot(slot, params, real))
         else:
             if real:
                 flat = torch.cat([(p.grad if p.grad is not None else torch.zeros_like(p)).reshape(-1)
@@ -184,22 +226,36 @@ class HistoryDDPTrainer(HistoryTrainer):
             slot[:n].copy_(torch.cat(parts))
         slot[n] = 1.0
 
+    def local_moments(self, rows: np.ndarray | None) -> np.ndarray:
+        """``[rows, sum, sum of squares, 1]`` of this rank's minibatch advantages
+        in float64 (zeros on a step without a minibatch)."""
+        local = np.zeros(4, np.float64)
+        if rows is not None:
+            advantage = self.buffer.advantage[rows].astype(np.float64)
+            local[:] = (len(advantage), advantage.sum(), np.square(advantage).sum(), 1.0)
+        return local
+
     def global_minibatch(self, rows: np.ndarray | None) -> float:
         """With ``ddp_global_minibatch``, treat the union of this step's rank
         minibatches as one minibatch: set the advantage moments over all of its
         rows and return this rank's loss weight, so that the gradient average in
         ``reduce_gradients`` equals the gradient of the row mean over the union.
-        Otherwise each rank normalizes locally and has weight 1. Every rank must
-        call this at every step (``rows`` is None on a rank without a minibatch).
+        Otherwise each rank normalizes locally and has weight 1. Inside ``learn``
+        the step's moment all-reduce was issued by ``epoch_batches`` and is only
+        awaited here; otherwise every rank must call this at the same step and
+        it all-reduces synchronously (``rows`` is None on a rank without a
+        minibatch).
         """
         if not self.config.ddp_global_minibatch:
             return 1.0
-        local = np.zeros(4, np.float64)
-        if rows is not None:
-            advantage = self.buffer.advantage[rows].astype(np.float64)
-            local[:] = (len(advantage), advantage.sum(), np.square(advantage).sum(), 1.0)
-        total = torch.from_numpy(local)
-        dist.all_reduce(total)
+        if self.pending_moments:
+            size, total, work = self.pending_moments.popleft()
+            if size != (None if rows is None else len(rows)):
+                raise RuntimeError("advantage moments were issued for different minibatch rows")
+            work.wait()
+        else:
+            total = torch.from_numpy(self.local_moments(rows))
+            dist.all_reduce(total)
         n, first, second, ranks = (float(x) for x in total)
         if rows is None or n == 0:
             return 1.0
@@ -214,15 +270,42 @@ class HistoryDDPTrainer(HistoryTrainer):
     def collective(self) -> bool:
         return self.world_size > 1
 
+    def learn(self) -> dict[str, Any]:
+        if self.world_size > 1:
+            self.minibatch_counts = None
+            self.pending_moments.clear()
+        return super().learn()
+
     def epoch_batches(self, samples: int):
         """This rank's minibatches, padded with ``None`` to the longest rank's count
-        so every rank takes the same optimizer steps."""
+        so every rank takes the same optimizer steps.
+
+        Every epoch of one learn has the same number of minibatches per rank
+        (whole match groups, fixed during learn), so the counts are gathered
+        once per learn. With ``ddp_global_minibatch`` the epoch's per-step
+        float64[4] moment all-reduces are issued here, asynchronously and in
+        step order: the same collectives in the same order as one blocking call
+        per step, so the sums are bitwise the same; ``global_minibatch`` waits.
+        """
         if self.world_size == 1:
             return super().epoch_batches(samples)
         batches = list(self.minibatches()) if samples else []
-        longest = torch.tensor([len(batches)], dtype=torch.long)
-        dist.all_reduce(longest, op=dist.ReduceOp.MAX)
-        return [batches[i] if i < len(batches) else None for i in range(int(longest))]
+        if self.minibatch_counts is None:
+            counts = [torch.zeros(1, dtype=torch.long) for _ in range(self.world_size)]
+            dist.all_gather(counts, torch.tensor([len(batches)], dtype=torch.long))
+            self.minibatch_counts = [int(count) for count in counts]
+        elif len(batches) != self.minibatch_counts[self.rank]:
+            raise RuntimeError("a rank's minibatch count changed within one learn")
+        longest = max(self.minibatch_counts)
+        padded = [batches[i] if i < len(batches) else None for i in range(longest)]
+        if self.config.ddp_global_minibatch:
+            if self.pending_moments:
+                raise RuntimeError("advantage moments of the previous epoch were not consumed")
+            for rows in padded:
+                total = torch.from_numpy(self.local_moments(rows))
+                self.pending_moments.append((None if rows is None else len(rows), total,
+                                             dist.all_reduce(total, async_op=True)))
+        return padded
 
     def backward_minibatch(self, rows: np.ndarray | None) -> dict[str, torch.Tensor] | None:
         if self.world_size == 1:
@@ -272,6 +355,7 @@ class HistoryDDPTrainer(HistoryTrainer):
         line["global_learn_seconds"] = float(slowest[1])
         line["global_decisions_per_sec"] = float(totals[1]) / max(float(slowest[0]), 1e-9)
         line["world_size"] = self.world_size
+        line["ddp_reduce"] = self.gradient_reduce()
 
     def run(self) -> None:
         if self.world_size == 1:

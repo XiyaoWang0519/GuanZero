@@ -791,7 +791,7 @@ class HistoryTrainer:
                           "learner_batched_attention": self.actor.batched_match_attention,
                           "learner_length_groups": self.config.learner_length_groups,
                           "learner_chosen_response": self.config.learner_chosen_response,
-                          "ddp_reduce": self.config.ddp_reduce,
+                          **self.reduce_record(),
                           "adam_fused": self.config.adam_fused,
                           "rollout_graph_budget_mb": self.config.rollout_graph_budget_mb,
                           "rollout_graph_policy_budget_mb": self.config.rollout_graph_policy_budget_mb,
@@ -824,6 +824,11 @@ class HistoryTrainer:
             "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
         }
         (self.output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+
+    def reduce_record(self) -> dict[str, Any]:
+        """Manifest fields of the gradient all-reduce (requested transport here;
+        data-parallel training adds the active one)."""
+        return {"ddp_reduce": self.config.ddp_reduce}
 
     # -- one iteration ----------------------------------------------------------
 

@@ -295,21 +295,29 @@ def test_spread_gpus_assigns_ranks_round_robin_and_keeps_explicit_index():
     assert build_parser().parse_args(["--output", "x", "--spread-gpus"]).spread_gpus is True
 
 
-def _transport_worker(rank, world, port, root, transport, queue):
+def _transport_worker(rank, world, port, root, transport, fault, queue):
     os.environ.update(MASTER_ADDR="127.0.0.1", MASTER_PORT=str(port))
     dist.init_process_group("gloo", rank=rank, world_size=world)
     torch.set_num_threads(1)
     try:
+        if fault == "order":      # a wrong block model: the self-check must refuse it
+            import train.history_shm_reduce as module
+            original = module.gloo_ring_chunk
+            module.gloo_ring_chunk = lambda n, w, e=4: original(n, w, e) + 1000
+        elif fault == "space" and rank == 0:     # /dev/shm too small for the mapping
+            os.statvfs = lambda path: type("Tiny", (), dict(f_bavail=1, f_frsize=4096))()
         config = small_config(epochs=2, minibatch_matches=1, ddp_global_minibatch=True,
                               response_mode="auxiliary", aux_heads="next,belief,outcome",
                               ddp_reduce=transport)
-        trainer = HistoryDDPTrainer(config, os.path.join(root, f"{transport}-{rank}"),
-                                    rank=rank, world_size=world)
+        output = os.path.join(root, f"{transport}-{fault}-{rank}")
+        trainer = HistoryDDPTrainer(config, output, rank=rank, world_size=world)
         params = trainer.parameters_all()
         flat = lambda tensors: torch.cat([t.detach().reshape(-1) for t in tensors]).numpy().copy()
         # Direct reduce with random gradients; rank 1 has no real minibatch.
         g = torch.Generator().manual_seed(rank)
-        local = [torch.randn(p.shape, generator=g) for p in params]
+        local = [torch.randn(p.shape, generator=g) * torch.exp2(torch.randint(-12, 12, p.shape,
+                                                                              generator=g))
+                 for p in params]
         for p, x in zip(params, local):
             p.grad = x.clone()
         count = trainer.reduce_gradients(rank != 1)
@@ -323,9 +331,13 @@ def _transport_worker(rank, world, port, root, transport, queue):
         for _ in range(2):
             lines.append(trainer.update())
             snapshots.append(flat(params))
+        active = trainer.gradient_reduce()
         trainer.close()
-        queue.put(dict(rank=rank, count=count, none=none, untouched=untouched,
-                       local=flat(local), mixed=mixed, params=snapshots,
+        import json
+        manifest = json.loads((trainer.output / "manifest.json").read_text())["inference"]
+        queue.put(dict(rank=rank, count=count, none=none, untouched=untouched, mixed=mixed,
+                       params=snapshots, active=active,
+                       manifest=manifest, metrics=[l["ddp_reduce"] for l in lines],
                        policy_loss=[l["policy_loss"] for l in lines],
                        minibatches=[l["minibatches"] for l in lines],
                        local_minibatches=[l["local_minibatches"] for l in lines]))
@@ -333,14 +345,14 @@ def _transport_worker(rank, world, port, root, transport, queue):
         dist.destroy_process_group()
 
 
-def _run_transport(tmp_path, transport: str, world: int) -> list[dict]:
+def _run_transport(tmp_path, transport: str, world: int, fault: str = "") -> list[dict]:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
     context = mp.get_context("spawn")
     queue = context.Queue()
     processes = [context.Process(target=_transport_worker,
-                                 args=(r, world, port, str(tmp_path), transport, queue))
+                                 args=(r, world, port, str(tmp_path), transport, fault, queue))
                  for r in range(world)]
     for p in processes:
         p.start()
@@ -351,29 +363,40 @@ def _run_transport(tmp_path, transport: str, world: int) -> list[dict]:
     return results
 
 
-def test_shm_reduce_three_ranks_identical_and_close_to_gloo(tmp_path):
-    """Three ranks: the shared-memory reduce is a fixed rank-order sum, so every
-    rank holds the same parameters; it differs from gloo's ring only in FP32
-    order (tier 2). Ranks without a real minibatch contribute zeros; a step with
-    no real minibatch is skipped."""
-    gloo = _run_transport(tmp_path, "gloo", 3)
-    shm = _run_transport(tmp_path, "shm", 3)
-    expected = (shm[0]["local"] + shm[2]["local"]) / np.float32(2)   # rank 1 not real
-    for results in (gloo, shm):
-        assert all(r["count"] == 2 and r["none"] == 0 and r["untouched"] for r in results)
-        assert all(r["minibatches"] == results[0]["minibatches"] for r in results)
-    for r in shm:
-        assert np.array_equal(r["mixed"].view(np.int32), expected.view(np.int32))
+@pytest.mark.parametrize("world", [3, 4])
+def test_shm_reduce_is_bitwise_gloo_at_three_and_four_ranks(tmp_path, world):
+    """The shared-memory reduce adds in gloo's ring order, so the reduced gradients
+    (including a rank without a real minibatch), losses and parameters after two
+    updates equal gloo's bit for bit; a step with no real minibatch is skipped."""
+    gloo = _run_transport(tmp_path, "gloo", world)
+    shm = _run_transport(tmp_path, "shm", world)
+    assert all(r["active"] == "shm" and r["metrics"] == ["shm", "shm"] for r in shm)
+    assert shm[0]["manifest"]["ddp_reduce_active"] == "shm"
+    assert shm[0]["manifest"]["ddp_reduce_fallback"] is None
+    assert all(r["active"] == "gloo" for r in gloo)
+    for a, b in zip(gloo, shm):
+        assert a["count"] == b["count"] == world - 1 and a["none"] == b["none"] == 0
+        assert a["untouched"] and b["untouched"]
+        assert np.array_equal(a["mixed"].view(np.int32), b["mixed"].view(np.int32))
+        assert a["policy_loss"] == b["policy_loss"] and a["minibatches"] == b["minibatches"]
         for update in range(2):
-            assert np.array_equal(r["params"][update], shm[0]["params"][update])
-    np.testing.assert_allclose(gloo[0]["mixed"], expected, rtol=1e-6, atol=1e-7)
-    # After one update both transports learned from the same data. Adam turns FP32
-    # noise on near-zero gradient elements into steps of up to about lr, so a few
-    # elements differ by that much; nearly all agree to 1e-6.
-    diff = np.abs(shm[0]["params"][0] - gloo[0]["params"][0])
-    lr = small_config().lr
-    assert np.mean(diff <= 1e-6) > 0.999 and diff.max() <= 2 * lr * shm[0]["minibatches"][0]
-    assert abs(shm[0]["policy_loss"][0] - gloo[0]["policy_loss"][0]) < 1e-6
+            assert np.array_equal(a["params"][update].view(np.int32),
+                                  b["params"][update].view(np.int32))
+
+
+@pytest.mark.parametrize("fault", ["order", "space"])
+def test_shm_reduce_falls_back_to_gloo_and_records_why(tmp_path, fault):
+    """A wrong order model fails the start-up self-check and a /dev/shm without
+    room fails the mapping: on every rank the run continues on gloo (same
+    numbers) and the manifest and metrics say so."""
+    results = _run_transport(tmp_path, "shm", 3, fault)
+    reason = "self-check" if fault == "order" else "unavailable: --ddp-reduce shm needs"
+    for r in results:
+        assert r["active"] == "gloo" and r["metrics"] == ["gloo", "gloo"]
+        assert r["manifest"]["ddp_reduce"] == "shm"
+        assert r["manifest"]["ddp_reduce_active"] == "gloo"
+        assert r["manifest"]["ddp_reduce_fallback"].startswith(reason)
+        assert np.array_equal(r["params"][1], results[0]["params"][1])
 
 
 def test_launcher_shm_reduce_matches_gloo_bitwise_at_two_ranks(tmp_path):
@@ -396,6 +419,7 @@ def test_launcher_shm_reduce_matches_gloo_bitwise_at_two_ranks(tmp_path):
                               (output / "metrics.jsonl").read_text().splitlines()]
         manifest = json.loads((output / "manifest.json").read_text())
         assert manifest["inference"]["ddp_reduce"] == transport
+        assert manifest["inference"]["ddp_reduce_active"] == transport
     a, b = payloads["gloo"], payloads["shm"]
     for key in ("model", "critic"):
         assert a[key].keys() == b[key].keys()
@@ -407,3 +431,83 @@ def test_launcher_shm_reduce_matches_gloo_bitwise_at_two_ranks(tmp_path):
     for key in ("policy_loss", "value_loss", "actor_grad_norm", "encoder_grad_norm"):
         assert [l[key] for l in metrics["gloo"]] == [l[key] for l in metrics["shm"]]
     assert [l["update"] for l in metrics["shm"]] == [1, 2]
+
+
+class _BlockingMomentsTrainer(HistoryDDPTrainer):
+    """The pre-async learn collectives: a MAX of the minibatch count per epoch and
+    one blocking moment all-reduce per step (the synchronous fallback)."""
+
+    def epoch_batches(self, samples):
+        batches = list(self.minibatches()) if samples else []
+        longest = torch.tensor([len(batches)], dtype=torch.long)
+        dist.all_reduce(longest, op=dist.ReduceOp.MAX)
+        return [batches[i] if i < len(batches) else None for i in range(int(longest))]
+
+
+def _moments_worker(rank, world, port, root, queue):
+    os.environ.update(MASTER_ADDR="127.0.0.1", MASTER_PORT=str(port))
+    dist.init_process_group("gloo", rank=rank, world_size=world)
+    torch.set_num_threads(1)
+    try:
+        calls = {"blocking": 0, "async": 0}
+        for name in ("all_reduce", "all_gather", "barrier", "broadcast_object_list"):
+            original = getattr(dist, name)
+
+            def counted(*args, _original=original, **kwargs):
+                calls["async" if kwargs.get("async_op") else "blocking"] += 1
+                return _original(*args, **kwargs)
+            setattr(dist, name, counted)
+        report = dict(rank=rank)
+        for label, cls in (("async", HistoryDDPTrainer), ("blocking", _BlockingMomentsTrainer)):
+            # Unequal minibatch counts per rank, so some steps are padding (None).
+            config = small_config(epochs=2, minibatch_matches=1 + rank, ddp_global_minibatch=True,
+                                  response_mode="auxiliary", aux_heads="outcome")
+            trainer = cls(config, os.path.join(root, f"{label}-{rank}"), rank=rank,
+                          world_size=world)
+            lines, counts = [], []
+            for _ in range(2):
+                before = dict(calls)
+                lines.append(trainer.update())
+                counts.append({k: calls[k] - before[k] for k in calls})
+            report[label] = dict(
+                params=torch.cat([p.detach().reshape(-1) for p in trainer.parameters_all()]
+                                 ).numpy().copy(),
+                policy_loss=[l["policy_loss"] for l in lines],
+                minibatches=[l["minibatches"] for l in lines],
+                local=[l["local_minibatches"] for l in lines], calls=counts)
+        queue.put(report)
+    finally:
+        dist.destroy_process_group()
+
+
+def test_async_moments_and_gathered_counts_match_blocking_collectives(tmp_path):
+    """Issuing an epoch's per-step moment all-reduces at its start (async, same
+    order) and gathering minibatch counts once per learn gives the same bits as
+    one blocking moment all-reduce per step and a MAX per epoch, also when ranks
+    have different minibatch counts."""
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    context = mp.get_context("spawn")
+    queue = context.Queue()
+    processes = [context.Process(target=_moments_worker, args=(r, 3, port, str(tmp_path), queue))
+                 for r in range(3)]
+    for p in processes:
+        p.start()
+    results = sorted((queue.get(timeout=600) for _ in processes), key=lambda r: r["rank"])
+    for p in processes:
+        p.join(timeout=60)
+        assert p.exitcode == 0
+    for r in results:
+        a, b = r["async"], r["blocking"]
+        assert np.array_equal(a["params"].view(np.int32), b["params"].view(np.int32))
+        assert a["policy_loss"] == b["policy_loss"] and a["minibatches"] == b["minibatches"]
+        assert np.array_equal(a["params"], results[0]["async"]["params"])
+        for update in range(2):
+            # Per update: every step's moment all-reduce moves off the blocking
+            # path, and two per-epoch MAXes become one all_gather.
+            steps = a["minibatches"][update]
+            assert a["calls"][update]["async"] == steps and b["calls"][update]["async"] == 0
+            assert a["calls"][update]["blocking"] == b["calls"][update]["blocking"] - steps - 1
+    # Padding steps happened: some rank had fewer local minibatches than steps.
+    assert any(r["async"]["local"] != r["async"]["minibatches"] for r in results)
