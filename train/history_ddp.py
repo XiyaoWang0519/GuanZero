@@ -120,11 +120,13 @@ class HistoryDDPTrainer(HistoryTrainer):
         return [*self.actor.parameters(), *self.critic.parameters()]
 
     def check_synchronized(self) -> None:
+        """Every rank's per-tensor parameter checksums are equal: their maximum
+        and minimum over ranks agree, from one MAX over ``[x, -x]`` (negation is
+        exact, so ``-max(-x) == min(x)``)."""
         local = torch.stack([p.detach().double().sum() for p in self.parameters_all()]).cpu()
-        high, low = local.clone(), local.clone()
-        dist.all_reduce(high, op=dist.ReduceOp.MAX)
-        dist.all_reduce(low, op=dist.ReduceOp.MIN)
-        if not torch.equal(high, low):
+        both = torch.cat([local, -local])
+        dist.all_reduce(both, op=dist.ReduceOp.MAX)
+        if not torch.equal(both[:len(local)], -both[len(local):]):
             raise RuntimeError("data-parallel ranks diverged: parameter checksum mismatch")
 
     def shm_reducer(self) -> ShmAllReduce | None:
@@ -318,8 +320,8 @@ class HistoryDDPTrainer(HistoryTrainer):
             terms = self.minibatch_loss(rows)
         finally:
             self.advantage_moments = None
-        (scale * terms["policy_total"]).backward()
-        (scale * terms["value_total"]).backward()
+        # One backward call over both disjoint graphs (bitwise, see the base).
+        (scale * terms["policy_total"] + scale * terms["value_total"]).backward()
         self.learn_mark("backward")
         return terms
 

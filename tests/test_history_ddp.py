@@ -9,6 +9,7 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
+from test_history_learn_step import PreviousStep
 from train.history_ddp import HistoryDDPTrainer
 from train.history_ppo import HistoryPPOConfig, HistoryTrainer
 
@@ -433,15 +434,36 @@ def test_launcher_shm_reduce_matches_gloo_bitwise_at_two_ranks(tmp_path):
     assert [l["update"] for l in metrics["shm"]] == [1, 2]
 
 
-class _BlockingMomentsTrainer(HistoryDDPTrainer):
-    """The pre-async learn collectives: a MAX of the minibatch count per epoch and
-    one blocking moment all-reduce per step (the synchronous fallback)."""
+class _PreviousDDPTrainer(PreviousStep, HistoryDDPTrainer):
+    """The previous data-parallel step: a MAX of the minibatch count per epoch, one
+    blocking moment all-reduce per step (the synchronous fallback), two backward
+    calls, separate encoder norms and clip, a MAX and a MIN checksum collective."""
 
     def epoch_batches(self, samples):
         batches = list(self.minibatches()) if samples else []
         longest = torch.tensor([len(batches)], dtype=torch.long)
         dist.all_reduce(longest, op=dist.ReduceOp.MAX)
         return [batches[i] if i < len(batches) else None for i in range(int(longest))]
+
+    def backward_minibatch(self, rows, batch=None):
+        scale = self.global_minibatch(rows)
+        if rows is None:
+            return None
+        try:
+            terms = self.minibatch_loss(rows)
+        finally:
+            self.advantage_moments = None
+        (scale * terms["policy_total"]).backward()
+        (scale * terms["value_total"]).backward()
+        return terms
+
+    def check_synchronized(self):
+        local = torch.stack([p.detach().double().sum() for p in self.parameters_all()]).cpu()
+        high, low = local.clone(), local.clone()
+        dist.all_reduce(high, op=dist.ReduceOp.MAX)
+        dist.all_reduce(low, op=dist.ReduceOp.MIN)
+        if not torch.equal(high, low):
+            raise RuntimeError("data-parallel ranks diverged: parameter checksum mismatch")
 
 
 def _moments_worker(rank, world, port, root, queue):
@@ -458,7 +480,7 @@ def _moments_worker(rank, world, port, root, queue):
                 return _original(*args, **kwargs)
             setattr(dist, name, counted)
         report = dict(rank=rank)
-        for label, cls in (("async", HistoryDDPTrainer), ("blocking", _BlockingMomentsTrainer)):
+        for label, cls in (("async", HistoryDDPTrainer), ("blocking", _PreviousDDPTrainer)):
             # Unequal minibatch counts per rank, so some steps are padding (None).
             config = small_config(epochs=2, minibatch_matches=1 + rank, ddp_global_minibatch=True,
                                   response_mode="auxiliary", aux_heads="outcome")
@@ -480,11 +502,12 @@ def _moments_worker(rank, world, port, root, queue):
         dist.destroy_process_group()
 
 
-def test_async_moments_and_gathered_counts_match_blocking_collectives(tmp_path):
+def test_trimmed_ddp_step_matches_previous_step_bitwise(tmp_path):
     """Issuing an epoch's per-step moment all-reduces at its start (async, same
-    order) and gathering minibatch counts once per learn gives the same bits as
-    one blocking moment all-reduce per step and a MAX per epoch, also when ranks
-    have different minibatch counts."""
+    order), gathering minibatch counts once per learn, one backward call, the
+    shared actor/encoder norm pass and the one-collective checksum give the same
+    bits as the previous step (a blocking moment all-reduce per step, a MAX per
+    epoch, ...), also when ranks have different minibatch counts."""
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
@@ -505,9 +528,10 @@ def test_async_moments_and_gathered_counts_match_blocking_collectives(tmp_path):
         assert np.array_equal(a["params"], results[0]["async"]["params"])
         for update in range(2):
             # Per update: every step's moment all-reduce moves off the blocking
-            # path, and two per-epoch MAXes become one all_gather.
+            # path, two per-epoch MAXes become one all_gather and the checksum's
+            # MAX and MIN one MAX.
             steps = a["minibatches"][update]
             assert a["calls"][update]["async"] == steps and b["calls"][update]["async"] == 0
-            assert a["calls"][update]["blocking"] == b["calls"][update]["blocking"] - steps - 1
+            assert a["calls"][update]["blocking"] == b["calls"][update]["blocking"] - steps - 2
     # Padding steps happened: some rank had fewer local minibatches than steps.
     assert any(r["async"]["local"] != r["async"]["minibatches"] for r in results)

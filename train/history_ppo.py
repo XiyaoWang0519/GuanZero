@@ -1069,10 +1069,14 @@ class HistoryTrainer:
         return self.minibatches()
 
     def backward_minibatch(self, rows: np.ndarray | None) -> dict[str, torch.Tensor] | None:
-        """Loss terms of ``rows`` with their gradients accumulated."""
+        """Loss terms of ``rows`` with their gradients accumulated.
+
+        One backward call over policy + value: the actor and critic graphs are
+        disjoint and the sum's backward passes the seed gradient to each
+        unchanged, so every gradient is bitwise the one of two separate calls.
+        """
         terms = self.minibatch_loss(rows)
-        terms["policy_total"].backward()
-        terms["value_total"].backward()
+        (terms["policy_total"] + terms["value_total"]).backward()
         self.learn_mark("backward")
         return terms
 
@@ -1083,6 +1087,54 @@ class HistoryTrainer:
     def collective(self) -> bool:
         """Whether learning runs collectives, so every step happens on every rank."""
         return False
+
+    def clip_actor_gradients(self, parameters: list[torch.nn.Parameter],
+                             encoder_index: list[int]
+                             ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """``clip_grad_norm_(parameters, grad_clip)`` and the squared gradient norms
+        of the encoder tensors (``parameters[i]`` for ``i`` in ``encoder_index``, in
+        that order) from ONE per-tensor norm pass instead of two.
+
+        Bitwise the same as the separate calls: ``clip_grad_norm_`` is
+        ``_foreach_norm`` over the present gradients, ``vector_norm`` of their
+        stack and ``clip_grads_with_norm_`` (coefficient ``clamp(max_norm /
+        (total + 1e-6), max=1)``, one foreach multiply), and a tensor's foreach
+        norm does not depend on the other tensors in the call. Returns the total
+        norm (a CPU zero without gradients, as ``clip_grad_norm_``) and the
+        encoder's squared norms (None without encoder gradients).
+        """
+        position: dict[int, int] = {}
+        grads = []
+        for index, p in enumerate(parameters):
+            if p.grad is not None:
+                position[index] = len(grads)
+                grads.append(p.grad)
+        if not grads:
+            return torch.tensor(0.0), None
+        norms = torch._foreach_norm(grads, 2.0)
+        total = torch.linalg.vector_norm(torch.stack(norms), 2.0)
+        torch.nn.utils.clip_grads_with_norm_(parameters, self.config.grad_clip, total)
+        encoder = [norms[position[i]] for i in encoder_index if i in position]
+        return total, (torch.stack(encoder) ** 2 if encoder else None)
+
+    def stats_to_host(self, values: list[torch.Tensor],
+                      encoder: torch.Tensor | None) -> list[float]:
+        """``[*values[:2], *encoder, *values[2:]]`` as host floats in one transfer.
+
+        The values are FP32 scalars on the learner device already; only a CPU
+        zero (a module without gradients) or another dtype is converted, as the
+        per-value ``.to(device, float32)`` did. Stacking copies, so the floats
+        are the same."""
+        kind = self.device.type
+        ready = [v if v.dtype == torch.float32 and v.device.type == kind
+                 else v.to(self.device, torch.float32) for v in values]
+        with torch.no_grad():
+            parts = [torch.stack(ready[:2])]
+            if encoder is not None:
+                parts.append(encoder)
+            if len(ready) > 2:
+                parts.append(torch.stack(ready[2:]))
+            return torch.cat(parts).tolist()
 
     def learn(self) -> dict[str, Any]:
         cfg = self.config
@@ -1101,7 +1153,10 @@ class HistoryTrainer:
                 if key not in ("actor_grad_norm", "encoder_grad_norm", "critic_grad_norm")]
         totals = {key: 0.0 for key in self.STAT_KEYS}
         count = steps = 0
-        encoder_parameters = list(self.actor.stream.parameters())
+        actor_parameters = list(self.actor.parameters())
+        critic_parameters = list(self.critic.parameters())
+        actor_index = {id(p): index for index, p in enumerate(actor_parameters)}
+        encoder_index = [actor_index[id(p)] for p in self.actor.stream.parameters()]
         for _ in range(cfg.epochs):
             for rows in self.epoch_batches(samples):
                 self.actor_optimizer.zero_grad(set_to_none=True)
@@ -1112,18 +1167,14 @@ class HistoryTrainer:
                 mark("gradient_reduce")
                 if reduced == 0:
                     continue
-                # Per-tensor encoder norms in one foreach call rather than a few
-                # kernels per tensor; squared and summed as before.
-                grads = [p.grad.detach().float() for p in encoder_parameters
-                         if p.grad is not None]
-                encoder = (torch.stack(torch._foreach_norm(grads)) ** 2).unbind() if grads else ()
-                actor = torch.nn.utils.clip_grad_norm_(self.actor.parameters(), cfg.grad_clip)
-                critic = torch.nn.utils.clip_grad_norm_(self.critic.parameters(), cfg.grad_clip)
+                # The encoder's per-tensor norms (squared and summed as before)
+                # come from the actor clip's own per-tensor norm pass.
+                actor, encoder = self.clip_actor_gradients(actor_parameters, encoder_index)
+                critic = torch.nn.utils.clip_grad_norm_(critic_parameters, cfg.grad_clip)
                 present = [key for key in keys if terms is not None and key in terms]
-                # clip_grad_norm_ returns a CPU zero when a module has no gradient.
-                host = torch.stack([value.detach().to(self.device, torch.float32) for value in
-                                    (actor, critic, *encoder,
-                                     *(terms[key] for key in present))]).tolist()
+                host = self.stats_to_host([actor, critic, *(terms[key] for key in present)],
+                                          encoder)
+                encoders = 0 if encoder is None else len(encoder)
                 actor, critic = host[0], host[1]
                 if not (math.isfinite(actor) and math.isfinite(critic)):
                     raise FloatingPointError("non-finite gradient; stopping before the step")
@@ -1135,9 +1186,9 @@ class HistoryTrainer:
                 if terms is None:
                     continue
                 encoder_total = 0.0
-                for value in host[2:2 + len(encoder)]:
+                for value in host[2:2 + encoders]:
                     encoder_total += value
-                for key, value in zip(present, host[2 + len(encoder):]):
+                for key, value in zip(present, host[2 + encoders:]):
                     totals[key] += value
                 totals["actor_grad_norm"] += actor
                 totals["encoder_grad_norm"] += math.sqrt(encoder_total)
