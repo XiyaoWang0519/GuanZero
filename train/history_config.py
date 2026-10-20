@@ -152,6 +152,11 @@ class HistoryPPOConfig:
     population_archive_every: int = 0
     population_archive_size: int = 16
     population_archive_share: float = 0.5
+    # thin: historical every-second archive shrink. strength_behavior: admit by
+    # probe TV distance and prefer newer snapshots (Branch A mature league).
+    population_archive_filter: str = "thin"
+    population_archive_min_tv: float = 0.05
+    population_behavior_probe_rows: int = 32
     population_recent: int = 4
     snapshot_probability: float = 0.5
     # data parallel (train/history_ddp.py): normalize advantages and weight the
@@ -222,7 +227,10 @@ class HistoryPPOConfig:
         if (self.snapshot_updates < 0 or self.population_recent < 1
                 or not 0 <= self.snapshot_probability <= 1
                 or self.population_archive_every < 0 or self.population_archive_size < 1
-                or not 0 <= self.population_archive_share <= 1):
+                or not 0 <= self.population_archive_share <= 1
+                or self.population_archive_filter not in ("thin", "strength_behavior")
+                or not 0 <= self.population_archive_min_tv <= 1
+                or self.population_behavior_probe_rows < 1):
             raise ValueError("invalid population schedule")
         if self.rollout_kv_cache and self.window:
             raise ValueError("rollout KV cache requires full history")

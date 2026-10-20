@@ -58,7 +58,7 @@ from train.history_model import (extend_actor, STAGE, TOKEN_SCHEMA_VERSION,
                                  fresh_player, load_history_checkpoint, save_history_checkpoint)
 from train.history_rollout import (CollectStats, HistoryCollector, MatchEventStore,
                                    SequenceRolloutBuffer, _PhaseTimer)
-from train.history_population import HistoryPopulation
+from train.history_population import HistoryPopulation, behavior_fingerprint
 from train.history_response import RESPONSE_SCHEMA, opponent_response_labels
 from train.history_aux import (belief_loss, next_token_loss, outcome_loss,
                                round_outcomes)
@@ -234,7 +234,10 @@ class HistoryTrainer:
                                                 config.snapshot_probability,
                                                 config.population_archive_every,
                                                 config.population_archive_size,
-                                                config.population_archive_share)
+                                                config.population_archive_share,
+                                                config.population_archive_filter,
+                                                config.population_archive_min_tv)
+            self._behavior_probe_rows: np.ndarray | None = None
         self.habit_init = None
         if payload is None and config.habit_init:
             self.habit_init = load_habit_optimizers(self, init_payload)
@@ -431,6 +434,35 @@ class HistoryTrainer:
                                      "rollout_session": getattr(self, "resume_count", 0),
                                      **event}) + "\n")
 
+    def _snapshot_population(self) -> int:
+        """Publish a snapshot; strength_behavior archives need a probe fingerprint."""
+        update = self.progress["updates"]
+        if (not isinstance(self.population, HistoryPopulation)
+                or self.population.archive_filter != "strength_behavior"
+                or not self.population.archive_every
+                or update % self.population.archive_every != 0):
+            return self.population.snapshot(update)
+        rows = self._behavior_probe_row_ids()
+        inputs, _ = self.buffer.decision_inputs(rows, self.store, self.device)
+        vector = behavior_fingerprint(self.population.resolve(0), inputs)
+        return self.population.snapshot(update, behavior=vector,
+                                        behavior_decisions=int(inputs.decisions))
+
+    def _behavior_probe_row_ids(self) -> np.ndarray:
+        """Fixed learner-row probe for archive behavior fingerprints."""
+        need = int(self.config.population_behavior_probe_rows)
+        if self._behavior_probe_rows is not None and len(self._behavior_probe_rows) >= need:
+            return self._behavior_probe_rows[:need]
+        if len(self.buffer) < 1:
+            raise RuntimeError("strength_behavior archive filter needs collected learner rows")
+        available = np.arange(len(self.buffer), dtype=np.int64)
+        if len(available) >= need:
+            pick = available[:need]
+        else:
+            pick = np.resize(available, need)
+        self._behavior_probe_rows = pick
+        return pick
+
     # -- manifest ---------------------------------------------------------------
 
     def write_manifest(self) -> None:
@@ -469,6 +501,9 @@ class HistoryTrainer:
                            "archive_every": self.config.population_archive_every,
                            "archive_size": self.config.population_archive_size,
                            "archive_share": self.config.population_archive_share,
+                           "archive_filter": self.config.population_archive_filter,
+                           "archive_min_tv": self.config.population_archive_min_tv,
+                           "behavior_probe_rows": self.config.population_behavior_probe_rows,
                            "guaranteed_learner_seats": 1},
             "inference": {**runtime_settings(self.rollout_device),
                           "causal_sdpa": self.rollout_actor.causal_sdpa,
@@ -900,7 +935,7 @@ class HistoryTrainer:
         self.population.decisions.update(self.collector.policy_decisions)
         if (stats["minibatches"] and self.config.snapshot_updates
                 and self.progress["updates"] % self.config.snapshot_updates == 0):
-            identity = self.population.snapshot(self.progress["updates"])
+            identity = self._snapshot_population()
             self.population_event(dict(event="snapshot", **self.population.metadata[identity]))
         self.population.prune(self.collector.assignments)
         self.progress["decisions"] += collected.decisions
