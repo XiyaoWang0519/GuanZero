@@ -51,14 +51,19 @@ worlds median/max 32/32 when triggered.
   rollouts is not the bottleneck; action change is.
 - Do **not** promote to student distillation from this residual alone.
 
-## Next (Branch B, one change at a time)
+## Follow-ups (same deals / seed / budget; CPU `short`)
 
-Still CPU-only while Branch A / next_coef hold GPUs:
+| Job | Change | Paired Δ lv/rnd | Overrides | Verdict |
+|---:|---|---:|---:|---|
+| **8267** | `value_margin=0` (else = residual) | **+0.0175 [+0.0025, +0.0375]** | 10 (same) | **Negative** — margin was not the bottleneck |
+| **8269** | `selection=mean` + `value_margin=0` | **+0.030 [−0.040, +0.0975]** | 198 (15.7% of triggers) | **Negative** — more overrides, CI crosses zero |
 
-1. Same budget, **`value_margin=0`** (test whether the margin starves overrides).
-2. Same budget, **`selection=mean`** (drop artificial prior in ranking).
-3. DanLM residual on avg4 stays **Mac-only** until Linux DanLM exists
-   ([danlm-linux-velocity-2026-10-20](danlm-linux-velocity-2026-10-20.md)).
+Artifacts: `~/guanzero/runs/search-avg4-vm0/`, `~/guanzero/runs/search-avg4-mean/`.
+
+`selection=mean` unlocks overrides (198 vs 10) but does not deliver a reliable
+self-play gain on 200 deals. Stop further self-play search config churn until
+A/next_coef free capacity or a Mac DanLM residual is available
+([danlm-linux-velocity-2026-10-20](danlm-linux-velocity-2026-10-20.md)).
 
 ## Limitations
 

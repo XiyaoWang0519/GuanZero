@@ -14,7 +14,7 @@ Historical records stay at their existing paths to preserve references.
 
 ## Current summaries, deployment and research proposals
 
-- [Branch B: avg4 residual-shuffle search (October 20, 2026)](search-avg4-residual-2026-10-20.md) — self-play +0.0175 [+0.0025, +0.0375] lv/rnd on 200 deals; 4/200 deals moved; not a promote signal
+- [Branch B: avg4 residual-shuffle search (October 20, 2026)](search-avg4-residual-2026-10-20.md) — self-play +0.0175 [+0.0025, +0.0375]; `value_margin=0` identical; `selection=mean` +0.030 CI crosses zero; not a promote
 - [Train-time `next_coef` knob (October 20, 2026)](next-coef-knob-2026-10-20.md) — belief/outcome stay on `aux_coef`; next separately weighted / annealable; Velocity arms 8255–8258 queued
 - [Opt-in FP32 paged rollout-attention prototype (October 18, 2026)](paged-attention-prototype-2026-10-18.md) — implementation and local CPU checks; CUDA compilation, integration and speed unverified
 - [主线长跑指标复核（2026-10-06）](training-review-2026-10-06.md)
