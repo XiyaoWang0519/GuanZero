@@ -19,10 +19,13 @@ trained by DMC self-play with a next-token-prediction auxiliary loss,
 model-driven tribute, no search. First on the Botzone Guandan ladder in
 April 2026. Published weights (`ckpts/DanLM_v1/dansformer_v1_best_eval.pt`,
 45 MB) under Apache 2.0 with a non-commercial clause; the engine, encoder and
-model code are CPython 3.12 macOS binaries. Nothing is vendored: the checkout
-lives in `.work/external/DanLM`, the Python 3.12 environment in
-`.work/external/danlm-venv`, and a `gd` extension built for 3.12 sits beside
-the 3.14 one in `python/gd/`.
+model code are CPython 3.12 **macOS ARM64** Cython binaries
+(`*.cpython-312-darwin.so`) only — no Linux build or extension source in the
+public tree (author declined Linux packages in DanLM issue #1; see
+[danlm-linux-velocity-2026-10-20.md](danlm-linux-velocity-2026-10-20.md)).
+Nothing is vendored: the checkout lives in `.work/external/DanLM`, the Python
+3.12 environment in `.work/external/danlm-venv`, and a `gd` extension built
+for 3.12 sits beside the 3.14 one in `python/gd/`.
 
 ## How the comparison is played
 

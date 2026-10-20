@@ -38,6 +38,7 @@ import gd
 from eval.danlm.bridge import (BIG_JOKER, NormalizedPlay, PlayIndex, card_ours_to_theirs,
                                card_theirs_to_ours, decode_play, hand_ours_to_theirs,
                                level_ours_to_theirs, normalize_action)
+from eval.danlm.platform import danlm_root as _danlm_root_path, require_danlm_platform
 from eval.duplicate import bootstrap_interval, deal_set_sha256
 from eval.history_events import apply_and_observe, needs_history
 from infra.history_artifacts import sha256, source_identity
@@ -49,12 +50,18 @@ SAMPLE_LIMIT = 20
 
 
 def danlm_root() -> Path:
-    return Path(os.environ.get("DANLM_ROOT", DEFAULT_DANLM_ROOT))
+    """Checkout root: ``DANLM_ROOT`` if set, else ``.work/external/DanLM``."""
+    return _danlm_root_path()
 
 
 def import_danzero():
-    """Import DanLM's compiled package from ``DANLM_ROOT``; never vendored."""
-    root = str(danlm_root())
+    """Import DanLM's compiled package from ``DANLM_ROOT``; never vendored.
+
+    Requires macOS ARM64 CPython 3.12 Darwin extensions under ``DANLM_ROOT``.
+    Linux Velocity/cloud hosts fail here with an explicit platform blocker
+    (see ``eval.danlm.platform`` and ``docs/reports/danlm-linux-velocity-2026-10-20.md``).
+    """
+    root = str(require_danlm_platform(danlm_root()))
     if root not in sys.path:
         sys.path.insert(0, root)
     from danzero.engine import cards, game, tribute  # noqa: WPS433

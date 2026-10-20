@@ -4,6 +4,14 @@ Documentation review: October 6, 2026. This is an index of recorded status,
 not a live-job dashboard or authorization to run experiments. Verify current
 code, checkpoint identity and external state for the task at hand.
 
+October 20 DanLM / Velocity: [Linux feasibility](reports/danlm-linux-velocity-2026-10-20.md)
+confirms `eval.danlm.arena` cannot run on Linux login/GPU nodes. Upstream
+DanLM ships only `*.cpython-312-darwin.so` Cython modules (no extension
+source, no Linux wheels); the author declined a Linux build (DanLM issue #1).
+Public `.pt` weights alone are insufficient. Standing paired DanLM numbers
+remain Mac-only; Linux ONNX sibling baseline stays `eval.v1t`. Probe:
+`eval.danlm.platform`. No research-boundary change.
+
 October 17 synthesis: [complete history-utilization investigation report](reports/history-utilization-investigation-summary-2026-10-17.md)
 connects the QK-norm audit, bounded short PPO, full-match and public-only prediction
 studies, content swaps, fusion diagnostics, and training/fault evidence. It records
@@ -145,7 +153,7 @@ reproduces team_rollout bit for bit on CPU and CUDA; ~1,900 vs ~68 matches/hour.
 | Direction | Recorded state / next evidence needed |
 |---|---|
 | Continued training and auxiliary heads | [Experiment review](reports/experiment-review-2026-10-04.md), [auxiliary heads](reports/aux-heads-2026-10-02.md): distinguish lineage progress from multi-seed causal evidence |
-| Evaluation reliability | The October 4 review identifies external-adapter exclusions and paired-record gaps. October 18 ([receipt](reports/paired-eval-checkpoint-average-2026-10-18.md)): per-deal arena records, `eval.paired` and `train.checkpoint_average` implemented and tested on synthetic checkpoints only; no real checkpoint or DanLM measured. The cause of the mini-ladder `their_choice_missing` exclusions is a static hypothesis (wild cards declared below the level rank), not yet checked against data |
+| Evaluation reliability | The October 4 review identifies external-adapter exclusions and paired-record gaps. October 18 ([receipt](reports/paired-eval-checkpoint-average-2026-10-18.md)): per-deal arena records, `eval.paired` and `train.checkpoint_average` implemented and tested on synthetic checkpoints only; no real checkpoint or DanLM measured. The cause of the mini-ladder `their_choice_missing` exclusions is a static hypothesis (wild cards declared below the level rank), not yet checked against data. October 20 ([DanLM Linux/Velocity](reports/danlm-linux-velocity-2026-10-20.md)): native Linux DanLM path blocked (Darwin-only binaries); Velocity cannot refresh paired DanLM 4k without Mac or remote-Mac service |
 | History use and opponent diversity | [History ablation](reports/history-ablation-2026-09-29.md), [diversity proposal](reports/opponent-diversity-plan-2026-10-03.md); earlier-checkpoint findings do not establish current history dependence |
 | Planted-habit diagnostic | [Phase 1a](reports/history-habit-phase1a-2026-09-30.md): ORACLE and ROUND trained/evaluated; FULL not run; one training seed per arm, separate diagnostic lineage |
 | Cheaper search | [Fused search design](reports/fused-search-design-2026-10-05.md): explicitly design only, no implementation or measured gain claimed |
