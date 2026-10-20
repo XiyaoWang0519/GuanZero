@@ -215,6 +215,26 @@ class HistoryPopulation:
         self.archive[self.archive.index(oldest)] = identity
         self.archive_replacements += 1
 
+    def rebind_behavior_probe(self, inputs: DecisionInputs) -> None:
+        """Recompute archive fingerprints on a new frozen probe.
+
+        Resume restores ``behaviors`` from the prior session's probe layout, but
+        the rollout buffer no longer holds those rows. The trainer freezes a
+        fresh probe from the new buffer; this method rebinds archive members so
+        admit/TV comparisons stay on one layout.
+        """
+        if self.archive_filter != "strength_behavior":
+            raise ValueError("rebind_behavior_probe requires strength_behavior")
+        decisions = int(inputs.decisions)
+        if decisions < 1:
+            raise ValueError("behavior probe needs a positive decision count")
+        rebound = {identity: behavior_fingerprint(self.resolve(identity), inputs)
+                   for identity in self.archive}
+        if not rebound and self.archive:
+            raise ValueError("archived snapshot missing from the pool during probe rebind")
+        self.behaviors = rebound
+        self.behavior_decisions = decisions
+
     def config(self) -> dict:
         return dict(recent=self.recent, probability=self.probability,
                     archive_every=self.archive_every, archive_size=self.archive_size,

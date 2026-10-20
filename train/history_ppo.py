@@ -487,7 +487,23 @@ class HistoryTrainer:
             rows = self._behavior_probe_row_ids()
             inputs, _ = self.buffer.decision_inputs(rows, self.store, self.device)
             self._behavior_probe_inputs = freeze_decision_inputs(inputs)
-            return inputs
+            probe = decision_inputs_on_device(self._behavior_probe_inputs, self.device)
+            # Resume restores archive fingerprints from a prior probe; the new
+            # buffer cannot rebuild that layout. Rebind once onto this freeze.
+            if (isinstance(self.population, HistoryPopulation)
+                    and self.population.archive_filter == "strength_behavior"
+                    and self.population.behaviors):
+                sample = next(iter(self.population.behaviors.values()))
+                trial = behavior_fingerprint(self.population.resolve(0), probe)
+                if (trial.shape != sample.shape
+                        or int(probe.decisions) != int(self.population.behavior_decisions)):
+                    self.population.rebind_behavior_probe(probe)
+                    self.population_event(dict(
+                        event="behavior_probe_rebind",
+                        decisions=int(probe.decisions),
+                        archive=len(self.population.archive),
+                        at_update=int(self.progress["updates"])))
+            return probe
         return decision_inputs_on_device(self._behavior_probe_inputs, self.device)
 
     # -- manifest ---------------------------------------------------------------

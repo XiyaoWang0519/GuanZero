@@ -236,3 +236,40 @@ def test_frozen_behavior_probe_keeps_fingerprint_layout_after_buffer_refill():
     pool.snapshot(2, behavior=first, behavior_decisions=int(frozen.decisions))
     pool.snapshot(4, behavior=again, behavior_decisions=int(frozen.decisions))
     assert len(pool.archive) == 2
+
+
+def test_rebind_behavior_probe_after_resume_layout_change():
+    """Resume restores old fingerprints; a new probe must rebind archive TV."""
+    actor, _ = fresh_player(HistoryPolicyConfig(width=32, layers=1), 13)
+    store, buffer = MatchEventStore(), SequenceRolloutBuffer()
+    collector = HistoryCollector(make_env(4), actor, store, buffer,
+                                 torch.Generator().manual_seed(13))
+    collector.collect(120)
+    rows_a = np.arange(min(4, len(buffer)), dtype=np.int64)
+    probe_a, _ = buffer.decision_inputs(rows_a, store, "cpu")
+    frozen_a = freeze_decision_inputs(probe_a)
+    pool = HistoryPopulation(actor, "t", 13, recent=2, snapshot_probability=1.0,
+                             archive_every=2, archive_size=4,
+                             archive_filter="strength_behavior", archive_min_tv=0.0)
+    a = pool.snapshot(2, behavior=behavior_fingerprint(actor, frozen_a),
+                      behavior_decisions=int(frozen_a.decisions))
+    b = pool.snapshot(4, behavior=behavior_fingerprint(pool.resolve(a), frozen_a),
+                      behavior_decisions=int(frozen_a.decisions))
+    assert set(pool.archive) == {a, b}
+    old_shape = pool.behaviors[a].shape
+    buffer.next_iteration()
+    store.prune(set())
+    collector.collect(120)
+    rows_b = np.arange(min(12, len(buffer)), dtype=np.int64)
+    probe_b, _ = buffer.decision_inputs(rows_b, store, "cpu")
+    frozen_b = freeze_decision_inputs(probe_b)
+    trial = behavior_fingerprint(actor, frozen_b)
+    assert trial.shape != old_shape or int(frozen_b.decisions) != pool.behavior_decisions
+    pool.rebind_behavior_probe(frozen_b)
+    assert pool.behavior_decisions == int(frozen_b.decisions)
+    assert pool.behaviors[a].shape == trial.shape
+    assert pool.behaviors[b].shape == trial.shape
+    # New admits must share the rebound layout.
+    c = pool.snapshot(6, behavior=behavior_fingerprint(actor, frozen_b),
+                      behavior_decisions=int(frozen_b.decisions))
+    assert c in pool.archive
