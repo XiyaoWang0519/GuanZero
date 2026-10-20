@@ -117,14 +117,16 @@ def main():
         raise ValueError('output already has raw results; use a new directory')
     import torch
     source_paths=['eval/search.py','eval/search_rollout.py','eval/search_sweep.py',
-                  'eval/history_policy.py','eval/duplicate.py','train/history_model.py',
-                  'python/gd/_gd_core.cpython-312-darwin.so']
+                  'eval/history_policy.py','eval/duplicate.py','train/history_model.py']
+    # Platform extension path varies (darwin vs linux); record whichever is present.
+    source_paths.extend(sorted(Path('python/gd').glob('_gd_core*.so')))
     provenance={'checkpoint':str(Path(args.checkpoint).resolve()),
         'checkpoint_sha256':hashlib.sha256(Path(args.checkpoint).read_bytes()).hexdigest(),
         'configs':configs,'device':args.device,'workers':args.workers,'deals':args.deals,'seed':args.seed,
         'deadline_seconds':args.deadline_seconds,'torch':torch.__version__,
         'runtime':{'causal_sdpa':True,'batched_private_attention':True,'threads_per_worker':1},
-        'source_sha256':{p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in source_paths}}
+        'source_sha256':{str(p):hashlib.sha256(Path(p).read_bytes()).hexdigest()
+                         for p in source_paths if Path(p).is_file()}}
     (out/'provenance.json').write_text(json.dumps(provenance,indent=2)+'\n')
     start=time.perf_counter();records=[];stopped=False
     # Deal groups complete in every arm before another group is submitted.

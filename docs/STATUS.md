@@ -4,6 +4,16 @@ Documentation review: October 6, 2026. This is an index of recorded status,
 not a live-job dashboard or authorization to run experiments. Verify current
 code, checkpoint identity and external state for the task at hand.
 
+October 20: [avg4 residual-shuffle search](reports/search-avg4-residual-2026-10-20.md)
+(Branch B): residual +0.0175 [+0.0025, +0.0375]; `value_margin=0`
+identical (neg); `selection=mean` +0.030 [−0.040, +0.0975] (neg). Not a
+promote. DanLM Linux residual still blocked.
+
+October 20: [train-time `next_coef` knob](reports/next-coef-knob-2026-10-20.md)
+implements the aux-screen proposal (belief/outcome remain on `aux_coef=0.1`;
+next is separately weighted or annealable). Velocity short arms 8255–8258
+queued behind Branch A mature-league 8253–8254.
+
 October 17 synthesis: [complete history-utilization investigation report](reports/history-utilization-investigation-summary-2026-10-17.md)
 connects the QK-norm audit, bounded short PPO, full-match and public-only prediction
 studies, content swaps, fusion diagnostics, and training/fault evidence. It records
