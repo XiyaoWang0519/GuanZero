@@ -25,7 +25,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from train.history_model import DecisionInputs, HistoryActor
+from train.history_model import DecisionInputs, HistoryActor, StreamBatch
 
 ARCHIVE_FILTERS = ("thin", "strength_behavior")
 
@@ -46,6 +46,68 @@ def weights_digest(state: dict[str, torch.Tensor]) -> str:
         digest.update(str((str(value.dtype), tuple(value.shape))).encode())
         digest.update(value.numpy().tobytes())
     return digest.hexdigest()
+
+
+def _clone_tensor_cpu(tensor: torch.Tensor | None) -> torch.Tensor | None:
+    if tensor is None:
+        return None
+    return tensor.detach().to("cpu").contiguous().clone()
+
+
+def freeze_decision_inputs(inputs: DecisionInputs) -> DecisionInputs:
+    """CPU clone of probe inputs so archive fingerprints keep one layout."""
+    streams = StreamBatch(
+        tokens=_clone_tensor_cpu(inputs.streams.tokens),
+        rounds=_clone_tensor_cpu(inputs.streams.rounds),
+        phases=_clone_tensor_cpu(inputs.streams.phases),
+        lengths=_clone_tensor_cpu(inputs.streams.lengths),
+    )
+    return DecisionInputs(
+        streams=streams,
+        match_index=_clone_tensor_cpu(inputs.match_index),
+        prefix=_clone_tensor_cpu(inputs.prefix),
+        obs=_clone_tensor_cpu(inputs.obs),
+        seat=_clone_tensor_cpu(inputs.seat),
+        cand=_clone_tensor_cpu(inputs.cand),
+        offsets=_clone_tensor_cpu(inputs.offsets),
+        candidate_rows=_clone_tensor_cpu(inputs.candidate_rows),
+        one_decision_per_stream=inputs.one_decision_per_stream,
+        match_groups=None,
+        match_rank=_clone_tensor_cpu(inputs.match_rank),
+        match_slots=inputs.match_slots,
+        style=_clone_tensor_cpu(inputs.style),
+    )
+
+
+def decision_inputs_on_device(inputs: DecisionInputs, device) -> DecisionInputs:
+    """Move a frozen probe onto ``device`` for fingerprinting."""
+
+    def move(tensor: torch.Tensor | None) -> torch.Tensor | None:
+        if tensor is None:
+            return None
+        return tensor.to(device, non_blocking=(getattr(device, "type", None) == "cuda"))
+
+    streams = StreamBatch(
+        tokens=move(inputs.streams.tokens),
+        rounds=move(inputs.streams.rounds),
+        phases=move(inputs.streams.phases),
+        lengths=move(inputs.streams.lengths),
+    )
+    return DecisionInputs(
+        streams=streams,
+        match_index=move(inputs.match_index),
+        prefix=move(inputs.prefix),
+        obs=move(inputs.obs),
+        seat=move(inputs.seat),
+        cand=move(inputs.cand),
+        offsets=move(inputs.offsets),
+        candidate_rows=move(inputs.candidate_rows),
+        one_decision_per_stream=inputs.one_decision_per_stream,
+        match_groups=None,
+        match_rank=move(inputs.match_rank),
+        match_slots=inputs.match_slots,
+        style=move(inputs.style),
+    )
 
 
 @torch.no_grad()

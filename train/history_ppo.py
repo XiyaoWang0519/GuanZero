@@ -58,7 +58,8 @@ from train.history_model import (extend_actor, STAGE, TOKEN_SCHEMA_VERSION,
                                  fresh_player, load_history_checkpoint, save_history_checkpoint)
 from train.history_rollout import (CollectStats, HistoryCollector, MatchEventStore,
                                    SequenceRolloutBuffer, _PhaseTimer)
-from train.history_population import HistoryPopulation, behavior_fingerprint
+from train.history_population import (HistoryPopulation, behavior_fingerprint,
+                                      decision_inputs_on_device, freeze_decision_inputs)
 from train.history_response import RESPONSE_SCHEMA, opponent_response_labels
 from train.history_aux import (belief_loss, next_token_loss, outcome_loss,
                                round_outcomes)
@@ -238,6 +239,7 @@ class HistoryTrainer:
                                                 config.population_archive_filter,
                                                 config.population_archive_min_tv)
             self._behavior_probe_rows: np.ndarray | None = None
+            self._behavior_probe_inputs = None
         self.habit_init = None
         if payload is None and config.habit_init:
             self.habit_init = load_habit_optimizers(self, init_payload)
@@ -459,14 +461,13 @@ class HistoryTrainer:
                 or not self.population.archive_every
                 or update % self.population.archive_every != 0):
             return self.population.snapshot(update)
-        rows = self._behavior_probe_row_ids()
-        inputs, _ = self.buffer.decision_inputs(rows, self.store, self.device)
+        inputs = self._behavior_probe_inputs_on_device()
         vector = behavior_fingerprint(self.population.resolve(0), inputs)
         return self.population.snapshot(update, behavior=vector,
                                         behavior_decisions=int(inputs.decisions))
 
     def _behavior_probe_row_ids(self) -> np.ndarray:
-        """Fixed learner-row probe for archive behavior fingerprints."""
+        """Learner-row indices used once to freeze the archive behavior probe."""
         need = int(self.config.population_behavior_probe_rows)
         if self._behavior_probe_rows is not None and len(self._behavior_probe_rows) >= need:
             return self._behavior_probe_rows[:need]
@@ -479,6 +480,15 @@ class HistoryTrainer:
             pick = np.resize(available, need)
         self._behavior_probe_rows = pick
         return pick
+
+    def _behavior_probe_inputs_on_device(self):
+        """Frozen DecisionInputs for archive fingerprints (stable cand layout)."""
+        if self._behavior_probe_inputs is None:
+            rows = self._behavior_probe_row_ids()
+            inputs, _ = self.buffer.decision_inputs(rows, self.store, self.device)
+            self._behavior_probe_inputs = freeze_decision_inputs(inputs)
+            return inputs
+        return decision_inputs_on_device(self._behavior_probe_inputs, self.device)
 
     # -- manifest ---------------------------------------------------------------
 

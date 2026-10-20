@@ -6,7 +6,8 @@ import pytest
 import torch
 
 from train.history_model import fresh_player, HistoryPolicyConfig
-from train.history_population import HistoryPopulation, weights_digest
+from train.history_population import (HistoryPopulation, behavior_fingerprint,
+                                      freeze_decision_inputs, weights_digest)
 from train.history_ppo import HistoryPPOConfig, HistoryTrainer
 from train.history_rollout import HistoryCollector, MatchEventStore, SequenceRolloutBuffer
 from test_history_rollout import make_env
@@ -211,3 +212,27 @@ def test_strength_behavior_filter_replaces_near_duplicates_with_newer():
     again.load_state_dict(state)
     assert again.archive == pool.archive
     assert np.allclose(again.behaviors[c], pool.behaviors[c])
+
+
+def test_frozen_behavior_probe_keeps_fingerprint_layout_after_buffer_refill():
+    """Archive admits must reuse frozen probe inputs, not recycled buffer rows."""
+    actor, _ = fresh_player(HistoryPolicyConfig(width=32, layers=1), 11)
+    store, buffer = MatchEventStore(), SequenceRolloutBuffer()
+    collector = HistoryCollector(make_env(4), actor, store, buffer,
+                                 torch.Generator().manual_seed(11))
+    collector.collect(80)
+    rows = np.arange(min(8, len(buffer)), dtype=np.int64)
+    inputs, _ = buffer.decision_inputs(rows, store, "cpu")
+    frozen = freeze_decision_inputs(inputs)
+    first = behavior_fingerprint(actor, inputs)
+    buffer.next_iteration()
+    store.prune(set())
+    collector.collect(80)
+    # Recycled row indices would change cand layout; frozen probe must not.
+    again = behavior_fingerprint(actor, frozen)
+    assert first.shape == again.shape
+    pool = HistoryPopulation(actor, "t", 11, archive_every=2, archive_size=4,
+                             archive_filter="strength_behavior", archive_min_tv=0.0)
+    pool.snapshot(2, behavior=first, behavior_decisions=int(frozen.decisions))
+    pool.snapshot(4, behavior=again, behavior_decisions=int(frozen.decisions))
+    assert len(pool.archive) == 2
