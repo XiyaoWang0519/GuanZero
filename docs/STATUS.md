@@ -319,3 +319,11 @@ unchanged, fresh lineages only). Measured only on random-init and synthetic
 actors: m7/u86800/latest were not on that VM, so whether their saturation is
 global remains unresolved. Next: run the audit where the checkpoints are; any
 `qk` A/B lineage needs separate authorization.
+
+October 20 aux-loss balance screen: [next vs PPO on four real minibatches](reports/aux-loss-balance-screen-2026-10-20.md)
+extends the October 17 single-fixture ~53× observation. Weighted next dominates
+public-encoder PPO gradients on all four Velocity fault-period fixtures
+(25×–119×, mean 58×) and conflicts with PPO on 3/4; belief stays small.
+Backward-only next_coef ablations (belief/outcome fixed) raise mean
+cos(total, PPO) from ~0.02 to ~0.56 when next is off. Recommends a dedicated
+`next_coef` train ablation; no GPU job, optimizer step or mainline change.
