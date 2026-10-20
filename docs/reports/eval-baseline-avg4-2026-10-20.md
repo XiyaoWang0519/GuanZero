@@ -1,17 +1,18 @@
 # Shared eval baseline: m7, u86800, avg4 (October 20, 2026)
 
-Status: checkpoint inventory and avg4 rebuild done on cloud + Velocity.
-DanLM 4k paired numbers for this campaign remain the October 18 Mac receipt
-([paired-eval-mac-2026-10-18.md](paired-eval-mac-2026-10-18.md)); this host
-cannot re-run DanLM (darwin-only extension modules). No training, no resume
-from avg4, no research-boundary change.
+Status: checkpoint inventory and avg4 rebuild done on cloud + Velocity;
+**Mac holdout DanLM 4k completed** (seed `20261020`). Selection DanLM 4k
+numbers remain the October 18 Mac receipt
+([paired-eval-mac-2026-10-18.md](paired-eval-mac-2026-10-18.md)); digests
+matched so selection was not re-run. No training, no resume from avg4, no
+research-boundary change.
 
 ## Purpose
 
 Freeze the shared yardstick for the October 2026 research campaign: locate
 main-lineage candidates, rebuild the four-checkpoint average **avg4**, record
-selection vs holdout deal identities, and point at the standing DanLM paired
-metrics. avg4 is an **evaluation** artifact only (`averaged_from` set;
+selection vs holdout deal identities, and report DanLM paired metrics on both
+deal sets. avg4 is an **evaluation** artifact only (`averaged_from` set;
 `train.history_ppo` refuses resume).
 
 ## Checkpoint inventory (Velocity, 2026-10-20)
@@ -52,32 +53,49 @@ PYTHONPATH=.:python .venv/bin/python -m train.checkpoint_average \
   .work/eval-baseline-2026-10-20/inputs/u86800.pt
 ```
 
-| Field | This rebuild | Mac 2026-10-18 |
-|---|---|---|
-| model_digest | `0ca9f30ba4717995991314ba3575c1128a10a28c6a7f74a3da71c37bec52c8e9` | `0ca9f30ba4717995…` (prefix match) |
-| file SHA-256 | `21cc19d91fa299e17d0c1a3af2cf51f186c9cc3a22aef1ab44539880c53c702d` | `418a4b60b8817c4aaf64484a5b54773f277b925d308b98aded928d05d8387a1d` |
-| lineage / updates | `history_ppo-2026092801-d1d612ae` / 86,800 | same |
-| optimizer / resume | empty optimizer dict; `averaged_from` set; resume refused | eval-only |
+Mac holdout pass (2026-10-20, local checkpoints, `danlm-venv` torch):
+
+```sh
+PYTHONPATH=.:python .work/external/danlm-venv/bin/python -m train.checkpoint_average \
+  --output .work/eval-baseline-holdout-2026-10-20/avg4-u86800.pt \
+  .work/lineage/main/u82460-5404M.pt \
+  .work/lineage/main/u83948-5502M.pt \
+  .work/lineage/main/u85560-5607M.pt \
+  .work/velocity-milestones/u86800.pt
+```
+
+| Field | Cloud rebuild | Mac holdout rebuild | Mac 2026-10-18 |
+|---|---|---|---|
+| model_digest | `0ca9f30ba4717995991314ba3575c1128a10a28c6a7f74a3da71c37bec52c8e9` | same | `0ca9f30ba4717995…` |
+| file SHA-256 | `21cc19d91fa299e1…` | `45367c1c5e2591cc…` | `418a4b60b8817c4a…` |
+| lineage / updates | `history_ppo-2026092801-d1d612ae` / 86,800 | same | same |
+| optimizer / resume | empty optimizer; `averaged_from` set; resume refused | same | eval-only |
 
 File SHA differs because `averaged_from.inputs[].path` strings differ; actor and
 critic weights match via `model_digest`. Do **not** pass avg4 to
 `train.history_ppo --resume`.
 
-## DanLM 4k paired (selection set) — standing numbers
+Mac digest confirmation before holdout arena (file SHA for m7/u86800;
+`model_digest` for avg4):
+
+| Artifact | Check | Match |
+|---|---|---|
+| m7 | file `fa10bd1ac34c91e1…` | yes |
+| u86800 | file `639ccda15452ef10…` | yes |
+| avg4 | `model_digest` `0ca9f30ba4717995…` | yes |
+
+Selection was **not** re-run: digests match the October 18 Mac report.
+
+## DanLM 4k paired — selection set (seed `20260929`)
 
 Protocol from the Mac report: `eval.danlm.arena duplicate`, 4,000 deals,
 seed `20260929`, `tribute_fraction=0.5`, house rules, then `eval.paired` for
 A−B. Deal-set identity
 `deal_set_sha256 = 4f6952abdcb4a0fddc76803c26f9265626cff132e264b7326c6de2e1f31a80cc`
-(recomputed here from `eval.danlm.arena.generate_deals`).
+(recomputed on Mac 2026-10-20 from `eval.danlm.arena.generate_deals`).
 
-DanLM itself is
-[dashidhy/DanLM](https://github.com/dashidhy/DanLM) with
-`*.cpython-312-darwin.so` only. Velocity login Python cannot import torch
-(`Permission denied` on the conda interpreter from this SSH session); even
-with weights present, the arena needs a macOS DanLM build. No Mac JSON
-artifacts were on Velocity. Therefore the campaign **reuses** the Mac paired
-headlines rather than claiming a fresh re-run:
+Standing numbers from [paired-eval-mac-2026-10-18.md](paired-eval-mac-2026-10-18.md)
+(not refreshed this pass):
 
 | Model | Levels / round | 95% interval | Round win rate | Scored |
 |---|---:|---|---:|---:|
@@ -91,22 +109,51 @@ headlines rather than claiming a fresh re-run:
 | avg4 − u86800 | **+0.097** | [+0.053, +0.141] |
 | avg4 − m7 | **+0.119** | [+0.074, +0.165] |
 
-Because this rebuild’s `model_digest` matches the Mac avg4, those avg4 rows
-apply to the Velocity/cloud `avg4-u86800.pt` above. A Mac refresh of the three
-arena JSONs remains desirable for `per_deal` pairing artifacts on this
-machine; it is not required to trust weight identity.
+## DanLM 4k paired — holdout set (seed `20261020`)
+
+Mac worktree
+`GuanZero-worktrees/eval-baseline-avg4-holdout` on
+`cursor/eval-baseline-avg4-holdout-3f7a`, Python 3.12 `danlm-venv`, DanLM
+`Developer/Projects/GuanZero/.work/external/DanLM` checkpoint
+`ckpts/DanLM_v1/dansformer_v1_best_eval.pt`. Same arena settings as selection:
+4,000 duplicate deals, seed **`20261020`**, `tribute_fraction=0.5`, 12 workers,
+`OMP_NUM_THREADS=1`. `eval.paired` defaults (bootstrap seed 0, 5,000
+resamples). Deal-set identity
+`deal_set_sha256 = 059b4112c2faf6a66d0a0f138611472d24afd896cebd975132c935afbeb1871e`
+(0 overlap with selection; recomputed before the runs).
+
+| Model | Levels / round | 95% interval | Round win rate | Scored | Excluded | Wall |
+|---|---:|---|---:|---:|---:|---:|
+| m7 u73780 | −0.358 | [−0.395, −0.324] | 43.1% | 3,996 | 4 | 229 s |
+| u86800 | −0.347 | [−0.386, −0.312] | 43.5% | 3,996 | 4 | 223 s |
+| avg4 | **−0.251** | [−0.288, −0.214] | 44.9% | 3,994 | 6 | 211 s |
+
+| Pair | Difference | Bootstrap 95% | Paired SE | Unpaired SE | Correlation | Common | Exclusion bound |
+|---|---:|---|---:|---:|---:|---:|---|
+| u86800 − m7 | +0.011 | [−0.037, +0.057] | 0.024 | 0.027 | 0.207 | 3,992 | [−0.001, +0.023] |
+| avg4 − u86800 | **+0.096** | [+0.051, +0.140] | 0.023 | 0.027 | 0.291 | 3,991 | [+0.082, +0.109] |
+| avg4 − m7 | **+0.107** | [+0.061, +0.154] | 0.024 | 0.027 | 0.228 | 3,990 | [+0.092, +0.122] |
+
+Holdout round-win rate differences (paired): avg4 − u86800 **+0.014**
+[+0.004, +0.025]; avg4 − m7 +0.018 [+0.007, +0.029]; u86800 − m7 +0.003
+[−0.008, +0.014].
+
+Every failed leg is `their_choice_missing` (same exclusion class as the
+October 18 selection runs). Exclusions remain play-dependent.
+
+**Reading (keep selection and holdout separate):** on holdout, u86800 is still
+not separated from m7. avg4 remains ahead of both on levels/round; neither
+avg4 − u86800 nor avg4 − m7 interval (nor exclusion bound) includes 0. The
+holdout avg4 − u86800 gap (+0.096) matches the selection gap (+0.097) closely.
+Absolute levels/round are a few hundredths worse on holdout than on selection
+for all three models; that is deal-set variance, not a digest mismatch.
 
 ## Selection vs holdout deals
 
 | Set | Seed | Deals | `deal_set_sha256` | Role |
 |---|---:|---:|---|---|
-| **Selection** | `20260929` | 4,000 | `4f6952abdcb4a0fddc76803c26f9265626cff132e264b7326c6de2e1f31a80cc` | Candidate ranking (m7 / u86800 / avg4 Mac paired; also Velocity V1T milestone ladder) |
-| **Holdout** | `20261020` | 4,000 | `059b4112c2faf6a66d0a0f138611472d24afd896cebd975132c935afbeb1871e` | Reserved confirmation; **0** overlapping deals with selection |
-
-Holdout DanLM 4k has **not** been run (same Darwin/DanLM blocker). Do not
-promote campaign arms on selection-only gaps. When a Mac (or Linux DanLM
-build) is available, run the same arena+paired protocol on seed `20261020`
-for m7, u86800, avg4 (and any newer candidate under test).
+| **Selection** | `20260929` | 4,000 | `4f6952abdcb4a0fddc76803c26f9265626cff132e264b7326c6de2e1f31a80cc` | Candidate ranking (m7 / u86800 / avg4 Mac paired Oct 18; also Velocity V1T milestone ladder) |
+| **Holdout** | `20261020` | 4,000 | `059b4112c2faf6a66d0a0f138611472d24afd896cebd975132c935afbeb1871e` | Confirmation; **0** overlapping deals with selection; Mac DanLM 4k done 2026-10-20 |
 
 ## Newer main-lineage context (V1T only)
 
@@ -122,21 +169,25 @@ Velocity milestone ladder vs DanZero-V1T ONNX (`eval.v1t`, seed `20260929`,
 
 Main training on Velocity was held (`gz-main` JobHeldUser) at probe time;
 segment files continue past m10 to ~u99572. Treat m9/m10 as healthy saves for
-**future** DanLM/holdout work, not as replacements for the frozen avg4
-selection triad until holdout DanLM exists.
+**future** DanLM work, not as automatic replacements for the frozen avg4
+selection triad without their own DanLM (and preferably holdout) scores.
 
 ## What this does / does not authorize
 
-- **Does:** shared pointers for m7, u86800, avg4; identical avg4 weights to the
-  Mac eval; explicit selection/holdout deal IDs; reminder that avg4 is
-  eval-only.
-- **Does not:** fresh DanLM re-run; holdout scores; claim that m9/m10 beat
-  avg4 on DanLM; authorize resume or boundary changes; rent new GPU jobs.
+- **Does:** shared pointers for m7, u86800, avg4; identical avg4 weights across
+  Mac/cloud; selection and holdout DanLM paired receipts; reminder that avg4
+  is eval-only.
+- **Does not:** claim that m9/m10 beat avg4 on DanLM; authorize resume or
+  boundary changes; rent new GPU jobs; merge selection and holdout into one
+  score.
 
 ## Artifacts
 
 - Cloud (gitignored): `.work/eval-baseline-2026-10-20/`
 - Velocity: `~/guanzero/eval-baseline-2026-10-20/avg4-u86800.pt`,
   `avg4-record.json`
+- Mac holdout (gitignored): `.work/eval-baseline-holdout-2026-10-20/` —
+  `avg4-u86800.pt`, `{m7,u86800,avg4}-vs-danlm-holdout.json`,
+  `{u86800-minus-m7,avg4-minus-u86800,avg4-minus-m7}-holdout.json`
 - Prior evidence: [paired-eval-mac-2026-10-18.md](paired-eval-mac-2026-10-18.md),
   [paired-eval-checkpoint-average-2026-10-18.md](paired-eval-checkpoint-average-2026-10-18.md)

@@ -4,14 +4,15 @@ Documentation review: October 6, 2026. This is an index of recorded status,
 not a live-job dashboard or authorization to run experiments. Verify current
 code, checkpoint identity and external state for the task at hand.
 
-October 20 shared eval baseline: [m7 / u86800 / avg4 inventory and rebuild](reports/eval-baseline-avg4-2026-10-20.md)
+October 20 shared eval baseline: [m7 / u86800 / avg4 inventory, rebuild, and Mac holdout](reports/eval-baseline-avg4-2026-10-20.md)
 locates the selection triad on Velocity (SHA-matched to the October 18 Mac
 report), rebuilds avg4 with identical `model_digest` (`0ca9f30ba4717995…`),
 and freezes selection deals (seed `20260929`) versus holdout deals (seed
-`20261020`, disjoint). Standing DanLM 4k paired numbers remain the Mac
-receipt; Linux/Velocity cannot import DanLM’s darwin modules, so no fresh
-DanLM re-run here. avg4 is eval-only (not a resume checkpoint). m9/m10 exist
-with V1T ladder scores only until holdout DanLM runs.
+`20261020`, disjoint, 0 overlap). Selection DanLM 4k stands on the October 18
+Mac receipt; Mac holdout DanLM 4k (2026-10-20) scores m7 −0.358, u86800
+−0.347, avg4 −0.251 levels/round, with avg4−u86800 **+0.096** [+0.051, +0.140].
+avg4 is eval-only (not a resume checkpoint). m9/m10 still have V1T ladder
+scores only until their own DanLM runs.
 
 October 17 synthesis: [complete history-utilization investigation report](reports/history-utilization-investigation-summary-2026-10-17.md)
 connects the QK-norm audit, bounded short PPO, full-match and public-only prediction
