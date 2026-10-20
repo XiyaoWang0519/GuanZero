@@ -14,6 +14,7 @@ Historical records stay at their existing paths to preserve references.
 
 ## Current summaries, deployment and research proposals
 
+- [Shared eval baseline: m7, u86800, avg4 (October 20, 2026)](eval-baseline-avg4-2026-10-20.md) — Velocity inventory, avg4 rebuild with matching model_digest; DanLM 4k stands on Mac selection seed 20260929; holdout seed 20261020 reserved (not yet scored)
 - [Opt-in FP32 paged rollout-attention prototype (October 18, 2026)](paged-attention-prototype-2026-10-18.md) — implementation and local CPU checks; CUDA compilation, integration and speed unverified
 - [主线长跑指标复核（2026-10-06）](training-review-2026-10-06.md)
 - [主线 Transformer 打法演变（2026-10-06）](style-evolution-2026-10-06.md)
