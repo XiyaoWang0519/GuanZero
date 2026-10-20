@@ -46,6 +46,7 @@ Historical records stay at their existing paths to preserve references.
 - [扩大配牌样本后的 Q 稳定性与决策价值（2026-10-17）](history-decision-stability-2026-10-17.md)：40,960 局本地 CPU 完成；两组各 64 副的身份首选一致率 46.88%、排序一致率 66.09%，未稳定；合并 128 副封存动作后独立评价 128 副，身份 +0.03467、公开历史 +0.01099，固定信息集区间均跨零，不启动 PPO。
 - [公开历史的局部决策价值 CPU 筛查（2026-10-17）](history-decision-value-2026-10-17.md)：8 个新手牌信息集、2,880 个评分局分支完成；真实身份 Q 选择的独立回报增益 −0.00521，探索性区间跨零；近均匀公开 posterior 未改变先验动作，未建立 PPO 适应验收题，不启动训练。
 - [GuanZero 跨局历史利用调查：完整技术报告（2026-10-17）](history-utilization-investigation-summary-2026-10-17.md)：汇总本次 QK-norm、短 PPO、两池完整比赛、公开预测、等长内容替换、融合和训练故障取证；区分信息、策略反应和胜率证据，含恢复点纠正与未完成问题，供外部技术审阅。
+- [Aux-loss balance screen: next vs PPO on real minibatches (2026-10-20)](aux-loss-balance-screen-2026-10-20.md): four Velocity PPO fixtures; weighted next dominates public-encoder PPO grads 25×–119× (mean 58×), conflicts on 3/4 batches; cheap next_coef ablations restore PPO alignment; train knob proposed, not run.
 - [历史训练经历、收益信号与故障期 checkpoint 审计（2026-10-17）](history-training-audit-2026-10-17.md)
 - [两端点不同融合方式的离线对照（2026-10-17）](qknorm-fusion-variants-2026-10-17.md)
 - [手牌融合与归一化分离验证（2026-10-16）](qknorm-fusion-isolation-2026-10-16.md)
