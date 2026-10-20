@@ -126,9 +126,9 @@ class HistoryTrainer:
                  "ratio_deviation", "actor_grad_norm", "encoder_grad_norm", "critic_grad_norm",
                  "response_loss", "response_accuracy", "response_event_fraction",
                  "behaviour_weight_mean", "behaviour_weight_cap_fraction",
-                 "aux_loss", "aux_coefficient", "next_loss", "next_type_accuracy",
-                 "next_seat_accuracy", "next_cards_exact", "belief_loss", "belief_baseline",
-                 "outcome_loss", "outcome_baseline")
+                 "aux_loss", "aux_coefficient", "next_coefficient", "next_loss",
+                 "next_type_accuracy", "next_seat_accuracy", "next_cards_exact",
+                 "belief_loss", "belief_baseline", "outcome_loss", "outcome_baseline")
     # (mean, std) of the whole data-parallel minibatch's advantages, else None
     advantage_moments: tuple[float, float] | None = None
     # Profile mode (``profile_learn``): synchronized wall time per learn phase.
@@ -457,9 +457,14 @@ class HistoryTrainer:
                 "heads": list(self.actor.aux_head_names), "coefficient": self.config.aux_coef,
                 "warmup_updates": self.config.aux_warmup_updates,
                 "start_update": self.progress.get("aux_start_update"),
+                "next_coef": self.config.next_coef,
+                "next_coef_final": self.config.next_coef_final,
+                "next_anneal_updates": self.config.next_anneal_updates,
                 "targets": "next public token at every stream position; hidden-hand counts "
                            "(critic storage); the acting team's round return",
                 "policy_input": "none: heads read the encoder/decision state only",
+                "weighting": "belief/outcome use aux_coef (warmed); next uses next_coef "
+                             "(default aux_coef) with optional linear anneal",
             },
             "candidates": "full canonical set in engine order; every candidate selectable",
             "seats": "match-pinned current/own-lineage snapshot seats; learner rows only",
@@ -640,7 +645,7 @@ class HistoryTrainer:
         if response_stats:
             policy_total = policy_total + cfg.response_coef * response_stats["response_loss"]
         if aux_stats:
-            policy_total = policy_total + aux_stats["aux_coefficient"] * aux_stats["aux_loss"]
+            policy_total = policy_total + aux_stats["aux_weighted"]
         value_loss = F.mse_loss(self.critic(inputs.obs, row["hidden"]), returns)
         with torch.no_grad():
             approx_kl = ((ratio - 1) - log_ratio).mean()
@@ -655,21 +660,41 @@ class HistoryTrainer:
                 "behaviour_weight_cap_fraction": weight_capped, **response_stats, **aux_stats}
 
     def aux_coefficient(self) -> float:
-        """This update's auxiliary-loss weight: ``aux_coef`` ramped linearly over
-        ``aux_warmup_updates`` updates from the heads' insertion."""
+        """Belief/outcome weight: ``aux_coef`` ramped over ``aux_warmup_updates``
+        from the heads' insertion. Also the default next weight when
+        ``next_coef`` is unset."""
         cfg = self.config
         if not cfg.aux_warmup_updates:
             return cfg.aux_coef
         since = int(self.progress["updates"]) - int(self.progress.get("aux_start_update", 0)) + 1
         return cfg.aux_coef * min(1.0, since / cfg.aux_warmup_updates)
 
+    def next_coefficient(self) -> float:
+        """Next-token weight: ``next_coef`` (default ``aux_coef``), optionally
+        annealed to ``next_coef_final`` over ``next_anneal_updates``."""
+        cfg = self.config
+        start = self.aux_coefficient() if cfg.next_coef is None else float(cfg.next_coef)
+        if cfg.next_anneal_updates <= 0:
+            return start
+        if "next_anneal_start_update" not in self.progress:
+            self.progress["next_anneal_start_update"] = int(self.progress["updates"])
+        since = int(self.progress["updates"]) - int(self.progress["next_anneal_start_update"])
+        t = min(1.0, max(0.0, since / cfg.next_anneal_updates))
+        return start + t * (float(cfg.next_coef_final) - start)
+
     def auxiliary_losses(self, state: torch.Tensor, inputs, row: dict[str, torch.Tensor],
                          encoded_streams: list) -> dict[str, torch.Tensor]:
-        """The configured heads' losses and diagnostics (train/history_aux.py);
-        ``aux_loss`` is their sum and ``aux_coefficient`` this update's weight."""
+        """The configured heads' losses and diagnostics (train/history_aux.py).
+
+        ``aux_loss`` is the unweighted sum for logging. ``aux_weighted`` applies
+        ``next_coefficient`` to next and ``aux_coefficient`` to belief/outcome.
+        """
         heads = self.actor.aux_head_names
         stats: dict[str, torch.Tensor] = {}
         total = state.new_zeros(())
+        weighted = state.new_zeros(())
+        next_coef = self.next_coefficient()
+        aux_coef = self.aux_coefficient()
         if "next" in heads:
             if not encoded_streams:
                 raise RuntimeError("the next-token head needs the encoded streams")
@@ -703,14 +728,19 @@ class HistoryTrainer:
                            tuple(torch.cat([part[i] for part in parts]) for i in range(3)))
             stats.update(next_token_loss(*next_inputs))
             total = total + stats["next_loss"]
+            weighted = weighted + next_coef * stats["next_loss"]
         if "belief" in heads:
             stats.update(belief_loss(self.actor.belief_logits(state), row["hidden"]))
             total = total + stats["belief_loss"]
+            weighted = weighted + aux_coef * stats["belief_loss"]
         if "outcome" in heads:
             stats.update(outcome_loss(self.actor.outcome_value(state), row["outcome_target"]))
             total = total + stats["outcome_loss"]
+            weighted = weighted + aux_coef * stats["outcome_loss"]
         stats["aux_loss"] = total
-        stats["aux_coefficient"] = state.new_tensor(self.aux_coefficient())
+        stats["aux_weighted"] = weighted
+        stats["aux_coefficient"] = state.new_tensor(aux_coef)
+        stats["next_coefficient"] = state.new_tensor(next_coef)
         return stats
 
     def learn_summary(self) -> tuple[dict[str, Any], int]:

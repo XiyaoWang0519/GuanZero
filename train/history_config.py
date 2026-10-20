@@ -56,14 +56,18 @@ class HistoryPPOConfig:
     response_mode: str = "none"
     response_coef: float = 0.1
     # Auxiliary heads on the shared encoder (train/history_aux.py): a subset of
-    # "next", "belief", "outcome". Their summed loss enters the actor loss with
-    # weight aux_coef, ramped linearly over aux_warmup_updates updates from the
-    # update the heads were inserted (0: full weight at once). A resume may add
-    # heads to a trained lineage (``--resume-set aux_heads=...``): the policy is
-    # unchanged at insertion, only the new heads' weights are fresh.
+    # "next", "belief", "outcome". Belief and outcome enter the actor loss with
+    # weight aux_coef (ramped over aux_warmup_updates from head insertion; 0:
+    # full weight at once). Next uses next_coef when set, else aux_coef (current
+    # shared-weight behavior). next_anneal_updates > 0 linearly moves next from
+    # that start value to next_coef_final. A resume may add heads
+    # (``--resume-set aux_heads=...``); the policy is unchanged at insertion.
     aux_heads: str = ""
     aux_coef: float = 0.1
     aux_warmup_updates: int = 0
+    next_coef: float | None = None
+    next_coef_final: float = 0.0
+    next_anneal_updates: int = 0
     # Private cross-attention Q/K normalization (HistoryPolicyConfig.private_qk_norm):
     # a fresh-lineage A/B arm only; a resume cannot change it.
     private_qk_norm: str = "none"
@@ -239,6 +243,15 @@ class HistoryPPOConfig:
             raise ValueError("aux_coef must be finite and nonnegative; aux_warmup_updates >= 0")
         if self.aux_heads and self.aux_coef == 0:
             raise ValueError("auxiliary heads require a positive aux_coef")
+        if self.next_coef is not None and (
+                not math.isfinite(self.next_coef) or self.next_coef < 0):
+            raise ValueError("next_coef must be finite and nonnegative when set")
+        if (not math.isfinite(self.next_coef_final) or self.next_coef_final < 0
+                or self.next_anneal_updates < 0):
+            raise ValueError("next_coef_final must be finite and nonnegative; "
+                             "next_anneal_updates >= 0")
+        if self.next_anneal_updates and self.next_coef is None:
+            raise ValueError("next_anneal_updates requires an explicit next_coef start")
         if self.habit_pack:
             if self.habit_axis not in _STYLE_AXES or self.habit_view not in _HABIT_VIEWS:
                 raise ValueError("unknown habit axis or view")
@@ -311,6 +324,7 @@ RESUME_OVERRIDES = frozenset({"num_envs", "num_threads", "minibatch_matches", "t
                               "rollout_page_span", "rollout_prefill_learner_cache",
                               "profile_learn",
                               "aux_heads", "aux_coef", "aux_warmup_updates",
+                              "next_coef", "next_coef_final", "next_anneal_updates",
                               "rollout_private_graphs",
                               "lr_final", "lr_decay_start", "lr_decay_updates"})
 
@@ -333,7 +347,7 @@ def parse_resume_overrides(items: list[str] | None) -> dict[str, Any]:
             values[key] = raw.lower() in ("true", "1")
         elif str(types[key]) == "str":
             values[key] = raw
-        elif str(types[key]) == "float":
+        elif "float" in str(types[key]):
             values[key] = float(raw)
         else:
             values[key] = int(raw)
@@ -363,10 +377,18 @@ def build_parser() -> argparse.ArgumentParser:
                         help="auxiliary heads on the shared encoder, a comma-separated subset "
                              f"of {','.join(_AUX_HEADS)} (train/history_aux.py)")
     parser.add_argument("--aux-coef", type=float, default=0.1,
-                        help="weight of the summed auxiliary losses in the actor loss")
+                        help="weight of belief/outcome (and next when --next-coef is omitted) "
+                             "in the actor loss")
     parser.add_argument("--aux-warmup-updates", type=int, default=0,
                         help="ramp the auxiliary weight linearly over this many updates "
                              "from the heads' insertion (0: full weight at once)")
+    parser.add_argument("--next-coef", type=float, default=None,
+                        help="weight of the next-token aux loss; default: same as --aux-coef")
+    parser.add_argument("--next-coef-final", type=float, default=0.0,
+                        help="with --next-anneal-updates: end value of the next-coef anneal")
+    parser.add_argument("--next-anneal-updates", type=int, default=0,
+                        help="linearly anneal next-coef to --next-coef-final over this many "
+                             "updates from the first update that uses the schedule (0: off)")
     parser.add_argument("--private-qk-norm", choices=_PRIVATE_QK_NORMS, default="none",
                         help="private cross-attention normalization: LayerNorm the q_proj "
                              "input (query) or q and k per head (qk); fresh lineages only")
