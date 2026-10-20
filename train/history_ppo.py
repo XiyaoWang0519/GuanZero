@@ -256,8 +256,25 @@ class HistoryTrainer:
             if rng.get("sampler_device", "cpu") != self.rollout_device.type:
                 raise ValueError("resume requires the same sampler device type")
             if "population" in payload:
-                self.population.load_state_dict(payload["population"])
-                self.population.prune({})  # resumed environments discard old assignments
+                saved_pop = payload["population"]
+                saved_schedule = dict(recent=saved_pop["recent"],
+                                      probability=saved_pop["probability"],
+                                      archive_every=saved_pop.get("archive_every", 0),
+                                      archive_size=saved_pop.get("archive_size", 16),
+                                      archive_share=saved_pop.get("archive_share", 0.5),
+                                      archive_filter=saved_pop.get("archive_filter", "thin"),
+                                      archive_min_tv=float(saved_pop.get("archive_min_tv", 0.05)))
+                if saved_schedule != self.population.config():
+                    # Fixed-checkpoint league / next arms may change the pool schedule;
+                    # drop the old pool and start sampling from the resumed actor.
+                    self.population_event(dict(
+                        event="population_rebuild",
+                        reason="resume population schedule change",
+                        previous=saved_schedule, new=self.population.config(),
+                        at_update=int(self.progress["updates"])))
+                else:
+                    self.population.load_state_dict(saved_pop)
+                    self.population.prune({})  # resumed environments discard old assignments
             elif config.snapshot_updates:
                 raise ValueError("population-enabled resume requires saved population state")
             restore_rng(rng, self.rng)

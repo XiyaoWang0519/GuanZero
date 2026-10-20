@@ -1,4 +1,6 @@
 """T4 population: pinned seats, learner-only rows, immutable snapshots and resume."""
+import json
+
 import numpy as np
 import pytest
 import torch
@@ -162,6 +164,26 @@ def test_trainer_passes_archive_settings(tmp_path):
     assert archived and all(u % 2 == 0 for u in archived)
     resumed = HistoryTrainer(HistoryPPOConfig(updates=5), tmp_path / "r", resume=tmp_path / "latest.pt")
     assert resumed.population.archive == trainer.population.archive
+
+
+def test_resume_rebuilds_population_when_archive_schedule_changes(tmp_path):
+    output = tmp_path / "plain"
+    trainer = HistoryTrainer(HistoryPPOConfig(width=32, layers=1, heads=4, num_envs=4,
+                                              steps_per_update=16, seed=3, updates=2, epochs=1,
+                                              minibatch_matches=2, snapshot_updates=1), output)
+    trainer.run()
+    assert trainer.population.archive_every == 0
+    ckpt = output / "latest.pt"
+    rebuilt = HistoryTrainer(HistoryPPOConfig(updates=3), tmp_path / "filtered", resume=ckpt,
+                             resume_overrides={"population_archive_every": 2,
+                                               "population_archive_size": 4,
+                                               "population_archive_filter": "strength_behavior",
+                                               "population_archive_min_tv": 0.05})
+    assert rebuilt.population.archive_every == 2
+    assert rebuilt.population.archive_filter == "strength_behavior"
+    assert rebuilt.population.models == {}
+    events = (tmp_path / "filtered" / "population.jsonl").read_text().splitlines()
+    assert any(json.loads(line).get("event") == "population_rebuild" for line in events)
 
 
 def test_strength_behavior_filter_replaces_near_duplicates_with_newer():

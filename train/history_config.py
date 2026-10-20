@@ -333,6 +333,13 @@ RESUME_OVERRIDES = frozenset({"num_envs", "num_threads", "minibatch_matches", "t
                               "profile_learn",
                               "aux_heads", "aux_coef", "aux_warmup_updates",
                               "next_coef", "next_coef_final", "next_anneal_updates",
+                              # Branch A mature-league: change the opponent pool schedule on a
+                              # fixed resume; the pool is rebuilt when these differ from the
+                              # checkpoint's saved population (see HistoryTrainer).
+                              "population_recent", "snapshot_probability",
+                              "population_archive_every", "population_archive_size",
+                              "population_archive_share", "population_archive_filter",
+                              "population_archive_min_tv", "population_behavior_probe_rows",
                               "rollout_private_graphs",
                               "lr_final", "lr_decay_start", "lr_decay_updates"})
 
