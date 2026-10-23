@@ -162,3 +162,30 @@ def test_trainer_passes_archive_settings(tmp_path):
     assert archived and all(u % 2 == 0 for u in archived)
     resumed = HistoryTrainer(HistoryPPOConfig(updates=5), tmp_path / "r", resume=tmp_path / "latest.pt")
     assert resumed.population.archive == trainer.population.archive
+
+
+def test_strength_behavior_filter_replaces_near_duplicates_with_newer():
+    actor, _ = fresh_player(HistoryPolicyConfig(width=32, layers=1), 9)
+    pool = HistoryPopulation(actor, "t", 5, recent=2, snapshot_probability=1.0,
+                             archive_every=2, archive_size=2,
+                             archive_filter="strength_behavior", archive_min_tv=0.2)
+    a = pool.snapshot(2, behavior=np.array([1.0, 0.0], np.float32), behavior_decisions=1)
+    b = pool.snapshot(4, behavior=np.array([0.0, 1.0], np.float32), behavior_decisions=1)
+    assert pool.archive == [a, b]
+    # Near-duplicate of a: ascending update replaces a in place.
+    newer = pool.snapshot(6, behavior=np.array([0.95, 0.05], np.float32), behavior_decisions=1)
+    assert pool.archive == [newer, b] and pool.archive_replacements == 1
+    # Distinct while full: drop the oldest archive member (b@4), keep newer@6.
+    c = pool.snapshot(8, behavior=np.array([0.5, 0.5], np.float32), behavior_decisions=1)
+    assert set(pool.archive) == {newer, c} and b not in pool.archive
+    # Reject path: candidate update <= nearest (synthetic older metadata on c).
+    pool.metadata[c]["update"] = 100
+    rejected = pool.snapshot(10, behavior=np.array([0.51, 0.49], np.float32), behavior_decisions=1)
+    assert rejected not in pool.archive and pool.archive_rejects == 1
+    state = pool.state_dict()
+    again = HistoryPopulation(actor, "t", 5, recent=2, snapshot_probability=1.0,
+                              archive_every=2, archive_size=2,
+                              archive_filter="strength_behavior", archive_min_tv=0.2)
+    again.load_state_dict(state)
+    assert again.archive == pool.archive
+    assert np.allclose(again.behaviors[c], pool.behaviors[c])
