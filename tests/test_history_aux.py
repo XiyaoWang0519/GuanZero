@@ -221,6 +221,32 @@ def test_warmup_coefficient(tmp_path):
     assert ramp == pytest.approx([0.05, 0.1, 0.15, 0.2, 0.2])
 
 
+def test_next_coef_defaults_to_aux_and_anneals(tmp_path):
+    shared = HistoryTrainer(small_config(aux_heads="next,belief", aux_coef=0.1), tmp_path / "shared")
+    assert shared.next_coefficient() == pytest.approx(0.1)
+    assert shared.next_coefficient() == pytest.approx(shared.aux_coefficient())
+    fixed = HistoryTrainer(small_config(aux_heads="next,belief", aux_coef=0.1, next_coef=0.03),
+                           tmp_path / "fixed")
+    assert fixed.next_coefficient() == pytest.approx(0.03)
+    assert fixed.aux_coefficient() == pytest.approx(0.1)
+    anneal = HistoryTrainer(small_config(aux_heads="next,belief", aux_coef=0.1, next_coef=0.1,
+                                         next_coef_final=0.0, next_anneal_updates=4),
+                            tmp_path / "anneal")
+    path = []
+    for _ in range(5):
+        path.append(anneal.next_coefficient())
+        anneal.progress["updates"] += 1
+    assert path == pytest.approx([0.1, 0.075, 0.05, 0.025, 0.0])
+    overrides = parse_resume_overrides(["next_coef=0.03", "next_coef_final=0",
+                                        "next_anneal_updates=1000"])
+    assert overrides == {"next_coef": 0.03, "next_coef_final": 0.0, "next_anneal_updates": 1000}
+    with pytest.raises(ValueError, match="next_anneal_updates requires"):
+        HistoryPPOConfig(aux_heads="next", next_anneal_updates=10)
+    off = HistoryTrainer(small_config(aux_heads="next,belief,outcome", aux_coef=0.1, next_coef=0.0),
+                         tmp_path / "off")
+    assert off.next_coefficient() == 0.0 and off.aux_coefficient() == pytest.approx(0.1)
+
+
 def test_resume_adds_heads_without_changing_the_policy(tmp_path):
     output = tmp_path / "plain"
     trainer = HistoryTrainer(small_config(updates=2, snapshot_updates=1), output)
