@@ -1,10 +1,13 @@
 """T4 population: pinned seats, learner-only rows, immutable snapshots and resume."""
+import json
+
 import numpy as np
 import pytest
 import torch
 
 from train.history_model import fresh_player, HistoryPolicyConfig
-from train.history_population import HistoryPopulation, weights_digest
+from train.history_population import (HistoryPopulation, behavior_fingerprint,
+                                      freeze_decision_inputs, weights_digest)
 from train.history_ppo import HistoryPPOConfig, HistoryTrainer
 from train.history_rollout import HistoryCollector, MatchEventStore, SequenceRolloutBuffer
 from test_history_rollout import make_env
@@ -162,3 +165,74 @@ def test_trainer_passes_archive_settings(tmp_path):
     assert archived and all(u % 2 == 0 for u in archived)
     resumed = HistoryTrainer(HistoryPPOConfig(updates=5), tmp_path / "r", resume=tmp_path / "latest.pt")
     assert resumed.population.archive == trainer.population.archive
+
+
+def test_resume_rebuilds_population_when_archive_schedule_changes(tmp_path):
+    output = tmp_path / "plain"
+    trainer = HistoryTrainer(HistoryPPOConfig(width=32, layers=1, heads=4, num_envs=4,
+                                              steps_per_update=16, seed=3, updates=2, epochs=1,
+                                              minibatch_matches=2, snapshot_updates=1), output)
+    trainer.run()
+    assert trainer.population.archive_every == 0
+    ckpt = output / "latest.pt"
+    rebuilt = HistoryTrainer(HistoryPPOConfig(updates=3), tmp_path / "filtered", resume=ckpt,
+                             resume_overrides={"population_archive_every": 2,
+                                               "population_archive_size": 4,
+                                               "population_archive_filter": "strength_behavior",
+                                               "population_archive_min_tv": 0.05})
+    assert rebuilt.population.archive_every == 2
+    assert rebuilt.population.archive_filter == "strength_behavior"
+    assert rebuilt.population.models == {}
+    events = (tmp_path / "filtered" / "population.jsonl").read_text().splitlines()
+    assert any(json.loads(line).get("event") == "population_rebuild" for line in events)
+
+
+def test_strength_behavior_filter_replaces_near_duplicates_with_newer():
+    actor, _ = fresh_player(HistoryPolicyConfig(width=32, layers=1), 9)
+    pool = HistoryPopulation(actor, "t", 5, recent=2, snapshot_probability=1.0,
+                             archive_every=2, archive_size=2,
+                             archive_filter="strength_behavior", archive_min_tv=0.2)
+    a = pool.snapshot(2, behavior=np.array([1.0, 0.0], np.float32), behavior_decisions=1)
+    b = pool.snapshot(4, behavior=np.array([0.0, 1.0], np.float32), behavior_decisions=1)
+    assert pool.archive == [a, b]
+    # Near-duplicate of a: ascending update replaces a in place.
+    newer = pool.snapshot(6, behavior=np.array([0.95, 0.05], np.float32), behavior_decisions=1)
+    assert pool.archive == [newer, b] and pool.archive_replacements == 1
+    # Distinct while full: drop the oldest archive member (b@4), keep newer@6.
+    c = pool.snapshot(8, behavior=np.array([0.5, 0.5], np.float32), behavior_decisions=1)
+    assert set(pool.archive) == {newer, c} and b not in pool.archive
+    # Reject path: candidate update <= nearest (synthetic older metadata on c).
+    pool.metadata[c]["update"] = 100
+    rejected = pool.snapshot(10, behavior=np.array([0.51, 0.49], np.float32), behavior_decisions=1)
+    assert rejected not in pool.archive and pool.archive_rejects == 1
+    state = pool.state_dict()
+    again = HistoryPopulation(actor, "t", 5, recent=2, snapshot_probability=1.0,
+                              archive_every=2, archive_size=2,
+                              archive_filter="strength_behavior", archive_min_tv=0.2)
+    again.load_state_dict(state)
+    assert again.archive == pool.archive
+    assert np.allclose(again.behaviors[c], pool.behaviors[c])
+
+
+def test_frozen_behavior_probe_keeps_fingerprint_layout_after_buffer_refill():
+    """Archive admits must reuse frozen probe inputs, not recycled buffer rows."""
+    actor, _ = fresh_player(HistoryPolicyConfig(width=32, layers=1), 11)
+    store, buffer = MatchEventStore(), SequenceRolloutBuffer()
+    collector = HistoryCollector(make_env(4), actor, store, buffer,
+                                 torch.Generator().manual_seed(11))
+    collector.collect(80)
+    rows = np.arange(min(8, len(buffer)), dtype=np.int64)
+    inputs, _ = buffer.decision_inputs(rows, store, "cpu")
+    frozen = freeze_decision_inputs(inputs)
+    first = behavior_fingerprint(actor, inputs)
+    buffer.next_iteration()
+    store.prune(set())
+    collector.collect(80)
+    # Recycled row indices would change cand layout; frozen probe must not.
+    again = behavior_fingerprint(actor, frozen)
+    assert first.shape == again.shape
+    pool = HistoryPopulation(actor, "t", 11, archive_every=2, archive_size=4,
+                             archive_filter="strength_behavior", archive_min_tv=0.0)
+    pool.snapshot(2, behavior=first, behavior_decisions=int(frozen.decisions))
+    pool.snapshot(4, behavior=again, behavior_decisions=int(frozen.decisions))
+    assert len(pool.archive) == 2

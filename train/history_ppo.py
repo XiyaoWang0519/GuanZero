@@ -58,7 +58,8 @@ from train.history_model import (extend_actor, STAGE, TOKEN_SCHEMA_VERSION,
                                  fresh_player, load_history_checkpoint, save_history_checkpoint)
 from train.history_rollout import (CollectStats, HistoryCollector, MatchEventStore,
                                    SequenceRolloutBuffer, _PhaseTimer)
-from train.history_population import HistoryPopulation
+from train.history_population import (HistoryPopulation, behavior_fingerprint,
+                                      decision_inputs_on_device, freeze_decision_inputs)
 from train.history_response import RESPONSE_SCHEMA, opponent_response_labels
 from train.history_aux import (belief_loss, next_token_loss, outcome_loss,
                                round_outcomes)
@@ -126,9 +127,9 @@ class HistoryTrainer:
                  "ratio_deviation", "actor_grad_norm", "encoder_grad_norm", "critic_grad_norm",
                  "response_loss", "response_accuracy", "response_event_fraction",
                  "behaviour_weight_mean", "behaviour_weight_cap_fraction",
-                 "aux_loss", "aux_coefficient", "next_loss", "next_type_accuracy",
-                 "next_seat_accuracy", "next_cards_exact", "belief_loss", "belief_baseline",
-                 "outcome_loss", "outcome_baseline")
+                 "aux_loss", "aux_coefficient", "next_coefficient", "next_loss",
+                 "next_type_accuracy", "next_seat_accuracy", "next_cards_exact",
+                 "belief_loss", "belief_baseline", "outcome_loss", "outcome_baseline")
     # (mean, std) of the whole data-parallel minibatch's advantages, else None
     advantage_moments: tuple[float, float] | None = None
     # Profile mode (``profile_learn``): synchronized wall time per learn phase.
@@ -234,7 +235,11 @@ class HistoryTrainer:
                                                 config.snapshot_probability,
                                                 config.population_archive_every,
                                                 config.population_archive_size,
-                                                config.population_archive_share)
+                                                config.population_archive_share,
+                                                config.population_archive_filter,
+                                                config.population_archive_min_tv)
+            self._behavior_probe_rows: np.ndarray | None = None
+            self._behavior_probe_inputs = None
         self.habit_init = None
         if payload is None and config.habit_init:
             self.habit_init = load_habit_optimizers(self, init_payload)
@@ -253,8 +258,25 @@ class HistoryTrainer:
             if rng.get("sampler_device", "cpu") != self.rollout_device.type:
                 raise ValueError("resume requires the same sampler device type")
             if "population" in payload:
-                self.population.load_state_dict(payload["population"])
-                self.population.prune({})  # resumed environments discard old assignments
+                saved_pop = payload["population"]
+                saved_schedule = dict(recent=saved_pop["recent"],
+                                      probability=saved_pop["probability"],
+                                      archive_every=saved_pop.get("archive_every", 0),
+                                      archive_size=saved_pop.get("archive_size", 16),
+                                      archive_share=saved_pop.get("archive_share", 0.5),
+                                      archive_filter=saved_pop.get("archive_filter", "thin"),
+                                      archive_min_tv=float(saved_pop.get("archive_min_tv", 0.05)))
+                if saved_schedule != self.population.config():
+                    # Fixed-checkpoint league / next arms may change the pool schedule;
+                    # drop the old pool and start sampling from the resumed actor.
+                    self.population_event(dict(
+                        event="population_rebuild",
+                        reason="resume population schedule change",
+                        previous=saved_schedule, new=self.population.config(),
+                        at_update=int(self.progress["updates"])))
+                else:
+                    self.population.load_state_dict(saved_pop)
+                    self.population.prune({})  # resumed environments discard old assignments
             elif config.snapshot_updates:
                 raise ValueError("population-enabled resume requires saved population state")
             restore_rng(rng, self.rng)
@@ -431,6 +453,43 @@ class HistoryTrainer:
                                      "rollout_session": getattr(self, "resume_count", 0),
                                      **event}) + "\n")
 
+    def _snapshot_population(self) -> int:
+        """Publish a snapshot; strength_behavior archives need a probe fingerprint."""
+        update = self.progress["updates"]
+        if (not isinstance(self.population, HistoryPopulation)
+                or self.population.archive_filter != "strength_behavior"
+                or not self.population.archive_every
+                or update % self.population.archive_every != 0):
+            return self.population.snapshot(update)
+        inputs = self._behavior_probe_inputs_on_device()
+        vector = behavior_fingerprint(self.population.resolve(0), inputs)
+        return self.population.snapshot(update, behavior=vector,
+                                        behavior_decisions=int(inputs.decisions))
+
+    def _behavior_probe_row_ids(self) -> np.ndarray:
+        """Learner-row indices used once to freeze the archive behavior probe."""
+        need = int(self.config.population_behavior_probe_rows)
+        if self._behavior_probe_rows is not None and len(self._behavior_probe_rows) >= need:
+            return self._behavior_probe_rows[:need]
+        if len(self.buffer) < 1:
+            raise RuntimeError("strength_behavior archive filter needs collected learner rows")
+        available = np.arange(len(self.buffer), dtype=np.int64)
+        if len(available) >= need:
+            pick = available[:need]
+        else:
+            pick = np.resize(available, need)
+        self._behavior_probe_rows = pick
+        return pick
+
+    def _behavior_probe_inputs_on_device(self):
+        """Frozen DecisionInputs for archive fingerprints (stable cand layout)."""
+        if self._behavior_probe_inputs is None:
+            rows = self._behavior_probe_row_ids()
+            inputs, _ = self.buffer.decision_inputs(rows, self.store, self.device)
+            self._behavior_probe_inputs = freeze_decision_inputs(inputs)
+            return inputs
+        return decision_inputs_on_device(self._behavior_probe_inputs, self.device)
+
     # -- manifest ---------------------------------------------------------------
 
     def write_manifest(self) -> None:
@@ -457,9 +516,14 @@ class HistoryTrainer:
                 "heads": list(self.actor.aux_head_names), "coefficient": self.config.aux_coef,
                 "warmup_updates": self.config.aux_warmup_updates,
                 "start_update": self.progress.get("aux_start_update"),
+                "next_coef": self.config.next_coef,
+                "next_coef_final": self.config.next_coef_final,
+                "next_anneal_updates": self.config.next_anneal_updates,
                 "targets": "next public token at every stream position; hidden-hand counts "
                            "(critic storage); the acting team's round return",
                 "policy_input": "none: heads read the encoder/decision state only",
+                "weighting": "belief/outcome use aux_coef (warmed); next uses next_coef "
+                             "(default aux_coef) with optional linear anneal",
             },
             "candidates": "full canonical set in engine order; every candidate selectable",
             "seats": "match-pinned current/own-lineage snapshot seats; learner rows only",
@@ -469,6 +533,9 @@ class HistoryTrainer:
                            "archive_every": self.config.population_archive_every,
                            "archive_size": self.config.population_archive_size,
                            "archive_share": self.config.population_archive_share,
+                           "archive_filter": self.config.population_archive_filter,
+                           "archive_min_tv": self.config.population_archive_min_tv,
+                           "behavior_probe_rows": self.config.population_behavior_probe_rows,
                            "guaranteed_learner_seats": 1},
             "inference": {**runtime_settings(self.rollout_device),
                           "causal_sdpa": self.rollout_actor.causal_sdpa,
@@ -640,7 +707,7 @@ class HistoryTrainer:
         if response_stats:
             policy_total = policy_total + cfg.response_coef * response_stats["response_loss"]
         if aux_stats:
-            policy_total = policy_total + aux_stats["aux_coefficient"] * aux_stats["aux_loss"]
+            policy_total = policy_total + aux_stats["aux_weighted"]
         value_loss = F.mse_loss(self.critic(inputs.obs, row["hidden"]), returns)
         with torch.no_grad():
             approx_kl = ((ratio - 1) - log_ratio).mean()
@@ -655,21 +722,41 @@ class HistoryTrainer:
                 "behaviour_weight_cap_fraction": weight_capped, **response_stats, **aux_stats}
 
     def aux_coefficient(self) -> float:
-        """This update's auxiliary-loss weight: ``aux_coef`` ramped linearly over
-        ``aux_warmup_updates`` updates from the heads' insertion."""
+        """Belief/outcome weight: ``aux_coef`` ramped over ``aux_warmup_updates``
+        from the heads' insertion. Also the default next weight when
+        ``next_coef`` is unset."""
         cfg = self.config
         if not cfg.aux_warmup_updates:
             return cfg.aux_coef
         since = int(self.progress["updates"]) - int(self.progress.get("aux_start_update", 0)) + 1
         return cfg.aux_coef * min(1.0, since / cfg.aux_warmup_updates)
 
+    def next_coefficient(self) -> float:
+        """Next-token weight: ``next_coef`` (default ``aux_coef``), optionally
+        annealed to ``next_coef_final`` over ``next_anneal_updates``."""
+        cfg = self.config
+        start = self.aux_coefficient() if cfg.next_coef is None else float(cfg.next_coef)
+        if cfg.next_anneal_updates <= 0:
+            return start
+        if "next_anneal_start_update" not in self.progress:
+            self.progress["next_anneal_start_update"] = int(self.progress["updates"])
+        since = int(self.progress["updates"]) - int(self.progress["next_anneal_start_update"])
+        t = min(1.0, max(0.0, since / cfg.next_anneal_updates))
+        return start + t * (float(cfg.next_coef_final) - start)
+
     def auxiliary_losses(self, state: torch.Tensor, inputs, row: dict[str, torch.Tensor],
                          encoded_streams: list) -> dict[str, torch.Tensor]:
-        """The configured heads' losses and diagnostics (train/history_aux.py);
-        ``aux_loss`` is their sum and ``aux_coefficient`` this update's weight."""
+        """The configured heads' losses and diagnostics (train/history_aux.py).
+
+        ``aux_loss`` is the unweighted sum for logging. ``aux_weighted`` applies
+        ``next_coefficient`` to next and ``aux_coefficient`` to belief/outcome.
+        """
         heads = self.actor.aux_head_names
         stats: dict[str, torch.Tensor] = {}
         total = state.new_zeros(())
+        weighted = state.new_zeros(())
+        next_coef = self.next_coefficient()
+        aux_coef = self.aux_coefficient()
         if "next" in heads:
             if not encoded_streams:
                 raise RuntimeError("the next-token head needs the encoded streams")
@@ -703,14 +790,19 @@ class HistoryTrainer:
                            tuple(torch.cat([part[i] for part in parts]) for i in range(3)))
             stats.update(next_token_loss(*next_inputs))
             total = total + stats["next_loss"]
+            weighted = weighted + next_coef * stats["next_loss"]
         if "belief" in heads:
             stats.update(belief_loss(self.actor.belief_logits(state), row["hidden"]))
             total = total + stats["belief_loss"]
+            weighted = weighted + aux_coef * stats["belief_loss"]
         if "outcome" in heads:
             stats.update(outcome_loss(self.actor.outcome_value(state), row["outcome_target"]))
             total = total + stats["outcome_loss"]
+            weighted = weighted + aux_coef * stats["outcome_loss"]
         stats["aux_loss"] = total
-        stats["aux_coefficient"] = state.new_tensor(self.aux_coefficient())
+        stats["aux_weighted"] = weighted
+        stats["aux_coefficient"] = state.new_tensor(aux_coef)
+        stats["next_coefficient"] = state.new_tensor(next_coef)
         return stats
 
     def learn_summary(self) -> tuple[dict[str, Any], int]:
@@ -900,7 +992,7 @@ class HistoryTrainer:
         self.population.decisions.update(self.collector.policy_decisions)
         if (stats["minibatches"] and self.config.snapshot_updates
                 and self.progress["updates"] % self.config.snapshot_updates == 0):
-            identity = self.population.snapshot(self.progress["updates"])
+            identity = self._snapshot_population()
             self.population_event(dict(event="snapshot", **self.population.metadata[identity]))
         self.population.prune(self.collector.assignments)
         self.progress["decisions"] += collected.decisions
