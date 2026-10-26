@@ -4,13 +4,18 @@
 # what starves other users on the node). Idempotent; flock serializes builders.
 #
 #   build_shm_env.sh env                  # Python + wheels -> $GZ_SHM_ENV
-#   build_shm_env.sh src ARCHIVE NAME     # source tarball -> $GZ_SHM_ROOT/src/NAME, builds gd._gd_core
+#   build_shm_env.sh src ARCHIVE|DIR NAME # source -> $GZ_SHM_ROOT/src/NAME-KEY, builds gd._gd_core
 #
+# KEY is derived from the source's identity (sha256 of the archive, or of a
+# directory's source-identity.json), so a changed source never reuses an older
+# stage; `src` prints the staged path on stdout and logs to stderr.
 # The env is complete only when $GZ_SHM_ENV/.staged_ok exists; a source tree only
 # when .gd_built exists. Both are written last, so a crash leaves no marker.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=gz_job_lib.sh
+source "$HERE/gz_job_lib.sh"
 GZ_SHM_ROOT="${GZ_SHM_ROOT:-/dev/shm/$USER}"
 GZ_SHM_ENV="${GZ_SHM_ENV:-$GZ_SHM_ROOT/gz-env-local}"
 GZ_PYTHON_VERSION="${GZ_PYTHON_VERSION:-3.12.14}"
@@ -23,6 +28,11 @@ for p in "$GZ_SHM_ROOT" "$GZ_SHM_ENV"; do
     "$GZ_FORBID_PREFIX"/*) echo "build_shm_env: refusing $p: under $GZ_FORBID_PREFIX (NFS)" >&2; exit 2 ;;
   esac
 done
+case "$(realpath -m "$GZ_SHM_ENV")/" in
+  "$(realpath -m "$GZ_SHM_ROOT")"/*) ;;
+  *) echo "build_shm_env: GZ_SHM_ENV=$GZ_SHM_ENV must live inside GZ_SHM_ROOT=$GZ_SHM_ROOT" >&2; exit 2 ;;
+esac
+gz_secure_dir "$GZ_SHM_ROOT"
 
 export UV_CACHE_DIR="$GZ_SHM_ROOT/cache/uv"
 export UV_PYTHON_INSTALL_DIR="$GZ_SHM_ROOT/uv-python"
@@ -31,10 +41,10 @@ export PIP_CACHE_DIR="$GZ_SHM_ROOT/cache/pip"
 export XDG_CACHE_HOME="$GZ_SHM_ROOT/cache"
 export TMPDIR="$GZ_SHM_ROOT/tmp"
 export PYTHONNOUSERSITE=1
-mkdir -p "$GZ_SHM_ROOT" "$TOOLS" "$UV_CACHE_DIR" "$TMPDIR"
+mkdir -p "$TOOLS" "$UV_CACHE_DIR" "$TMPDIR"
 cd "$GZ_SHM_ROOT"
 
-log() { echo "build_shm_env: $*"; }
+log() { echo "build_shm_env: $*" >&2; }
 
 ensure_uv() {
   [ -x "$TOOLS/uv" ] && return 0
@@ -157,45 +167,85 @@ localize_rpath() {
   log "rpath of $(basename "$so"): $rpath -> \$ORIGIN/.libs ($(ls "$dir" | paste -sd' '))"
 }
 
+src_key() {
+  # Prints the stage key for a source, or nothing when it has no stable identity.
+  local src=$1
+  if [ -d "$src" ]; then
+    [ -f "$src/source-identity.json" ] || return 0
+    sha256sum < "$src/source-identity.json" | cut -c1-16
+  else
+    sha256sum < "$src" | cut -c1-16
+  fi
+}
+
+safe_extract() {
+  # tarfile's "data" filter rejects absolute paths, "..", links that resolve
+  # outside dest (including members written through an extracted symlink),
+  # device files, and drops ownership and setuid bits.
+  "$GZ_SHM_ENV/bin/python" - "$1" "$2" <<'PYEOF'
+import sys, tarfile
+with tarfile.open(sys.argv[1]) as tf:
+    tf.extractall(sys.argv[2], filter="data")
+PYEOF
+}
+
 build_src() {
-  local archive=$1 name=$2
-  local dest="$GZ_SHM_ROOT/src/$name"
+  local archive=$1 name=$2 key dest work tarball
   env_ok || { log "env missing; run '$0 env' first"; return 1; }
-  if src_ok "$dest"; then
+  [ -e "$archive" ] || { log "no source at $archive"; return 1; }
+  key=$(src_key "$archive")
+  if [ -z "$key" ]; then
+    # No identity to key on (e.g. a git checkout): stage a fresh, never-shared copy.
+    key="unkeyed-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+    log "$archive has no source-identity.json; staging an unshared copy"
+  fi
+  dest="$GZ_SHM_ROOT/src/$name-$key"
+  if src_ok "$dest" && [ "$(cat "$dest/.src_key" 2>/dev/null)" = "$key" ]; then
     for so in "$dest"/python/gd/_gd_core*.so; do localize_rpath "$so"; done
-    log "source ok at $dest"; return 0
+    log "source ok at $dest"
+    echo "$dest" >&3
+    return 0
+  fi
+  if [ -e "$dest" ]; then
+    # Never delete a published tree in place: a running job may still use it.
+    log "moving unusable $dest aside"
+    mv "$dest" "$dest.stale-$(date +%s)"
   fi
   local t0=$SECONDS
-  rm -rf "$dest" "$dest.partial"
-  mkdir -p "$dest.partial"
+  work="$dest.partial"
+  tarball="$GZ_SHM_ROOT/tmp/src-$name-$key.tar"
+  rm -rf "$work" "$tarball"
+  mkdir -p "$work"
   if [ -d "$archive" ]; then
-    tar -C "$archive" -cf - --exclude=./build --exclude=__pycache__ . | tar -C "$dest.partial" -xf -
+    tar -C "$archive" -cf "$tarball" --exclude=./build --exclude=__pycache__ .
   else
     # One sequential read of a single file: cheap on NFS, unlike a tree walk.
-    cp "$archive" "$GZ_SHM_ROOT/tmp/src-$name.tar.gz"
-    tar -xzf "$GZ_SHM_ROOT/tmp/src-$name.tar.gz" -C "$dest.partial"
-    rm -f "$GZ_SHM_ROOT/tmp/src-$name.tar.gz"
+    cp "$archive" "$tarball"
+    [ "$(sha256sum < "$tarball" | cut -c1-16)" = "$key" ] || { log "$archive changed while staging"; return 1; }
   fi
-  verify_identity "$dest.partial"
-  mv "$dest.partial" "$dest"
+  safe_extract "$tarball" "$work"
+  rm -f "$tarball"
+  verify_identity "$work"
   local py="$GZ_SHM_ENV/bin/python"
   # A staged tree that ships its extension (as the campaign snapshots do) keeps
   # it: rebuilding could change the engine the run was started with.
-  if compgen -G "$dest/python/gd/_gd_core*.so" >/dev/null \
-      && (cd "$dest" && PYTHONPATH="$dest/python" "$py" -c "import gd._gd_core") 2>/dev/null; then
-    log "using the tree's prebuilt $(basename "$dest"/python/gd/_gd_core*.so)"
-    for so in "$dest"/python/gd/_gd_core*.so; do localize_rpath "$so"; done
-    date -u +%FT%TZ > "$dest/.gd_built"
-    log "source $name staged in $((SECONDS - t0)) s at $dest"
-    return 0
+  if compgen -G "$work/python/gd/_gd_core*.so" >/dev/null \
+      && (cd "$work" && PYTHONPATH="$work/python" "$py" -c "import gd._gd_core") >/dev/null 2>&1; then
+    log "using the tree's prebuilt $(basename "$work"/python/gd/_gd_core*.so)"
+    for so in "$work"/python/gd/_gd_core*.so; do localize_rpath "$so"; done
+  else
+    "$GZ_SHM_ENV/bin/cmake" -S "$work" -B "$work/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_MAKE_PROGRAM="$GZ_SHM_ENV/bin/ninja" -DPython_EXECUTABLE="$py" \
+      -Dpybind11_DIR="$("$py" -m pybind11 --cmakedir)" >&2
+    "$GZ_SHM_ENV/bin/cmake" --build "$work/build" --target _gd_core -j "${SLURM_CPUS_PER_TASK:-8}" >&2
   fi
-  "$GZ_SHM_ENV/bin/cmake" -S "$dest" -B "$dest/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_MAKE_PROGRAM="$GZ_SHM_ENV/bin/ninja" -DPython_EXECUTABLE="$py" \
-    -Dpybind11_DIR="$("$py" -m pybind11 --cmakedir)" >/dev/null
-  "$GZ_SHM_ENV/bin/cmake" --build "$dest/build" --target _gd_core -j "${SLURM_CPUS_PER_TASK:-8}"
-  (cd "$dest" && PYTHONPATH="$dest/python" "$py" -c "import gd._gd_core as m; print('gd._gd_core', m.__file__)")
-  date -u +%FT%TZ > "$dest/.gd_built"
-  log "source $name staged+built in $((SECONDS - t0)) s at $dest"
+  echo "$key" > "$work/.src_key"
+  printf '%s\n' "$archive" > "$work/.src_origin"
+  date -u +%FT%TZ > "$work/.gd_built"
+  mv "$work" "$dest"
+  src_ok "$dest" || { log "gd._gd_core does not import from $dest"; return 1; }
+  log "source $name staged in $((SECONDS - t0)) s at $dest"
+  echo "$dest" >&3
 }
 
 with_lock() {
@@ -205,9 +255,11 @@ with_lock() {
   "$@"
 }
 
+[ "${BASH_SOURCE[0]}" = "$0" ] || return 0
 case "${1:-}" in
-  env) with_lock build_env ;;
+  env) with_lock build_env >&2 ;;
   src) [ $# -eq 3 ] || { echo "usage: $0 src ARCHIVE|DIR NAME" >&2; exit 2; }
-       with_lock build_src "$2" "$3" ;;
+       # fd 3 carries the staged path; everything else goes to stderr.
+       with_lock build_src "$2" "$3" 3>&1 >&2 ;;
   *) echo "usage: $0 env | src ARCHIVE|DIR NAME" >&2; exit 2 ;;
 esac

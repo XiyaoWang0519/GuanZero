@@ -302,14 +302,23 @@ GuanZero SLURM job on Velocity (scripts in `scripts/velocity/`, deployed to
 
 - Source `gz_job_env.sh` (training kits source its wrapper `shm_stage.sh`,
   which also stages the run dir). Never `conda activate ~/guanzero/env`.
+- `/dev/shm/$USER` must be a directory owned by the job's uid with mode 0700,
+  not a symlink; anything else exits 2 (`/dev/shm` is world-writable, so another
+  account could otherwise plant `bin/python` or `.staged_ok`).
 - The env is `/dev/shm/$USER/gz-env-local`, built from the internet by
   `build_shm_env.sh env` (uv, Python 3.12.14, `requirements-velocity.txt`, the
   cu128 torch index; about 30 s) under flock, complete only with `.staged_ok`.
   A missing env is rebuilt from the internet; a failed build fails the job.
   There is no fallback to the NFS env.
-- The source tree is staged once per node by `build_shm_env.sh src` from a
-  tarball or directory, and checked file by file against `source-identity.json`
-  (the trainer refuses a tree that has neither that receipt nor `.git`). A
+- The source tree is staged by `build_shm_env.sh src` from a tarball or
+  directory into `/dev/shm/$USER/src/<name>-<key>`. The key is the sha256 of the
+  tarball, or of a directory's `source-identity.json`. A changed source therefore
+  gets a new stage, and a stage in use by a running job is never replaced. A
+  directory with no receipt (a git checkout) gets a fresh, unshared copy each
+  time. Extraction uses Python's `tarfile` `data` filter, which rejects members
+  or links that escape the stage. The tree is checked file by file against
+  `source-identity.json` (the trainer refuses a tree that has neither that
+  receipt nor `.git`). A
   tree that ships `python/gd/_gd_core*.so` keeps it, since rebuilding could change
   the engine a run started with. Kit `*.py` files are copied to shm, and the job
   `cd`s into shm, because `python -c`/stdin put the cwd on `sys.path`.
@@ -322,7 +331,22 @@ GuanZero SLURM job on Velocity (scripts in `scripts/velocity/`, deployed to
   `*.jsonl`/`*.log` copy only their new tail (`rsync --append`). Other files
   go to a temporary name and are renamed, so `/home` never holds a torn
   `latest.pt`. Local `update-*.pt` copies already on `/home` are pruned. Only
-  the SLURM `.out` is written to `/home` directly.
+  the SLURM `.out` is written to `/home` directly. Seeding uses `rsync --update`,
+  so a local checkpoint newer than `/home` is not rolled back. Sync runs only
+  for a run dir the wrapper staged (`GZ_STAGE_RUN=1`); a kit that sets `R`
+  itself keeps its own I/O.
+- Sync failure stops the job. Each rsync is bounded by `GZ_SHM_SYNC_TIMEOUT`
+  (600 s), and `$R/.gz-sync-status` holds the last outcome. After 3 consecutive
+  failures, or 1200 s without a successful sync, the loop writes
+  `$R/.gz-sync-failed`, logs `gz_job_env FATAL`, and sends TERM to the batch
+  shell. The kits treat TERM as "stop cleanly, do not resubmit". The EXIT trap
+  then makes one more sync attempt and exits 4, so `sacct` shows the job as
+  FAILED. The shm copy stays in place; resubmit by hand once `/home` is healthy.
+  Stopping bounds the work held only in node RAM to about 20 minutes, and stops
+  a hammering resubmit loop against a sick NFS server.
+- A CPU-only allocation hides every GPU (`CUDA_VISIBLE_DEVICES=`); a malformed
+  or self-contradictory allocation (unparsable IDX, or IDX count different
+  from `AllocTRES` `gres/gpu`) exits 2.
 - Guards: the job exits 2 if `sys.prefix` or `torch.__file__` resolve under
   `/home`, if the env path is under `/home`, or if torch sees more GPUs than
   SLURM allocated. `CUDA_VISIBLE_DEVICES` is set to the allocated UUIDs; a

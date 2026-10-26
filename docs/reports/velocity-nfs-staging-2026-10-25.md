@@ -59,6 +59,59 @@ Each arm now runs its 4 ranks on one card (other settings unchanged). Segments
 before and after the switch differ in throughput and must be annotated when
 compared; switch points are in the Project status note.
 
+## Review fixes (October 26, 2026)
+
+PR review of commit 207cb51 found nine defects, all confirmed. The shared
+functions moved to `scripts/velocity/gz_job_lib.sh`, with tests in
+`tests/test_velocity_scripts.py`:
+
+- A CPU-only allocation (no `IDX`) made the IDX `grep` fail and killed
+  `set -e` batch scripts (the 207cb51 function exits 1 under `set -euo
+  pipefail`). It now hides every GPU. Unparsable IDX, IDX disagreeing with
+  `AllocTRES gres/gpu`, or a failed `scontrol` with no `SLURM_JOB_GPUS` exit 2.
+- Source stages were cached by name only. They are now keyed by identity
+  (`<name>-<sha256 of tarball or source-identity.json>`), built in `.partial`
+  and published by rename, and never replaced in place.
+- Extraction now uses `tarfile` `filter="data"`. Escaping members, absolute and
+  relative escaping symlinks, and writes through an extracted symlink are
+  rejected.
+- `/dev/shm/$USER` was trusted without checks; it must now be ours, mode 0700,
+  and not a symlink. On Velocity it was mode 755, so it was set to 700 before
+  the new scripts were deployed.
+- A failing sync went unnoticed. The job now stops after 3 consecutive
+  failures or 1200 s without a successful sync (see `docs/TRAINING.md`), and
+  exits 4 after a final attempt. Rationale: if the job kept training, all new
+  checkpoints would live only in node RAM for as long as `/home` stayed bad. A
+  stop bounds that to about 20 minutes, stops the kits' resubmit loop from
+  hammering `/home`, and leaves the shm copy in place for a manual resubmit.
+  Seeding now uses `rsync --update`, so a resubmit never rolls a newer local
+  `latest.pt` back to the stale `/home` copy.
+- Pruning used `ls update-*.pt`, which aborted the sync loop under `set -e`
+  when a segment had no periodic checkpoint. It also used lexicographic order;
+  it now uses `compgen` with version sort.
+- `gz_final_sync` waited out the loop's foreground `sleep` (up to 300 s). The
+  sleep now runs in the background and is killed on TERM.
+- Sync ran for any pre-set `R`, even without staging (with `R_HOME` unset, that
+  meant `set -u` failures or an rsync to `/`). It now runs only after the
+  wrapper staged the run.
+
+Verification: 22 tests pass locally. Reintroducing each defect makes the
+matching test fail (the CPU-only case was checked against the 207cb51
+function). On the node, CPU-only smoke job 17156 passed:
+- the staged source matched (360/360 identity), was keyed
+  `campaign-2026-10-20-0bacc3e7a697ee2a`, and took 80 s once, after which it
+  is a cache hit;
+- torch saw 0 GPUs and mapped nothing from `/home`;
+- the final sync took 0 s;
+- an injected sync failure produced TERM and then exit 4;
+- a mode-755 root exited 2.
+
+The IDX parser returned 1/2/0 for running jobs 17145/17150/17151, matching
+their allocations. Deployed to `~/guanzero/bench-kit` by writing `.new` files
+and renaming them, at 00:30Z, with backups `*.bak-20261026T0030Z-pre-review`.
+Running jobs keep the code they started with; queued jobs 17146 and 17149 are
+the first GPU jobs to source the new files.
+
 ## Limitations
 
 - Legacy kits get the guarded env, caches and source staging, but their
