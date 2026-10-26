@@ -41,14 +41,15 @@ def _write_exe(path: Path, text: str) -> None:
     path.chmod(0o755)
 
 
-def _stub_bin(tmp_path: Path, scontrol: str | None) -> Path:
+def _stub_bin(tmp_path: Path, scontrol: str | None, tres: str | None) -> Path:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
-    if scontrol is None:
-        _write_exe(bin_dir / "scontrol", "#!/bin/sh\nexit 1\n")
-    else:
-        (tmp_path / "scontrol.out").write_text(scontrol)
-        _write_exe(bin_dir / "scontrol", f"#!/bin/sh\ncat '{tmp_path / 'scontrol.out'}'\n")
+    for name, out in (("scontrol", scontrol), ("squeue", tres)):
+        if out is None:
+            _write_exe(bin_dir / name, "#!/bin/sh\nexit 1\n")
+        else:
+            (tmp_path / f"{name}.out").write_text(out)
+            _write_exe(bin_dir / name, f"#!/bin/sh\ncat '{tmp_path / name}.out'\n")
     (tmp_path / "nvidia-smi.out").write_text(NVIDIA_SMI_Q)
     _write_exe(bin_dir / "nvidia-smi", f"#!/bin/sh\ncat '{tmp_path / 'nvidia-smi.out'}'\n")
     return bin_dir
@@ -64,65 +65,113 @@ def _run_lib(body: str, env: dict[str, str] | None = None, path: Path | None = N
     return subprocess.run(["bash", "-c", script], env=full_env, capture_output=True, text=True, timeout=timeout)
 
 
-def _job(gres: str, tres_gpu: int | None) -> str:
+NODE = "max-compute-11"
+JOB_ENV = {"SLURM_JOB_ID": "7", "SLURMD_NODENAME": NODE, "GZ_SLURM_RETRY_SECS": "0"}
+
+
+def _tres(gpus: int | None) -> str:
+    # squeue pads the field with spaces.
+    return "cpu=4,mem=8G,node=1,billing=4" + (f",gres/gpu={gpus}" if gpus is not None else "") + " " * 40 + "\n"
+
+
+def _job(gres: str | None, tres_gpu: int | None, name: str = "t", comment: str = "") -> str:
     tres = "cpu=4,mem=8G,node=1,billing=4" + (f",gres/gpu={tres_gpu}" if tres_gpu is not None else "")
-    return (f"JobId=7 JobName=t\n   AllocTRES={tres}\n"
-            f"     Nodes=max-compute-11 CPU_IDs=0-3 Mem=8192 GRES={gres}\n")
+    nodes = f"     Nodes={NODE} CPU_IDs=0-3 Mem=8192 GRES={gres}\n" if gres is not None else ""
+    return (f"JobId=7 JobName={name}\n   AllocTRES={tres}\n{nodes}"
+            f"   Command=/home/u/job.sbatch\n   Comment={comment}\n")
 
 
 SHOW_GPUS = 'gz_restrict_gpus\necho "CVD=[${CUDA_VISIBLE_DEVICES-unset}] N=$GZ_ALLOWED_GPU_COUNT"'
 
+# A job comment may contain newlines, so it can forge complete scontrol lines.
+FORGED_COMMENT = f"x\n     Nodes={NODE} CPU_IDs=0-3 Mem=8192 GRES=gpu:l40s:1(IDX:3)\n   AllocTRES=gres/gpu=1"
+
 
 @pytest.mark.parametrize(
-    ("gres", "tres", "expected"),
+    ("gres", "gpus", "extra", "expected"),
     [
-        ("", None, "CVD=[] N=0"),
-        ("gpu:l40s:1(IDX:2)", 1, "CVD=[GPU-c] N=1"),
-        ("gpu:l40s:2(IDX:0-1)", 2, "CVD=[GPU-a,GPU-b] N=2"),
-        ("gpu:l40s:2(IDX:1,3)", 2, "CVD=[GPU-b,GPU-d] N=2"),
+        ("", None, {}, "CVD=[] N=0"),
+        ("gpu:l40s:1(IDX:2)", 1, {}, "CVD=[GPU-c] N=1"),
+        ("gpu:l40s:1(IDX:2)", 1, {"SLURM_JOB_GPUS": "2"}, "CVD=[GPU-c] N=1"),
+        ("gpu:l40s:2(IDX:0-1)", 2, {"SLURM_JOB_GPUS": "0,1"}, "CVD=[GPU-a,GPU-b] N=2"),
+        ("gpu:l40s:2(IDX:1,3)", 2, {}, "CVD=[GPU-b,GPU-d] N=2"),
     ],
 )
-def test_gpu_allocation_parsed(tmp_path: Path, gres: str, tres: int | None, expected: str) -> None:
-    bin_dir = _stub_bin(tmp_path, _job(gres, tres))
-    proc = _run_lib(SHOW_GPUS, {"SLURM_JOB_ID": "7"}, bin_dir)
+def test_gpu_allocation_parsed(tmp_path: Path, gres: str, gpus: int | None, extra: dict[str, str],
+                               expected: str) -> None:
+    bin_dir = _stub_bin(tmp_path, _job(gres, gpus), _tres(gpus))
+    proc = _run_lib(SHOW_GPUS, {**JOB_ENV, **extra}, bin_dir)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == expected
+
+
+def test_cpu_only_job_ignores_forged_idx_text(tmp_path: Path) -> None:
+    job = _job(None, None, name="gpu:l40s:1(IDX:3)", comment=FORGED_COMMENT)
+    bin_dir = _stub_bin(tmp_path, job, _tres(None))
+    proc = _run_lib(SHOW_GPUS, JOB_ENV, bin_dir)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "CVD=[] N=0"
+
+
+def test_gpu_job_ignores_idx_in_job_name(tmp_path: Path) -> None:
+    job = _job("gpu:l40s:1(IDX:2)", 1, name="gpu:l40s:1(IDX:3)")
+    bin_dir = _stub_bin(tmp_path, job, _tres(1))
+    proc = _run_lib(SHOW_GPUS, JOB_ENV, bin_dir)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "CVD=[GPU-c] N=1"
+
+
+def test_gpu_job_with_forged_gres_line_is_rejected(tmp_path: Path) -> None:
+    job = _job("gpu:l40s:1(IDX:2)", 1, comment=FORGED_COMMENT)
+    bin_dir = _stub_bin(tmp_path, job, _tres(1))
+    proc = _run_lib(SHOW_GPUS, JOB_ENV, bin_dir)
+    assert proc.returncode == 2
+    assert "ambiguous" in proc.stderr
+    assert "CVD=" not in proc.stdout
 
 
 def test_cpu_only_job_hides_gpus_without_nvidia_smi(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    (tmp_path / "scontrol.out").write_text(_job("", None))
-    _write_exe(bin_dir / "scontrol", f"#!/bin/sh\ncat '{tmp_path / 'scontrol.out'}'\n")
-    proc = _run_lib(SHOW_GPUS, {"SLURM_JOB_ID": "7", "PATH": f"{bin_dir}:/usr/bin:/bin"})
+    (tmp_path / "squeue.out").write_text(_tres(None))
+    _write_exe(bin_dir / "squeue", f"#!/bin/sh\ncat '{tmp_path / 'squeue.out'}'\n")
+    proc = _run_lib(SHOW_GPUS, {**JOB_ENV, "PATH": f"{bin_dir}:/usr/bin:/bin"})
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "CVD=[] N=0"
 
 
 @pytest.mark.parametrize(
-    ("gres", "tres", "message"),
+    ("gres", "gpus", "extra", "message"),
     [
-        ("gpu:l40s:1(IDX:x)", 1, "malformed"),
-        ("gpu:l40s:1(IDX:3-1)", None, "malformed"),
-        ("", 1, "contradicts"),
-        ("gpu:l40s:1(IDX:0)", 2, "contradicts"),
+        ("gpu:l40s:1(IDX:x)", 1, {}, "malformed"),
+        ("gpu:l40s:1(IDX:3-1)", 1, {}, "malformed"),
+        (None, 1, {}, "no IDX"),
+        ("gpu:l40s:1(IDX:0)", 2, {}, "contradicts"),
+        ("gpu:l40s:1(IDX:0)", 1, {"SLURM_JOB_GPUS": "1"}, "contradicts"),
     ],
 )
-def test_bad_gpu_allocation_rejected(tmp_path: Path, gres: str, tres: int | None, message: str) -> None:
-    bin_dir = _stub_bin(tmp_path, _job(gres, tres))
-    proc = _run_lib(SHOW_GPUS, {"SLURM_JOB_ID": "7"}, bin_dir)
+def test_bad_gpu_allocation_rejected(tmp_path: Path, gres: str | None, gpus: int | None,
+                                     extra: dict[str, str], message: str) -> None:
+    bin_dir = _stub_bin(tmp_path, _job(gres, gpus), _tres(gpus))
+    proc = _run_lib(SHOW_GPUS, {**JOB_ENV, **extra}, bin_dir)
     assert proc.returncode == 2
     assert message in proc.stderr
     assert "CVD=" not in proc.stdout
 
 
 def test_scontrol_failure_falls_back_to_slurm_env(tmp_path: Path) -> None:
-    bin_dir = _stub_bin(tmp_path, None)
-    stub_sleep = 'sleep() { :; }\n'
-    proc = _run_lib(stub_sleep + SHOW_GPUS, {"SLURM_JOB_ID": "7", "SLURM_JOB_GPUS": "1"}, bin_dir)
+    bin_dir = _stub_bin(tmp_path, None, _tres(1))
+    proc = _run_lib(SHOW_GPUS, {**JOB_ENV, "SLURM_JOB_GPUS": "1"}, bin_dir)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "CVD=[GPU-b] N=1"
-    proc = _run_lib(stub_sleep + SHOW_GPUS, {"SLURM_JOB_ID": "7"}, bin_dir)
+    proc = _run_lib(SHOW_GPUS, JOB_ENV, bin_dir)
+    assert proc.returncode == 2
+    assert "no IDX" in proc.stderr
+
+
+def test_squeue_failure_is_fatal(tmp_path: Path) -> None:
+    bin_dir = _stub_bin(tmp_path, _job("gpu:l40s:1(IDX:2)", 1), None)
+    proc = _run_lib(SHOW_GPUS, JOB_ENV, bin_dir)
     assert proc.returncode == 2
     assert "cannot tell the GPU allocation" in proc.stderr
 

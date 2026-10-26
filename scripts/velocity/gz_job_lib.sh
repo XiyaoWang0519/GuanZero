@@ -22,33 +22,64 @@ gz_secure_dir() {
   [ "$mode" = 700 ] || gz_die "refusing $d: mode $mode, need 700 (chmod 700 $d if it is yours)"
 }
 
-# Prints the SLURM allocation's GPU indices (e.g. "1" or "0-1,3"); prints
-# nothing for a CPU-only job. Dies on a malformed or contradictory allocation.
-gz_alloc_gpu_idx() {
-  local info="" idx="" tres="" part n=0 _
-  for _ in 1 2 3; do
-    info=$(scontrol show job -d "$SLURM_JOB_ID" 2>/dev/null) && break
-    info=""
-    sleep 2
-  done
-  if [ -n "$info" ]; then
-    idx=$(grep -o 'gpu[^ ]*(IDX:[^)]*)' <<< "$info" | sed 's/.*IDX://; s/)$//' | paste -sd, || true)
-    tres=$(grep -o 'AllocTRES=[^ ]*' <<< "$info" | grep -o 'gres/gpu=[0-9]*' | head -1 | sed 's/.*=//' || true)
-  else
-    idx="${SLURM_JOB_GPUS:-${SLURM_STEP_GPUS:-}}"
-    [ -n "$idx" ] || gz_die "scontrol show job $SLURM_JOB_ID failed and SLURM_JOB_GPUS is unset; cannot tell the GPU allocation"
-  fi
-  for part in ${idx//,/ }; do
-    [[ $part =~ ^([0-9]+)(-([0-9]+))?$ ]] || gz_die "malformed GPU allocation IDX='$idx'"
+# Expands an IDX list ("0-1,3") to space-separated device minors; dies if malformed.
+gz_expand_idx() {
+  local part out=""
+  for part in ${1//,/ }; do
+    [[ $part =~ ^([0-9]+)(-([0-9]+))?$ ]] || gz_die "malformed GPU allocation IDX='$1'"
     if [ -n "${BASH_REMATCH[3]}" ]; then
-      [ "${BASH_REMATCH[3]}" -ge "${BASH_REMATCH[1]}" ] || gz_die "malformed GPU allocation IDX='$idx'"
-      n=$((n + BASH_REMATCH[3] - BASH_REMATCH[1] + 1))
+      [ "${BASH_REMATCH[3]}" -ge "${BASH_REMATCH[1]}" ] || gz_die "malformed GPU allocation IDX='$1'"
+      out+=" $(seq -s ' ' "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]}")"
     else
-      n=$((n + 1))
+      out+=" $part"
     fi
   done
-  if [ -n "$tres" ] && [ "$tres" != "$n" ]; then
-    gz_die "GPU allocation contradicts itself: AllocTRES gres/gpu=$tres but IDX='$idx'"
+  printf '%s\n' "${out# }"
+}
+
+# Prints the SLURM allocation's GPU indices (e.g. "1" or "0-1,3"); prints
+# nothing for a CPU-only job. Dies on a malformed or contradictory allocation.
+# `scontrol show job` text is not trusted wholesale: JobName, Command and
+# Comment are user-controlled and may contain newlines, so a comment can forge
+# whole "AllocTRES=" or "Nodes=... GRES=" lines. The GPU count comes from the
+# single computed squeue tres-alloc field (no gres/gpu there means zero GPUs,
+# whatever IDX text appears elsewhere); IDX comes only from this node's
+# per-node GRES line, which must be unique, and must agree with SLURM_JOB_GPUS
+# (set by slurmd; a submitter's value is not exported into the job).
+gz_alloc_gpu_idx() {
+  local tres="" ngpu info="" idx="" node minors _
+  local -a lines
+  for _ in 1 2 3; do
+    tres=$(squeue -h -j "$SLURM_JOB_ID" -O tres-alloc:4000 2>/dev/null || true)
+    tres=${tres//[[:space:]]/}
+    [ -n "$tres" ] && break
+    sleep "${GZ_SLURM_RETRY_SECS:-2}"
+  done
+  [ -n "$tres" ] || gz_die "squeue cannot report AllocTRES for job $SLURM_JOB_ID; cannot tell the GPU allocation"
+  ngpu=$(tr ',' '\n' <<< "$tres" | sed -n 's|^gres/gpu=\([0-9][0-9]*\)$|\1|p' | head -1)
+  if [ -z "$ngpu" ] || [ "$ngpu" -eq 0 ]; then
+    return 0
+  fi
+  node=${SLURMD_NODENAME:-$(hostname -s)}
+  info=$(scontrol show job -d "$SLURM_JOB_ID" 2>/dev/null || true)
+  mapfile -t lines < <(grep -E "^ +Nodes=${node//./\\.} CPU_IDs=[^ ]+ Mem=[0-9]+ GRES=" <<< "$info" || true)
+  if [ "${#lines[@]}" -gt 1 ]; then
+    gz_die "ambiguous GPU allocation: ${#lines[@]} per-node GRES lines for $node (forged by a job name/comment?)"
+  elif [ "${#lines[@]}" -eq 1 ]; then
+    idx=$(sed 's/.* GRES=//' <<< "${lines[0]}" | grep -o 'gpu[^ ,]*(IDX:[^)]*)' | sed 's/.*IDX://; s/)$//' \
+      | paste -sd, || true)
+  else
+    idx="${SLURM_JOB_GPUS:-}"
+  fi
+  [ -n "$idx" ] || gz_die "AllocTRES has gres/gpu=$ngpu but no IDX for $node and SLURM_JOB_GPUS is unset"
+  minors=$(gz_expand_idx "$idx") || exit 2
+  if [ "$(wc -w <<< "$minors")" -ne "$ngpu" ]; then
+    gz_die "GPU allocation contradicts itself: AllocTRES gres/gpu=$ngpu but IDX='$idx'"
+  fi
+  if [ -n "${SLURM_JOB_GPUS:-}" ]; then
+    [ "$(gz_expand_idx "$SLURM_JOB_GPUS" | tr ' ' '\n' | sort -n | paste -sd' ')" \
+      = "$(tr ' ' '\n' <<< "$minors" | sort -n | paste -sd' ')" ] \
+      || gz_die "GPU allocation contradicts itself: IDX='$idx' but SLURM_JOB_GPUS='$SLURM_JOB_GPUS'"
   fi
   printf '%s\n' "$idx"
 }
@@ -59,7 +90,7 @@ gz_alloc_gpu_idx() {
 gz_restrict_gpus() {
   GZ_ALLOWED_GPU_UUIDS=""
   [ -n "${SLURM_JOB_ID:-}" ] || return 0
-  local idx minors="" part minor uuid want got
+  local idx minors minor uuid want got
   idx=$(gz_alloc_gpu_idx) || exit 2
   if [ -z "$idx" ]; then
     export GZ_ALLOWED_GPU_UUIDS="" GZ_ALLOWED_GPU_COUNT=0 CUDA_VISIBLE_DEVICES=""
@@ -67,9 +98,7 @@ gz_restrict_gpus() {
     return 0
   fi
   command -v nvidia-smi >/dev/null || gz_die "GPU allocation IDX=$idx but no nvidia-smi to map it"
-  for part in ${idx//,/ }; do
-    if [[ $part == *-* ]]; then minors+=" $(seq -s ' ' "${part%-*}" "${part#*-}")"; else minors+=" $part"; fi
-  done
+  minors=$(gz_expand_idx "$idx") || exit 2
   while read -r minor uuid; do
     if [[ " $minors " == *" $minor "* ]]; then
       GZ_ALLOWED_GPU_UUIDS+="${GZ_ALLOWED_GPU_UUIDS:+,}$uuid"

@@ -112,6 +112,25 @@ and renaming them, at 00:30Z, with backups `*.bak-20261026T0030Z-pre-review`.
 Running jobs keep the code they started with; queued jobs 17146 and 17149 are
 the first GPU jobs to source the new files.
 
+### Correction (October 26, 2026, commit after d7f919d)
+
+A further security review found that `gz_alloc_gpu_idx` in d7f919d took every
+`gpu…(IDX:…)` substring from `scontrol show job -d`, including the
+user-controlled JobName, Command and Comment. On Velocity (Slurm 24.11.6),
+`--comment` newlines are printed raw, so a comment can forge both an
+`AllocTRES=` line and a per-node `GRES=` line. A CPU-only job named
+`gpu:l40s:1(IDX:3)` would have been bound to card 3.
+
+The GPU count now comes from `squeue -O tres-alloc`, and no `gres/gpu` there
+means zero GPUs. IDX comes only from a unique per-node line for
+`$SLURMD_NODENAME`, and is cross-checked against `SLURM_JOB_GPUS`. A
+submitter's `SLURM_JOB_GPUS` is not exported into the job; I checked this with a
+CPU job submitted with `SLURM_JOB_GPUS=3`. On the node, a CPU-only job with
+that name plus a forged two-line comment got `CUDA_VISIBLE_DEVICES=` and 0
+GPUs. Running jobs 17145, 17150 and 17151 still parse to IDX 1, 2 and 0. The
+library was deployed by copying and renaming at 00:50Z; the backup is
+`gz_job_lib.sh.bak-20261026T0050Z-pre-idx`.
+
 ## Limitations
 
 - Legacy kits get the guarded env, caches and source staging, but their

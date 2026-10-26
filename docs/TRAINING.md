@@ -344,9 +344,13 @@ GuanZero SLURM job on Velocity (scripts in `scripts/velocity/`, deployed to
   FAILED. The shm copy stays in place; resubmit by hand once `/home` is healthy.
   Stopping bounds the work held only in node RAM to about 20 minutes, and stops
   a hammering resubmit loop against a sick NFS server.
-- A CPU-only allocation hides every GPU (`CUDA_VISIBLE_DEVICES=`); a malformed
-  or self-contradictory allocation (unparsable IDX, or IDX count different
-  from `AllocTRES` `gres/gpu`) exits 2.
+- The GPU count comes from `squeue -O tres-alloc`; with no `gres/gpu` there,
+  the job is CPU-only and every GPU is hidden (`CUDA_VISIBLE_DEVICES=`). IDX
+  comes only from this node's per-node `GRES=` line in `scontrol show job -d`,
+  never from the rest of that text. Job names, commands and comments are
+  user-controlled, and a comment can contain newlines that forge whole lines.
+  A malformed IDX, more than one per-node line, an IDX count that differs from
+  the GPU count, or an IDX that disagrees with `SLURM_JOB_GPUS` exits 2.
 - Guards: the job exits 2 if `sys.prefix` or `torch.__file__` resolve under
   `/home`, if the env path is under `/home`, or if torch sees more GPUs than
   SLURM allocated. `CUDA_VISIBLE_DEVICES` is set to the allocated UUIDs; a
