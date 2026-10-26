@@ -44,6 +44,7 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
+from infra.node_local import require_node_local
 from train import history_ppo
 from train.history_config import (HistoryPPOConfig, build_parser as base_parser,
                                   config_from_args, parse_resume_overrides)
@@ -271,6 +272,7 @@ def rank_cuda_index(device: str, rank: int, spread_gpus: bool, gpu_count: int) -
 
 
 def _rank_main(rank: int, world: int, port: int, argv: list[str]) -> None:
+    require_node_local(f"history rank {rank}")
     args = build_parser().parse_args(argv)
     os.environ.update(MASTER_ADDR="127.0.0.1", MASTER_PORT=str(port))
     dist.init_process_group("gloo", rank=rank, world_size=world)

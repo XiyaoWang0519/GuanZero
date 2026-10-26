@@ -14,6 +14,7 @@ Historical records stay at their existing paths to preserve references.
 
 ## Current summaries, deployment and research proposals
 
+- [Velocity NFS relief: node-local env and GPU allocation (October 25–26, 2026)](velocity-nfs-staging-2026-10-25.md) — operational; NFS baseline, shm staging, guards, one-GPU-per-arm switch
 - [Opt-in FP32 paged rollout-attention prototype (October 18, 2026)](paged-attention-prototype-2026-10-18.md) — implementation and local CPU checks; CUDA compilation, integration and speed unverified
 - [主线长跑指标复核（2026-10-06）](training-review-2026-10-06.md)
 - [主线 Transformer 打法演变（2026-10-06）](style-evolution-2026-10-06.md)
