@@ -290,6 +290,56 @@ pre-u675 snapshots were lost to an earlier cleanup. Cleanup scripts must treat
 `.work/lineage/` as protected. Side arms (wide, lr-decay, aux-control, ...)
 share the lineage id but are not on the main path and are not archived there.
 
+## Velocity node-local staging (October 25, 2026)
+
+Velocity `/home` is NFS shared with other users of `max-compute-11`. Its
+bandwidth is fine (cold 25–106 MB checkpoints read in about 0.1 s), but every
+file open costs about 0.1 s, so Python imports from an NFS conda env starve the
+node: with none of our jobs running, `import numpy` from `~/guanzero/env` took
+18 s cold, and copying the 6 GB env tree crawled at 0.05 MB/s. Rules for every
+GuanZero SLURM job on Velocity (scripts in `scripts/velocity/`, deployed to
+`~/guanzero/bench-kit/`):
+
+- Source `gz_job_env.sh` (training kits source its wrapper `shm_stage.sh`,
+  which also stages the run dir). Never `conda activate ~/guanzero/env`.
+- The env is `/dev/shm/$USER/gz-env-local`, built from the internet by
+  `build_shm_env.sh env` (uv, Python 3.12.14, `requirements-velocity.txt`, the
+  cu128 torch index; about 30 s) under flock, complete only with `.staged_ok`.
+  A missing env is rebuilt from the internet; a failed build fails the job.
+  There is no fallback to the NFS env.
+- The source tree is staged once per node by `build_shm_env.sh src` from a
+  tarball or directory, and checked file by file against `source-identity.json`
+  (the trainer refuses a tree that has neither that receipt nor `.git`). A
+  tree that ships `python/gd/_gd_core*.so` keeps it, since rebuilding could change
+  the engine a run started with. Kit `*.py` files are copied to shm, and the job
+  `cd`s into shm, because `python -c`/stdin put the cwd on `sys.path`.
+- `PYTHONPYCACHEPREFIX`, `TMPDIR`, `XDG_CACHE_HOME`, `TORCHINDUCTOR_CACHE_DIR`,
+  `TRITON_CACHE_DIR`, `CUDA_CACHE_PATH`, pip and uv caches all point into
+  `/dev/shm/$USER`; `PYTHONNOUSERSITE=1`.
+- The run dir lives in `/dev/shm/$USER/runs/<run>`. It is seeded from
+  `~/guanzero/runs/<run>` (without the periodic `update-*.pt`; the population
+  lives in `latest.pt`) and synced back every 300 s or more, plus on exit. Append-only
+  `*.jsonl`/`*.log` copy only their new tail (`rsync --append`). Other files
+  go to a temporary name and are renamed, so `/home` never holds a torn
+  `latest.pt`. Local `update-*.pt` copies already on `/home` are pruned. Only
+  the SLURM `.out` is written to `/home` directly.
+- Guards: the job exits 2 if `sys.prefix` or `torch.__file__` resolve under
+  `/home`, if the env path is under `/home`, or if torch sees more GPUs than
+  SLURM allocated. `CUDA_VISIBLE_DEVICES` is set to the allocated UUIDs; a
+  repaired card left out of gres stays visible through the device cgroup and
+  must not be used. The env's `sitecustomize.py` refuses to start any
+  interpreter, including spawned workers, whose prefix, `sys.path` or
+  torch/numpy resolve under `/home`. With `GZ_REQUIRE_NODE_LOCAL=1`,
+  `train.history_ddp` ranks and PPO actors check again through
+  `infra/node_local.py`.
+
+Checks after a (re)submit: the `.out` shows `guard ok` with a `/dev/shm`
+prefix, the allocated GPU, and a `/dev/shm` run dir. `ls -l /proc/<pid>/fd`
+for our Python processes shows no `/home` paths except the `.out`. A sync
+line appears every 5 minutes. Cold NFS `import numpy` is near the 18 s
+zero-load baseline. Evidence:
+[velocity-nfs-staging-2026-10-25](reports/velocity-nfs-staging-2026-10-25.md).
+
 ## Independent evaluation
 
 **Yardsticks from October 3, 2026.** B11 is saturated (the lineage wins ~86% of

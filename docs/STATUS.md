@@ -4,6 +4,14 @@ Documentation review: October 6, 2026. This is an index of recorded status,
 not a live-job dashboard or authorization to run experiments. Verify current
 code, checkpoint identity and external state for the task at hand.
 
+October 25–26 Velocity operations: [node-local staging and GPU allocation](reports/velocity-nfs-staging-2026-10-25.md).
+Jobs on `max-compute-11` run from a `/dev/shm` env built from the internet. A guard
+fails a job that would import Python, torch or native libraries from NFS `/home`,
+or that sees GPUs outside its SLURM allocation. League and next-coef arms moved
+mid-run from two GPUs (own card plus an unscheduled shared card) to one card each;
+compare segments across that switch only with annotation. Implemented and measured;
+no strength claim.
+
 October 17 synthesis: [complete history-utilization investigation report](reports/history-utilization-investigation-summary-2026-10-17.md)
 connects the QK-norm audit, bounded short PPO, full-match and public-only prediction
 studies, content swaps, fusion diagnostics, and training/fault evidence. It records
