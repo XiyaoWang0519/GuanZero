@@ -1,8 +1,96 @@
 # Project orientation for agents
 
+November 15: [Google Colab compute](TRAINING.md#google-colab-compute) is a
+candidate for short isolated GPU experiments. Google AI Pro includes 200
+compute units per month in Canada for eligible accounts, but the signed-in
+Colab account showed 0 available units. Paid GPU readiness is unverified.
+
+November 12: [u195450 improved against DanLM](reports/main-u195450-danlm-2026-11-12.md)
+by +0.07221 net levels per round and +0.853 percentage points of round wins
+over u184140 on 19,934 common deals from the reused 20,000-deal set. Both
+paired 95% intervals are above zero.
+
+November 10: [20,000 fresh DanLM deals](reports/main-danlm-fresh-20000-2026-11-10.md)
+put u184140 at +0.00253 net levels per round and −0.073 percentage points of
+round wins relative to u155248, on 19,954 common deals. Both paired 95%
+intervals include zero.
+
+November 10: [main u184140 versus DanLM](reports/main-u184140-danlm-2026-11-10.md)
+gained +0.02116 net levels per round and +0.250 percentage points of round
+wins over pre-switch u155248 on 3,994 common fixed deals. Both paired 95%
+intervals include zero.
+
+November 8: [main switched to next=0.1 and filtered population](reports/main-filtered-next-on-2026-11-08.md)
+from u155773. Job 20589 is running on two L40S / eight ranks, successor
+20590 waits afterok. Early metrics advanced to u155779 and are finite.
+Automatic continuation has no experimental update target.
+
+November 8: [four-checkpoint main strength curve](reports/main-curve-2026-11-08.md)
+shows a clear net-level gain from u111202 to u130076, but no detectable
+additional gain to u155248 on the common fixed DanLM set. Recent slowing
+is supported; a permanent plateau is unresolved.
+
+November 8: [main u155248 versus DanLM](reports/main-u155248-danlm-2026-11-08.md)
+scored −0.19557 net levels/round and 46.52% round wins. Paired gain over
+u111202 is +0.06050 levels/round and +1.48 percentage points of wins,
+with both 95% intervals above zero on the reused fixed set.
+
+November 4: main resumed from u111202 on Velocity (job 19346), with a
+u120000 target for the current allocation. User-authorized successor 19347
+is queued afterok with automatic continuation and no experimental update
+target. Node-local metrics advanced to u111258 with finite losses and no
+observed actor gradient spike. See the [run record](reports/main-bounded-resume-2026-11-04.md).
+
+November 4: [main u111202 and both league u130000 endpoints versus DanLM](reports/main-league-danlm-2026-11-04.md)
+completed on a fresh shared 4,000-deal set. All three trail DanLM, and
+all paired between-checkpoint intervals include zero.
+
+November 4: both league arms completed u130000 and passed CPU checkpoint
+acceptance. In the [paired head-to-head](reports/league-u130000-paired-2026-11-04.md),
+filtered scored +0.045 net levels/round and a +0.45 percentage-point win-rate
+gap over near. Both 95% intervals include zero.
+
+November 3, 19:11 UTC live snapshot: both league arms are RUNNING.
+Near job 19007 is at u122167 (8.006B cumulative decisions); filtered job 19048
+is at u123663 (8.104B). Automatic successors 19044 / 19049 wait afterok on
+those jobs. Latest measured rates are 8.21k / 9.30k global decisions/s;
+filtered's short window includes restart warm-up. Both have finite losses,
+page-span enabled and successful scheduled syncs (filtered's new sync: 1 s
+at 19:11:19 UTC). See the [dated progress and handoff](reports/league-resume-2026-11-03.md#november-3-1911-utc-progress-and-handoff)
+for the stop rules, held work, remaining evaluation and raw snapshot. This
+is a dated observation, not a continuously refreshed dashboard.
+
+November 3 speed follow-up: [filtered-arm page-span validation](reports/league-page-span-2026-11-03.md)
+measured +8.93% complete-PPO throughput on one L40S / four ranks, with real
+rollout parity and 556 matching update/gradient/optimizer tensors. Filtered
+job 19048 replaces 19008; successor 19049 replaces 19045. Near 19007 / 19044
+already used page-span and is unchanged. Full history, FP32 and the update
+130,000 target remain; this is a speed result, not a strength result.
+
+November 3: [bounded Velocity league continuation](reports/league-resume-2026-11-03.md)
+resumes only `league-near` / `league-filtered` as jobs 19007 / 19008, after
+24 passing CPU preflight tests and compute-node checkpoint read/write checks.
+An isolated source copy corrects same-shape behavior-probe rebinding on resume.
+Target update 130,000; each allocation is capped at 12 hours. A later November 3
+user-authorized amendment enables healthy automatic continuation: successors
+19044 / 19045 wait afterok on 19007 / 19008; STOP and storage-failure guards remain.
+Initial five-minute checks show advancing finite-loss updates, active GPUs and
+successful sub-second scheduled syncs; no NFS stall observed in that window.
+Other experiment training stays held;
+no new strength result or production-policy adoption.
+
 Documentation review: October 6, 2026. This is an index of recorded status,
 not a live-job dashboard or authorization to run experiments. Verify current
 code, checkpoint identity and external state for the task at hand.
+
+October 30: [u99200 versus DanLM](reports/u99200-danlm-eval-2026-10-30.md)
+completed on local CPU: 3,992/4,000 valid duplicate deals, net levels/round
+−0.25651 [−0.29446, −0.22094], round win rate 44.29%. On 3,989 common deals,
+paired gain over u86800 is +0.09087 [+0.04337, +0.13788] levels/round; the
+round-win-rate gain remains uncertain. Eight adapter-failed deals are retained
+and excluded from scoring. u99200 is the latest locally verified main save;
+Velocity was unreachable, so remote latest/job state remains unverified.
+No training, search or deployment.
 
 October 17 synthesis: [complete history-utilization investigation report](reports/history-utilization-investigation-summary-2026-10-17.md)
 connects the QK-norm audit, bounded short PPO, full-match and public-only prediction
