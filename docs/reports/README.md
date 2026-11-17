@@ -34,10 +34,11 @@ Historical records stay at their existing paths to preserve references.
 
 ## History, opponent response and diagnostics
 
+- [Split private fusion and the pass b=4 habit A/B (October 18, 2026)](fusion-split-habit-2026-10-18.md) — opt-in `private_fusion=split` (+ `qk`) implemented and tested, u2623 converted with a calibrated reader gain (starting TV mean 0.0073); FULL-legacy / FULL-split / ORACLE × 2 seeds × 40M **planned, not launched** (Vast credit insufficient)
 - [第 0b 阶段：跨局历史的决策价值（2026-10-18）](habit-crossround-value-2026-10-18.md)：每种风格 700 场（CPU 0–198 + RTX 4090 199–699，$0.50）。残局里"看整场"减"只看本局"：pass b=1 为 −0.57pp [−2.71, +1.57]，bomb b=2 为 0.00pp [−1.43, +1.29]。弱风格的跨局价值约为零；单轴偏置对手里找不到既需要跨局记忆、又值得针对的设定。
 - [设计：C++ 批量环境 + GPU 批量推理的搜索 rollout（2026-10-18）](batched-rollout-design-2026-10-18.md)：VecEnv 增加 load / stop_at_round_end / 数组形式的事件导出，共享前缀 KV、单次前向；参考模式下与旧 rollout 逐位一致（CPU 和 CUDA），4090 上第 0b 阶段约 1,900 场/小时，本地 CPU 约 68 场/小时。
 - [第 0a 阶段：理想观察者多快能认出风格（2026-10-17）](habit-identifiability-2026-10-17.md)：64 场 × 5 种风格。pass b=4 在本局前半就被认出（ROUND 0.948），不适合测跨局记忆；按预定规则选出 pass b=1（ROUND 0.691 / FULL 0.983）和 bomb b=2（0.747 / 0.975），但它们的整局价值尚未测量。
-- [计划：风格标签 vs 公开历史（2026-10-17）](habit-attention-ab-plan-2026-10-17.md)：**仅计划**。ORACLE / FULL / ROUND 三臂从 u2623 续训，对手为强 pass 习惯包，用于区分"训练没学会"和"attention 读不出"；第 0 阶段先用理想观察者确认风格不会在本局内就暴露，再选偏置强度。
+- [计划：先验证利用，再用条件习惯检验跨局读取（2026-10-17；10-18 修订）](habit-attention-ab-plan-2026-10-17.md)：**设计修订，未运行**。先做匹配上下文的 pass b=4 ORACLE/ROUND 利用检查及标签干预，再筛选限次残局强习惯；公开信息与独立决策价值门槛均通过才启动三臂。既有后验用到对手私牌/合法集，是特权诊断；+9pp 是 oracle 对固定盲先验，不是对 ROUND。
 - [植入习惯：残局整段针对的价值（2026-10-17）](history-habit-round-2026-10-17.md)：有人剩 ≤10 张后我方每步搜索，"知道风格"对比"不知道风格"，同局配对。pass b=4 为 +8.96pp [+1.99, +15.92]（201 局），说明价值靠多步累积；1a 对手 lead_single b=1 为 +1.49pp [−3.48, +6.47]，分不开。Vast CPU 花费 $1.76，样本少于计划。
 - [植入习惯的"作弊版"决策价值（2026-10-17）](history-habit-value-2026-10-17.md)：直接告诉规划器 9 月 30 日对手包的风格 z，在 23 处局面上算一步换招的价值；1a 对手（lead_single b=1）上界仅 +0.02pp，pass b=4 也只有 +0.27pp；方法能测到对手差别（pass b=4 交互 RMS 3.25pp），但最优动作很少改变。1a 的 ORACLE 没赢最可能是因为可赚的东西接近零；整局累积价值未测。
 - [身份方案为何变差：Q 噪声与对手应对差异诊断（2026-10-17）](history-identity-diagnosis-2026-10-17.md)：固定新增 368,640 个 CPU 分支；旧身份方案在新配牌上仍 −0.332pp，更多估值后绝对政策提升 +0.578pp。新方案匹配收益 +0.299pp 已有正向证据，总身份增益 +0.165pp 仍跨零；错误换招是负值直接原因，不能说对手完全无需区别，未启动 PPO。

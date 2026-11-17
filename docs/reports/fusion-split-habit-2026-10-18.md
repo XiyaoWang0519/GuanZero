@@ -5,6 +5,29 @@ six Vast runs need about $21.6 of worst-case credit; the account had $2.19 at
 kit dry-run, so launch refuses. No training result exists yet. The main lineage
 and its default architecture are unchanged.
 
+October 19 update: Velocity is usable again and the user moved the six runs there;
+Vast was never launched. Protocol amendment 2026-10-19 (written before any arm data):
+1 L40S per run, same recipe/seeds/source/inits, gates run once in a gate job. Submitted
+gate job 8040 and training jobs 8041-8046 (`afterok:8040`); main job 7973 is held by the
+user's decision until these finish (`scontrol release 7973` restores it). Scripts:
+`.work/fusion-habit-2026-10-18/velocity/`. Still no training result.
+
+October 20 update: gate 8040 passed all five gates; full-legacy-s1/s2 and full-split-s1/s2
+finished cleanly at update 611 (40.04M decisions each, ~4,000-4,750 decisions/s per L40S);
+both ORACLE runs were still training at 01:15Z. Protocol amendment 2026-10-20 (before any
+eval data) moves evaluation to CPU-only SLURM jobs on Velocity with the sealed seeds,
+sample sizes, metric and statistics; the curve layout was fixed there. CPU benchmark
+(job 8167): 750-match shard ~46-55 min / ~2 GB, bitwise deterministic, slot plan exact.
+`eval.private_attention_audit` refuses style-input actors, so per the amendment it runs
+on the six non-ORACLE actors. A self-perpetuating CPU coordinator on the cluster
+(`gz-fh-watch` every 15 min, independent `gz-fh-backstop` every 2 h, mutually
+resubmitting) freezes finished checkpoints read-only with sha256, schedules the 113 eval
+units (<= 12 at once, partition normal; the `short` QOS allows only 2 running / 10
+submitted per user), runs the statistics, and releases main job 7973 once all six runs
+are complete or terminally failed, observed twice >= 10 min apart. Status:
+`~/guanzero/fh-status/status.md`, failures `fh-status/NOTIFY.md`; scripts
+`.work/fusion-habit-2026-10-18/velocity/eval/`. No evaluation result yet.
+
 ## Why
 
 The [fusion isolation](qknorm-fusion-isolation-2026-10-16.md),
