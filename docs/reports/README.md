@@ -14,6 +14,13 @@ Historical records stay at their existing paths to preserve references.
 
 ## Current summaries, deployment and research proposals
 
+- [u195450 / filtered：历史识别、逐层读取与条件行为（2026-11-15）](history-identification-2026-11-15.md) — 8,000 局、48 次探针拟合及新测试；公共历史概率参照 3 局恢复 79% 身份预测收益，无隐藏牌采样部分也达 67%；通用原始/各层探针泛化不足，条件机会特征 10 局有小幅收益；主线未动
+- [u195450 / filtered 池：同手牌策略差异与隐藏手牌身份收益（2026-11-15）](filtered-identity-oracle-2026-11-15.md) — 192 个独立根、每根 2×128 副隐藏配牌；同手牌首选差异 7.80%，隐藏平均后身份仍有小幅独立预测收益；全部冻结、主线未动
+- [u195450 下一步出牌预测：读取结构 × 容量（2026-11-14）](history-next-prediction-2026-11-14.md) — 54 次离线拟合、320 场新测试；约 6.8 万/13.4 万参数的原/改进读取器均未建立正确历史收益，训练拟合与验证泛化分离，身份参照也未定；主线未动
+- [u195450 历史读取：诊断头、query、定位与汇聚（2026-11-14）](history-reader-mechanism-2026-11-14.md) — 78 次独立训练、320 场新测试；排除头失活后仅换 query 仍约 51–52%，明确位置达 67.48%，等参数/等最终标签的先逐 token 处理再 max 达 94.74%；主线未动
+- [u195450 历史事实解码与读取模块可学习性（2026-11-14）](history-answer-learnability-2026-11-14.md) — 最终 encoder 逐 token 解码可恢复 95.31% 历史事实，原生 reader 约 50%；独立 Q/K 归一化监督训练尚无可靠增益，主线未动
+- [u195450 / 当前 filtered 池：历史信息与分层利用诊断（2026-11-13）](filtered-history-diagnosis-2026-11-13.md) — 20 个当前池快照、1,280 场四轮轨迹、82,560 个独立选招/评分分支；历史收益未建立，固定读出仅改变 2/960 首选，主线未动
+- [u184140 / u195450 历史利用根因诊断（2026-11-12）](history-root-cause-2026-11-12.md) — 当前权重/activation/梯度干预：私有 Q/K 饱和、近似常量读出；缓存路径核对通过，未启动修复训练
 - [Opt-in FP32 paged rollout-attention prototype (October 18, 2026)](paged-attention-prototype-2026-10-18.md) — implementation and local CPU checks; CUDA compilation, integration and speed unverified
 - [主线长跑指标复核（2026-10-06）](training-review-2026-10-06.md)
 - [主线 Transformer 打法演变（2026-10-06）](style-evolution-2026-10-06.md)

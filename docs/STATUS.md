@@ -1,5 +1,70 @@
 # Project orientation for agents
 
+November 15: [public-history identification and layer diagnostics](reports/history-identification-2026-11-15.md)
+completed 8,000 frozen rounds, 48 diagnostic fits, three fit audits and a fresh
+160-history conditional-opportunity test. Public policy likelihoods recover
+79% of known-identity prediction benefit after three rounds; a reference using
+only publicly determined opponent hands recovers 67% without hidden-hand Monte
+Carlo. Raw-token and all tested frozen-layer/readout probes fail to generalize,
+so no single encoder/attention layer is uniquely implicated. Publicly reconstructed
+choice opportunities plus a frozen u195450 reference recover a small 4.56% after
+ten rounds on new histories. Some posterior Monte Carlo remains unstable; no
+playing-strength or unique reward/capacity cause is established. Main unchanged.
+
+November 15: [frozen filtered-pool identity oracle](reports/filtered-identity-oracle-2026-11-15.md)
+completed 192 independent roots and two sets of 128 hidden worlds per root.
+Same-hand policies differ: weighted pair top-action disagreement is 7.80%.
+After uniform hidden-hand averaging, known identity still improves independent
+prediction by Brier 0.000869 for full actions / 0.001415 for 11 action types;
+both paired 95% intervals exclude zero. Only 6.2% / 11.9% of same-world
+full-information identity benefit remains. This is a neutral-prefix, node-assigned
+identity diagnostic, not natural-history identification or playing-strength
+evidence. All models remained frozen; no main training changes.
+
+November 14: [u195450 next-opponent prediction: reader structure x capacity](reports/history-next-prediction-2026-11-14.md)
+completed 54 offline fits and 320 fresh test matches (957 prediction points).
+Matched reader budgets of about 68k/134k parameters did not establish a benefit
+from correct history. Original small/large and improved small select zero-history
+residuals; improved large scores Brier 0.480992 versus current-only 0.479400,
+with paired intervals crossing zero. The identity reference is also inconclusive.
+All four fit training data but generalize poorly; this does not establish history
+uselessness or rule out whole-model capacity limits. No main training changes.
+
+November 14: [u195450 reader head, query and aggregation controls](reports/history-reader-mechanism-2026-11-14.md)
+completed 78 isolated CPU runs and 320 fresh test matches. Removing diagnostic
+head death restores normalized-reader gradients but does not fix full-history
+retrieval; query variants score about 51–52%. Explicit public seat/round masks
+raise attention retrieval to 67.48%. With matched parameters and only match-level
+fact supervision, nonlinear-before-mean scores 82.07% versus 64.23% after-mean;
+nonlinear-before-max reaches 94.74%, falling to 49.74% on mismatched history.
+This supports addressing and aggregation bottlenecks for public fact retrieval,
+not improved strategy or playing strength. No main training changes.
+
+November 14: [u195450 public-history fact decoding and reader learning](reports/history-answer-learnability-2026-11-14.md)
+reuses the filtered trajectories in isolated CPU diagnostics. Token-wise decoding
+recovers previous-round facts from the final encoder at 95.31% balanced accuracy;
+native reader/state probes remain near 50%. Frozen-encoder/query reader training
+scores 50.05% for native and 51.67% for Q/K-normalized copies, without a reliable
+paired gain. Normalization improves gradient availability but a diagnostic-head
+optimization issue limits negative learning claims. No main training changes.
+
+November 13: [u195450 / pinned current filtered-pool history diagnostics](reports/filtered-history-diagnosis-2026-11-13.md)
+completed 1,280 four-round matches and 82,560 frozen score-round branches on
+20 snapshots from u196664. Known identity improves same-deal behavior prediction,
+but tested public-history probes do not recover that benefit; independent
+decision-return gains remain unresolved and selection estimates are unstable.
+A fixed reader vector changes 2/960 heldout greedy actions. One rare CPU
+cache/recompute numerical discrepancy qualifies the earlier small-sample parity
+result; native cached activations were used. No main training changes.
+
+November 12: [u184140 / u195450 history-use root-cause audit](reports/history-root-cause-2026-11-12.md)
+found saturated private Q/K selection and nearly constant history readout on
+48 freshly collected match trajectories. Q/K gradients were zero on all six
+audited minibatches; diagnostic normalization restored nonzero gradients.
+Replacing the readout with one mean vector changed 4/1,953 cross-round greedy
+actions. Current-weight CPU cache checks passed. This establishes sampled
+mechanisms, not a trained remedy or improved history-based strength; main unchanged.
+
 Documentation review: October 6, 2026. This is an index of recorded status,
 not a live-job dashboard or authorization to run experiments. Verify current
 code, checkpoint identity and external state for the task at hand.
@@ -112,6 +177,32 @@ stage 1 should not start on single-axis tilt opponents. The batched VecEnv /
 shared-prefix rollout engine ([design](reports/batched-rollout-design-2026-10-18.md))
 reproduces team_rollout bit for bit on CPU and CUDA; ~1,900 vs ~68 matches/hour.
 
+October 18 Stage 1 design correction: [revised diagnostic plan](reports/habit-attention-ab-plan-2026-10-17.md)
+splits a two-arm pass b=4 exploitation check from a conditional-habit screen, then
+permits ORACLE/FULL/ROUND only after independent public-information and decision-value
+gates. The proposed first habit caps strong endgame-response tilts at one opportunity
+per opponent seat per round; it has not been implemented or measured. The historical
++8.96pp compares oracle with a fixed 50/50-blind planner, not ROUND, so equal learned
+ORACLE/ROUND strength alone cannot diagnose PPO/fusion failure. Source inspection also
+shows the old likelihood diagnostic conditions on the opponent's actual hand/legal set;
+its posterior is privileged, not an implemented public-history estimator. Existing 0a/0b
+numbers remain historical instrument results. Matched-context oracle input, conditional
+rollouts and public posteriors remain implementation gates; no new training or compute.
+
+October 18 fusion arm: [split private fusion and habit A/B plan](reports/fusion-split-habit-2026-10-18.md).
+Opt-in `private_fusion=split` (q_proj reads `attention_norm(q)`; `state = LN(q) +
+reader_norm(r)`), default `sum` bitwise unchanged; with `private_qk_norm=qk` it is
+the tested arm. u2623 converts with a calibrated reader gain (c = 0.140; starting
+policy TV mean 0.0073 vs 0.030 for a zeroed reader; no one-hot heads). The protocol
+and Vast kit are sealed for FULL-legacy / FULL-split / ORACLE on pass b=4, 2 shared
+seeds × 40M decisions each. Pass b=4 is visible within a round, so this tests reader
+use, not cross-round memory. Not launched (credit $2.19 vs ~$21.6 worst case); no
+training result; main lineage unchanged. October 19: moved to Velocity (1 L40S/run,
+dated protocol amendment); gate 8040 + jobs 8041-8046 queued, main job 7973 held
+until they finish. October 20: four FULL runs finished cleanly at 611 updates; ORACLE
+runs training; CPU-only evaluation on Velocity (amendment 2026-10-20) and the automatic
+7973 release are armed in an on-cluster coordinator; no evaluation result yet.
+
 ## Baseline and documented readiness
 
 - Main route: randomly initialized public-history Transformer, self-play PPO,
@@ -147,7 +238,7 @@ reproduces team_rollout bit for bit on CPU and CUDA; ~1,900 vs ~68 matches/hour.
 | Continued training and auxiliary heads | [Experiment review](reports/experiment-review-2026-10-04.md), [auxiliary heads](reports/aux-heads-2026-10-02.md): distinguish lineage progress from multi-seed causal evidence |
 | Evaluation reliability | The October 4 review identifies external-adapter exclusions and paired-record gaps. October 18 ([receipt](reports/paired-eval-checkpoint-average-2026-10-18.md)): per-deal arena records, `eval.paired` and `train.checkpoint_average` implemented and tested on synthetic checkpoints only; no real checkpoint or DanLM measured. The cause of the mini-ladder `their_choice_missing` exclusions is a static hypothesis (wild cards declared below the level rank), not yet checked against data |
 | History use and opponent diversity | [History ablation](reports/history-ablation-2026-09-29.md), [diversity proposal](reports/opponent-diversity-plan-2026-10-03.md); earlier-checkpoint findings do not establish current history dependence |
-| Planted-habit diagnostic | [Phase 1a](reports/history-habit-phase1a-2026-09-30.md): ORACLE and ROUND trained/evaluated; FULL not run; one training seed per arm, separate diagnostic lineage |
+| Planted-habit diagnostic | [Stage 1 revision, October 18](reports/habit-attention-ab-plan-2026-10-17.md): two-arm exploitation check, then sparse conditional-habit/public-information/value gates before three-arm training; design only. [September 30 phase 1a](reports/history-habit-phase1a-2026-09-30.md) remains historical, separate-lineage evidence |
 | Cheaper search | [Fused search design](reports/fused-search-design-2026-10-05.md): explicitly design only, no implementation or measured gain claimed |
 | Search distillation | [October 6 plan](reports/search-distillation-plan-2026-10-06.md): proposed; distinguishes offline Stage 1 from a Stage 2 design-boundary amendment |
 | Learned tribute / back-tribute | Exchanges still use the fixed `tribute_bot` heuristic (DESIGN 1.3). [October 6 brief](reports/tribute-learning-brief-2026-10-06.md): open question for outside advice; paired DanLM data show different back-tribute choices but no measurable loss on tribute deals; the September 21 [A2 attempt](reports/M2-A2.md) was negative |
