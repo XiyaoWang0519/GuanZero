@@ -4,6 +4,11 @@ Documentation review: October 6, 2026. This is an index of recorded status,
 not a live-job dashboard or authorization to run experiments. Verify current
 code, checkpoint identity and external state for the task at hand.
 
+October 22 Botzone: [fallback legality fix](reports/botzone-fallback-fix-2026-10-22.md)
+repairs local exchange selection, anti-tribute, physical-hand reconstruction and
+pending-window lead detection, plus the judge's ten-level alias. Fault-injected
+games use the user's unmodified judge. Local only; not deployed to v7.
+
 October 17 synthesis: [complete history-utilization investigation report](reports/history-utilization-investigation-summary-2026-10-17.md)
 connects the QK-norm audit, bounded short PPO, full-match and public-only prediction
 studies, content swaps, fusion diagnostics, and training/fault evidence. It records
