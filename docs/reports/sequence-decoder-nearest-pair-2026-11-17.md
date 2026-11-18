@@ -1,6 +1,6 @@
 # 多层序列解码器、记牌器输入裁剪与最近邻对对手池实现及预检（2026-11-17）
 
-状态：**已实现并通过本地与 Velocity 计算节点 CPU 预检；双卡 L40S 训练作业（`22040`）已入队等待资源；GPU 实测吞吐与对局牌力尚未测量。** 暂停中的原主线目录与检查点保持只读未动。
+状态：**已实现并通过本地、Velocity CPU 预检（`22039`）及 L40S 实卡门禁与 DDP 冒烟验证（`22040`、`22049`）；双卡 L40S 正式长程训练作业（`22048`）已在队列等待第 2 张卡释放；完整生产规模 GPU 吞吐与对局牌力尚未测量。** 暂停中的原主线目录与检查点保持只读未动。
 
 ## 1. 范围与动机
 
@@ -23,10 +23,10 @@
 
 | 项目 | 值 |
 |---|---|
-| 基线提交 | `8e7851088f213dbba0e34e6e927eca4f5bafb32f`（投产打包见下） |
+| 基线提交 | `073e433`（基于 `8e7851088f213dbba0e34e6e927eca4f5bafb32f`，投产打包含下方 CUDA 1-ULP 测试容差修正） |
 | 引擎摘要 `engine_digest` | `248f048a3a7e56d1feba574fb4358216f5f393503b3eb8629d6415de6e6c31cb` |
-| 投产源码包 SHA-256（`gz-seq-cc-np-2026-11-17.tar.gz`，393 文件） | `ea279e0d850efda4f5b512499906fb7c250b7c0f3c53bf4dd703dd3f9b8796f5` |
-| 投产源码清单 `source_sha256` | `16da8d29efde60ddfda922d1912e6aa9a27f1ac3e3d5461a5a7992b792936ef3` |
+| 投产源码包 SHA-256（`gz-seq-cc-np-2026-11-17.tar.gz`，393 文件） | `7890151cf7c0b40c9d436ae2591e48de01d0a3db520771d3fd19c5a4e1cc4cd3`（初版门禁包 `ea279e0d850efda4f5b512499906fb7c250b7c0f3c53bf4dd703dd3f9b8796f5`） |
+| 投产源码清单 `source_sha256` | `f8577241af5ee63935d4ec03c1d4dde920fb7441941dd25280a6c54335dc36c0`（初版 `16da8d29efde60ddfda922d1912e6aa9a27f1ac3e3d5461a5a7992b792936ef3`） |
 | 只读源检查点 `u234993.pt` SHA-256 | `68df2615d2cc697afe1d61e633d8e867abc01c7e1c795a1065cef48916b3af7b` |
 | 迁移后初始检查点 `u234993-seq-cc-np.pt` SHA-256 | `3931c4ca835fdba5b462e615b0197181ed5c1afc8f8abb40f785b0519cc6c613` |
 
@@ -46,12 +46,15 @@
   - 节点运行 11 个核心测试套件：**`233 passed, 50 skipped`**；
   - 从只读 `u234993.pt` 迁移生成 `u234993-seq-cc-np.pt`（`decoder_layers=3, query_slots=4, obs_mode=card_counter, archive_filter=nearest_pair, archive_max_age_updates=40000`）：heldout 248 个决策 `tv_mean = 0.002618`、`tv_median = 0.000465`、240 个多候选决策 `greedy_change_share = 0.0`、全部 24 个头 `one_hot_share_max = 0.0`、`private_decoder`（77/77）与 `stream`（48/48）梯度全部有限非零；
   - 预先构建并写入固定种子 `20261117` 的 **128 行分层探针**（8 场比赛、63 个跨局决策、128 个非强制决策）及 16 个继承 archive 快照指纹。
-- 双卡长程训练作业 **`22040`（`gz-seq-cc-np`）**：
-  - 依赖 `afterok:22039` 已解除，当前处于 `normal` 分区 `PENDING (Resources)`（`gres/gpu:2, 32 CPUs, 160G, 12:00:00`）；
-  - 启动首片前先执行单卡 ECC/矩阵乘健康探针与 4 个套件的 CUDA 数值门禁测试，随后以 8 DDP ranks（`num_envs=128, steps_per_update=64, minibatch_matches=8`，`obs_mask_warmup_updates=1500`，全套 paged/merged-snapshot 加速）运行，12 小时切片优雅落盘并自动续投至 `--updates 40000`（输出目录 `~/guanzero/runs/seq-cc-np-u234993/`，支持 `STOP` 标记停机）。
+- L40S 实卡门禁与 DDP 冒烟验证（**`22040`**、**`22049`**）：
+  - 首轮双卡作业 `22040` 启动时通过双卡 ECC/矩阵乘健康探针，并在 142 项 CUDA 门禁中通过 **`140` 项**（全部新增 `PrivateCrossDecoder`、`card_counter`、`nearest_pair` 及 `test_history_snapshot_batch.py` CUDA 测试全数通过），仅在既有 `test_history_paged_cache.py` 两项分页 KV 对比中因 `float32` `logp` 逐字节 `tobytes()` 断言出现 **1 ULP（`2.98e-7`，`-3.7623320` vs `-3.7623317`）** 跨步视图浮点尾差（全部动作选择、随机流与整数列逐位一致，符合 `train/history_config.py` 对 CUDA 分页池的 Tier-2 数值分类）而在启动 `train.history_ddp` 前停机。
+  - 在 [tests/test_history_paged_cache.py](../../tests/test_history_paged_cache.py) 与 [tests/test_history_snapshot_batch.py](../../tests/test_history_snapshot_batch.py) 中仅对 CUDA 浮点列放宽至 `atol=2e-6`（CPU 仍保持逐字节一致，离散动作与随机状态保持逐位一致）后，单卡 L40S 验证作业 **`22049`** 通过正式门禁（`10 passed in 6.42s`），并从迁移检查点 `u234993-seq-cc-np.pt` 跑通 2 次完整 CUDA DDP 更新（`u2`: `policy_loss = 0.04237`、`entropy = 0.44664`、多进程参数校验与归档落盘正常，未触碰正式输出目录）。
+- 双卡长程训练作业 **`22048`（`gz-seq-cc-np`）**：
+  - 当前在 `normal` 分区排队等待第 2 张 L40S 释放（`PENDING (Resources)`，`gres/gpu:2, 32 CPUs, 160G, 12:00:00`，节点当前 `2/3` 张 GPU 被既有作业占用，SLURM 预计启动时间 `2026-11-18T10:57:53 UTC`）；
+  - 启动后以 8 DDP ranks（`num_envs=128, steps_per_update=64, minibatch_matches=8`，`obs_mask_warmup_updates=1500`，全套 paged/merged-snapshot 加速）运行，12 小时切片优雅落盘并自动续投至 `--updates 40000`（输出目录 `~/guanzero/runs/seq-cc-np-u234993/`，支持 `STOP` 标记停机）。
 
 ## 3. 限制与待验证项
 
-1. **CUDA 实测待运行**：截至本记录提交时，`22040` 仍在队列等待 2 张 L40S 释放；CUDA 门禁测试、双卡实际采样/学习吞吐及显存占用将在 `22040` 启动首片时验证并记录在案（`cuda-gate.json`、`metrics.jsonl`）。
+1. **双卡满载吞吐待正式作业启动后记录**：单卡小规模 CUDA 门禁与 2-update DDP 冒烟已在 L40S 上实测通过，双卡 8 ranks × 128 envs 的稳态采样/学习吞吐及显存占用将在 `22048` 获得第 2 张 L40S 启动后写入 `metrics.jsonl`。
 2. **牌力与序列利用尚待训练后独立评测**：迁移后 `tv_mean = 0.0026` 与模拟多样性指标仅证明初始化平滑性与归档算法性质，不构成牌力提升证据；需在 `obs_mask_prob = 1.0` 过渡完成后（如 `u3000`、`u10000`、`u20000+`）通过固定牌集对 DanLM 配对评测与序列替换干预独立检验。
 3. **产物路径**：本地预检与打包回执位于忽略目录 `.work/filtered-pool-smoke-2026-11-17/` 与 `.work/velocity-seq-np-2026-11-17/velocity-launch-receipt.json`；远端套件与检查点位于 `~/guanzero/seq-cc-np-2026-11-17/`，运行输出位于 `~/guanzero/runs/seq-cc-np-u234993/`。

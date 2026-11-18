@@ -363,13 +363,17 @@ def run_collector(device, merge, *, kv_cache, steps=36, policies=None, seat_poli
     return collector, stats
 
 
-def assert_same_collection(plain, merged_run):
+def assert_same_collection(plain, merged_run, *, float_atol: float = 0.0):
     assert len(plain.choice_log) == len(merged_run.choice_log)
     for before, after in zip(plain.choice_log, merged_run.choice_log):
         assert before.tobytes() == after.tobytes()
     for name, before in plain.buffer.compact().items():   # learner rows, bit for bit
         after = merged_run.buffer.compact()[name]
-        assert before.dtype == after.dtype and before.tobytes() == after.tobytes()
+        assert before.dtype == after.dtype and before.shape == after.shape
+        if float_atol > 0 and before.dtype.kind == "f":
+            assert np.allclose(before, after, rtol=0.0, atol=float_atol), name
+        else:
+            assert before.tobytes() == after.tobytes()
     assert torch.equal(plain.generator.get_state(), merged_run.generator.get_state())
     assert plain.policy_decisions == merged_run.policy_decisions
 

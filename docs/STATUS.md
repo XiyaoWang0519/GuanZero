@@ -7,11 +7,12 @@ masking with PPO-consistent warmup, offline checkpoint migration
 (`train.history_sequence_migrate` + `--init-checkpoint`), merged snapshot
 inference/encoding support, and `nearest_pair` population archiving with a
 persistent stratified multi-round behavior probe. Local suites (87 C++, 1,764+
-Python, snapshot revision verification) and Velocity CPU preflight/migration job
+Python, snapshot revision verification), Velocity CPU preflight/migration job
 22039 (`u234993` -> `u234993-seq-cc-np.pt`, heldout TV 0.00262, 0% one-hot
-saturation) passed; 2xL40S training job 22040 is queued (`runs/seq-cc-np-u234993`).
-CUDA throughput and playing-strength gains remain unmeasured; paused `runs/main`
-is unchanged.
+saturation), and L40S CUDA parity/DDP smoke checks (22040, 22049) passed after
+allowing Tier-2 1-ULP float tolerance on CUDA strided paged KV; 2xL40S training
+job 22048 is queued (`runs/seq-cc-np-u234993`). Full 2-GPU throughput and
+playing-strength gains remain unmeasured; paused `runs/main` is unchanged.
 
 November 15: [public-history identification and layer diagnostics](reports/history-identification-2026-11-15.md)
 completed 8,000 frozen rounds, 48 diagnostic fits, three fit audits and a fresh

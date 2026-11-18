@@ -14,7 +14,7 @@ Historical records stay at their existing paths to preserve references.
 
 ## Current summaries, deployment and research proposals
 
-- [多层序列解码器、记牌器输入裁剪与最近邻对对手池实现及预检（2026-11-17）](sequence-decoder-nearest-pair-2026-11-17.md) — 多层 QK-Norm 相对位置跨注意力解码器、保留 382 维记牌器并退火遮挡 1,467 维历史汇总、合并快照推理适配与 `nearest_pair` 持久化分层探针归档；本地及 Velocity 预检 22039 通过，双卡作业 22040 入队，GPU 吞吐与牌力待测
+- [多层序列解码器、记牌器输入裁剪与最近邻对对手池实现及预检（2026-11-17）](sequence-decoder-nearest-pair-2026-11-17.md) — 多层 QK-Norm 相对位置跨注意力解码器、保留 382 维记牌器并退火遮挡 1,467 维历史汇总、合并快照推理适配与 `nearest_pair` 持久化分层探针归档；本地、Velocity 预检 22039 及 L40S CUDA 门禁验证通过，双卡作业 22048 入队，牌力待测
 - [u195450 / filtered：历史识别、逐层读取与条件行为（2026-11-15）](history-identification-2026-11-15.md) — 8,000 局、48 次探针拟合及新测试；公共历史概率参照 3 局恢复 79% 身份预测收益，无隐藏牌采样部分也达 67%；通用原始/各层探针泛化不足，条件机会特征 10 局有小幅收益；主线未动
 - [u195450 / filtered 池：同手牌策略差异与隐藏手牌身份收益（2026-11-15）](filtered-identity-oracle-2026-11-15.md) — 192 个独立根、每根 2×128 副隐藏配牌；同手牌首选差异 7.80%，隐藏平均后身份仍有小幅独立预测收益；全部冻结、主线未动
 - [u195450 下一步出牌预测：读取结构 × 容量（2026-11-14）](history-next-prediction-2026-11-14.md) — 54 次离线拟合、320 场新测试；约 6.8 万/13.4 万参数的原/改进读取器均未建立正确历史收益，训练拟合与验证泛化分离，身份参照也未定；主线未动

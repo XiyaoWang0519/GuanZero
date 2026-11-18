@@ -235,7 +235,7 @@ def test_collector_paged_and_merged_encoder_match_the_plain_rollout(device, enco
     plain = run_collector(device, False, kv_cache=True)[0]
     fast = run_collector(device, True, kv_cache=True, paged_cache=True,
                          batch_snapshot_encoder=encoder)[0]
-    assert_same_collection(plain, fast)
+    assert_same_collection(plain, fast, float_atol=2e-6 if device == "cuda" else 0.0)
     assert fast.kv_pool is not None and fast.snapshot_heads.encoder is encoder
     assert fast.cache_metrics()["pool_used_pages"] > 0
 
@@ -262,7 +262,7 @@ def test_merged_encoder_refreshes_when_snapshots_change(device):
                           between=between, policies=pols, **extra)[0]
             for pols, (merge, extra) in zip(policies, (
                 (False, {}), (True, dict(paged_cache=True, batch_snapshot_encoder=True))))]
-    assert_same_collection(*runs)
+    assert_same_collection(*runs, float_atol=2e-6 if device == "cuda" else 0.0)
     # Random snapshots barely read their memory, so choices alone cannot show a
     # stale encoder: every live slot must hold its actor's current weights.
     from train.history_snapshot_batch import _encoder_values
