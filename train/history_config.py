@@ -16,13 +16,18 @@ if TYPE_CHECKING:
     from train.history_model import HistoryPolicyConfig
 
 
-# Same sets as train.history_aux.AUX_HEADS, train.history_habit and
-# train.history_model.PRIVATE_QK_NORMS / PRIVATE_FUSIONS.
+# Same sets as train.history_aux.AUX_HEADS, train.history_habit,
+# train.history_model.PRIVATE_QK_NORMS / PRIVATE_FUSIONS, and
+# train.history_population.ARCHIVE_FILTERS / DEFAULT_BEHAVIOR_PROBE_*.
 _AUX_HEADS = ("next", "belief", "outcome")
 _STYLE_AXES = ("pass", "bomb", "lead_single")
 _HABIT_VIEWS = ("full", "round", "oracle")
 _PRIVATE_QK_NORMS = ("none", "query", "qk")
 _PRIVATE_FUSIONS = ("sum", "split")
+_PRIVATE_OBS_MODES = ("full", "private_only", "card_counter")
+_ARCHIVE_FILTERS = ("thin", "strength_behavior", "nearest_pair")
+_DEFAULT_BEHAVIOR_PROBE_ROWS = 128
+_DEFAULT_BEHAVIOR_PROBE_SEED = 20261117
 
 
 REWARD_SEMANTICS = {
@@ -71,6 +76,12 @@ class HistoryPPOConfig:
     # Private-query/reader fusion (HistoryPolicyConfig.private_fusion): a
     # fresh-lineage/habit-init A/B arm only; a resume cannot change it.
     private_fusion: str = "sum"
+    # Multi-layer relative-position private cross-decoder and public obs masking.
+    private_decoder_layers: int = 0
+    private_query_slots: int = 1
+    private_obs_mode: str = "full"
+    obs_mask_warmup_updates: int = 0
+    init_checkpoint: str = ""
     # rollout
     num_envs: int = 16
     num_threads: int = 1
@@ -156,6 +167,11 @@ class HistoryPPOConfig:
     population_archive_every: int = 0
     population_archive_size: int = 16
     population_archive_share: float = 0.5
+    population_archive_filter: str = "thin"
+    population_archive_min_tv: float = 0.05
+    population_archive_max_age_updates: int = 0
+    population_behavior_probe_rows: int = _DEFAULT_BEHAVIOR_PROBE_ROWS
+    population_behavior_probe_seed: int = _DEFAULT_BEHAVIOR_PROBE_SEED
     population_recent: int = 4
     snapshot_probability: float = 0.5
     # data parallel (train/history_ddp.py): normalize advantages and weight the
@@ -189,6 +205,28 @@ class HistoryPPOConfig:
                 self.private_fusion != "sum"):
             raise ValueError("batch_snapshot_policies does not implement the split "
                              "private fusion")
+        if self.private_decoder_layers < 0:
+            raise ValueError("private_decoder_layers must not be negative")
+        if self.private_query_slots < 1:
+            raise ValueError("private_query_slots must be positive")
+        if self.private_obs_mode not in _PRIVATE_OBS_MODES:
+            raise ValueError(f"private_obs_mode must be one of {_PRIVATE_OBS_MODES}")
+        if self.private_query_slots > 1 and self.private_decoder_layers < 1:
+            raise ValueError("private_query_slots > 1 requires private_decoder_layers >= 1")
+        if self.private_decoder_layers > 0 and (
+                self.window or self.private_qk_norm != "none" or self.private_fusion != "sum"):
+            raise ValueError("private_decoder_layers requires window=0, private_qk_norm='none', "
+                             "and private_fusion='sum'")
+        if self.obs_mask_warmup_updates < 0:
+            raise ValueError("obs_mask_warmup_updates must not be negative")
+        if self.obs_mask_warmup_updates > 0 and self.private_obs_mode == "full":
+            raise ValueError("obs_mask_warmup_updates > 0 requires private_obs_mode != 'full'")
+        if self.rollout_private_graphs and (
+                self.private_decoder_layers > 0 or self.private_obs_mode != "full"):
+            raise ValueError("rollout_private_graphs does not support private_decoder_layers > 0 "
+                             "or private_obs_mode != 'full'")
+        if self.init_checkpoint and (self.habit_pack or self.habit_init):
+            raise ValueError("init_checkpoint cannot be combined with habit_pack or habit_init")
         if (self.rollout_private_graphs or self.rollout_triton_cache
                 or self.rollout_paged_cache) and not self.rollout_kv_cache:
             raise ValueError('KV cache layouts and CUDA rollout optimizations require rollout_kv_cache')
@@ -232,6 +270,14 @@ class HistoryPPOConfig:
                 or self.population_archive_every < 0 or self.population_archive_size < 1
                 or not 0 <= self.population_archive_share <= 1):
             raise ValueError("invalid population schedule")
+        if self.population_archive_filter not in _ARCHIVE_FILTERS:
+            raise ValueError(f"population_archive_filter must be one of {_ARCHIVE_FILTERS}")
+        if not math.isfinite(self.population_archive_min_tv) or not 0 <= self.population_archive_min_tv <= 1:
+            raise ValueError("population_archive_min_tv must be finite and in [0, 1]")
+        if self.population_archive_max_age_updates < 0:
+            raise ValueError("population_archive_max_age_updates must not be negative")
+        if self.population_behavior_probe_rows < 1:
+            raise ValueError("population_behavior_probe_rows must be positive")
         if self.rollout_kv_cache and self.window:
             raise ValueError("rollout KV cache requires full history")
         if self.response_mode not in ("none", "auxiliary", "explicit"):
@@ -269,6 +315,9 @@ class HistoryPPOConfig:
                                    aux_heads=self.aux_heads,
                                    private_qk_norm=self.private_qk_norm,
                                    private_fusion=self.private_fusion,
+                                   private_decoder_layers=self.private_decoder_layers,
+                                   private_query_slots=self.private_query_slots,
+                                   private_obs_mode=self.private_obs_mode,
                                    style_input=bool(self.habit_pack)
                                    and self.habit_view == "oracle")
 
@@ -312,6 +361,11 @@ RESUME_OVERRIDES = frozenset({"num_envs", "num_threads", "minibatch_matches", "t
                               "checkpoint_updates", "ddp_global_minibatch",
                               "rollout_graph_budget_mb", "rollout_graph_policy_budget_mb",
                               "rollout_triton_min_batch", "snapshot_updates",
+                              "population_recent", "snapshot_probability",
+                              "population_archive_every", "population_archive_size",
+                              "population_archive_share", "population_archive_filter",
+                              "population_archive_min_tv", "population_archive_max_age_updates",
+                              "population_behavior_probe_rows", "population_behavior_probe_seed",
                               "profile_collection", "profile_collection_warmup",
                               "batch_snapshot_policies", "batch_snapshot_policies_schedule",
                               "rollout_trim_cuda_cache", "rollout_paged_cache",
@@ -320,6 +374,7 @@ RESUME_OVERRIDES = frozenset({"num_envs", "num_threads", "minibatch_matches", "t
                               "rollout_page_span", "rollout_prefill_learner_cache",
                               "profile_learn",
                               "aux_heads", "aux_coef", "aux_warmup_updates",
+                              "obs_mask_warmup_updates",
                               "rollout_private_graphs",
                               "lr_final", "lr_decay_start", "lr_decay_updates"})
 
@@ -342,7 +397,7 @@ def parse_resume_overrides(items: list[str] | None) -> dict[str, Any]:
             values[key] = raw.lower() in ("true", "1")
         elif str(types[key]) == "str":
             values[key] = raw
-        elif str(types[key]) == "float":
+        elif "float" in str(types[key]):
             values[key] = float(raw)
         else:
             values[key] = int(raw)
@@ -383,6 +438,16 @@ def build_parser() -> argparse.ArgumentParser:
                         help="private-query/reader fusion: 'sum' LayerNorms their sum; "
                              "'split' LayerNorms the q_proj input and fuses the reader "
                              "under its own norm; fresh lineages/habit init only")
+    parser.add_argument("--private-decoder-layers", type=int, default=0,
+                        help="layers in the relative-position private cross-decoder (0: legacy)")
+    parser.add_argument("--private-query-slots", type=int, default=1,
+                        help="query slots per decision in PrivateCrossDecoder (1: single slot)")
+    parser.add_argument("--private-obs-mode", choices=_PRIVATE_OBS_MODES, default="full",
+                        help="actor observation mode: 'full' (legacy), 'private_only', or 'card_counter'")
+    parser.add_argument("--obs-mask-warmup-updates", type=int, default=0,
+                        help="linearly ramp actor obs_mask_prob to 1.0 over this many updates")
+    parser.add_argument("--init-checkpoint", default="",
+                        help="start a new lineage initialized from a compatible history_ppo checkpoint")
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--critic-lr", type=float, default=None)
     parser.add_argument("--clip", type=float, default=0.2)
@@ -404,6 +469,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--population-archive-every", type=int, default=0)
     parser.add_argument("--population-archive-size", type=int, default=16)
     parser.add_argument("--population-archive-share", type=float, default=0.5)
+    parser.add_argument("--population-archive-filter", choices=_ARCHIVE_FILTERS, default="thin",
+                        help="archive admission rule: thin (default), strength_behavior, or nearest_pair")
+    parser.add_argument("--population-archive-min-tv", type=float, default=0.05,
+                        help="minimum probe total-variation distance for near-duplicate admission")
+    parser.add_argument("--population-archive-max-age-updates", type=int, default=0,
+                        help="evict archive members older than this many updates (0: unbounded)")
+    parser.add_argument("--population-behavior-probe-rows", type=int,
+                        default=_DEFAULT_BEHAVIOR_PROBE_ROWS,
+                        help="number of stratified decisions in the archive behavior probe")
+    parser.add_argument("--population-behavior-probe-seed", type=int,
+                        default=_DEFAULT_BEHAVIOR_PROBE_SEED,
+                        help="deterministic seed for generating the archive behavior probe")
     parser.add_argument("--habit-pack", default="",
                         help="planted-habit diagnostic: frozen base checkpoint of the styled "
                              "opponent pack (replaces snapshots; never the main lineage)")

@@ -228,7 +228,8 @@ class SequenceRolloutBuffer:
                  round_index: np.ndarray, seat: np.ndarray, phase: np.ndarray,
                  obs: np.ndarray, hidden: np.ndarray, cand: np.ndarray, offsets: np.ndarray,
                  chosen: np.ndarray, logp: np.ndarray, prefix: np.ndarray,
-                 version: int, behaviour_logp: np.ndarray | None = None) -> int:
+                 version: int, behaviour_logp: np.ndarray | None = None,
+                 obs_mask_prob: float | np.ndarray | None = None) -> int:
         """Store the batch rows where ``keep`` is true. ``obs``/``cand`` are the
         batch's arrays (uint8 or the engine's binary float32), ``offsets`` the
         batch's ragged candidate offsets, ``chosen`` the local candidate index
@@ -273,6 +274,11 @@ class SequenceRolloutBuffer:
             .astype(np.uint8, copy=True),
             "cand": np.asarray(cand)[src].astype(np.uint8, copy=True),
         }
+        if obs_mask_prob is not None:
+            if np.ndim(obs_mask_prob) == 0:
+                chunk["obs_mask_prob"] = np.full(rows.size, float(obs_mask_prob), np.float32)
+            else:
+                chunk["obs_mask_prob"] = np.asarray(obs_mask_prob, np.float32)[rows]
         self.chunks.append(chunk)
         self.n_rows += rows.size
         self.data = None
@@ -305,6 +311,12 @@ class SequenceRolloutBuffer:
             if self.chunks:
                 data = {name: np.concatenate([c[name] for c in self.chunks])
                         for name in (*ROW_FIELDS, "obs", "hidden", "cand")}
+                if any("obs_mask_prob" in c for c in self.chunks):
+                    data["obs_mask_prob"] = np.concatenate([
+                        c["obs_mask_prob"] if "obs_mask_prob" in c
+                        else np.ones(len(c["env"]), np.float32)
+                        for c in self.chunks
+                    ])
             else:
                 data = {name: np.zeros(0, np.int64) for name in ROW_FIELDS}
                 data["logp"] = np.zeros(0, np.float32)
@@ -437,6 +449,8 @@ class SequenceRolloutBuffer:
             chunk = {name: data[name][rows] for name in (*ROW_FIELDS, "obs", "hidden")}
             chunk["traj"] = np.asarray([remap[int(t)] for t in data["traj"][rows]], np.int64)
             chunk["cand"] = data["cand"][src]
+            if "obs_mask_prob" in data:
+                chunk["obs_mask_prob"] = data["obs_mask_prob"][rows]
             self.chunks = [chunk]
         else:
             self.chunks = []
@@ -513,10 +527,12 @@ class SequenceRolloutBuffer:
                 plan.append(((int(cited[matches].max()), int(per_match[matches].max())),
                              (matches.astype(np.int64), members, local[match_index[members]],
                               match_rank[members])))
+        has_mask_prob = "obs_mask_prob" in data
         host = (*StreamBatch.host_arrays(arrays), match_index, prefix,
                 data["obs"][rows], data["seat"][rows], data["cand"][src], offsets,
                 offsets[:-1] + data["chosen"][rows], *named.values(), match_rank,
-                *(array for _, group in plan for array in group))
+                data["round"][rows], *(array for _, group in plan for array in group),
+                *((data["obs_mask_prob"][rows],) if has_mask_prob else ()))
         uploaded = upload_arrays(host, device)
         # Keep the existing floating-point fields at their original packed
         # offsets. Moving them by an odd number of int64 ranks changes their
@@ -525,8 +541,10 @@ class SequenceRolloutBuffer:
         inputs = DecisionInputs(streams=StreamBatch(*uploaded[:4]), match_index=uploaded[4],
                                 prefix=uploaded[5], obs=uploaded[6], seat=uploaded[7],
                                 cand=uploaded[8], offsets=uploaded[9], match_rank=uploaded[fields_end],
-                                match_slots=int(per_match.max(initial=0)))
-        base = fields_end + 1
+                                match_slots=int(per_match.max(initial=0)),
+                                round_index=uploaded[fields_end + 1],
+                                obs_mask_prob=(uploaded[-1] if has_mask_prob else None))
+        base = fields_end + 2
         if plan:
             from train.history_model import MatchGroup
             inputs.match_groups = [MatchGroup(*uploaded[base + 4 * g:base + 4 * g + 3], tokens,
@@ -729,6 +747,10 @@ class HistoryCollector:
             raise ValueError("a style-input learner needs the opponents' style per match")
         if actor.config.style_input and private_graphs:
             raise ValueError("private graphs do not capture the style input")
+        if private_graphs and (actor.config.private_decoder_layers > 0
+                               or actor.config.private_obs_mode != "full"):
+            raise ValueError("private CUDA graphs do not support sequence decoder or "
+                             "private-only obs masking")
         if prefill_learner_cache and (not kv_cache or round_streams):
             raise ValueError("learner cache prefill requires the match-keyed KV cache")
         self.prefill_learner_cache = bool(prefill_learner_cache)
@@ -766,6 +788,7 @@ class HistoryCollector:
         self.choice_log: list[np.ndarray] | None = [] if record_choices else None
         self.started = False
         self.version = 0
+        self.obs_mask_prob: float | None = None
 
     def cache_metrics(self) -> dict:
         metrics = dict(bytes=sum(c.bytes for c in self.caches.values()),
@@ -955,14 +978,23 @@ class HistoryCollector:
         from train.history_snapshot_batch import merged_log_probs, merged_sample
         layout, groups, actors = plan.layout, plan.merged, plan.merged_actors
         width = self.actor.config.width
+        need_pos = self.actor.config.private_decoder_layers > 0
         memory = None
+        pos_seat = pos_round = None
         if self.batch_snapshot_encoder and self.kv_cache:
             from train.history_paged_cache import merged_encode
             parts = [(self._cache(group.identity, actor), group.keys, group.streams, slot)
                      for group, actor, slot in zip(groups, actors, plan.slots)]
-            memory = merged_encode(parts, self.snapshot_heads, layout.length)
+            if need_pos:
+                memory, pos_seat, pos_round = merged_encode(
+                    parts, self.snapshot_heads, layout.length, return_pos=True
+                )
+            else:
+                memory = merged_encode(parts, self.snapshot_heads, layout.length)
             mark("public_cache_or_collation", "snapshot")
             groups = ()     # memory is complete
+        if groups and need_pos:
+            from train.history_decoder import extract_stream_pos
         for group, actor, (begin, end), (first, last) in zip(
                 groups, actors, layout.group_rows, layout.group_streams):
             stream_batch, encoded = self._encode_streams(group, actor, fields["prefix"][begin:end],
@@ -975,9 +1007,26 @@ class HistoryCollector:
                 memory = encoded.new_zeros(layout.streams, layout.length, width)
             span = min(layout.length, encoded.shape[1])
             memory[first:last, :span].copy_(encoded[:, :span])
+            if need_pos:
+                if pos_seat is None:
+                    pos_seat = torch.zeros((layout.streams, layout.length), dtype=torch.uint8,
+                                           device=memory.device)
+                    pos_round = torch.zeros((layout.streams, layout.length), dtype=torch.uint8,
+                                            device=memory.device)
+                ps_g, pr_g = extract_stream_pos(
+                    stream_batch, encoded.shape[1], actor.config.max_rounds, memory.device
+                )
+                pos_seat[first:last, :span].copy_(ps_g[:, :span].to(torch.uint8))
+                pos_round[first:last, :span].copy_(pr_g[:, :span].to(torch.uint8))
             del encoded
             mark("public_cache_or_collation", "snapshot")
-        log_probs = merged_log_probs(self.snapshot_heads, layout, fields, memory)
+        if need_pos:
+            log_probs = merged_log_probs(
+                self.snapshot_heads, layout, fields, memory,
+                pos_seat=pos_seat, pos_round=pos_round, group_slots=plan.slots,
+            )
+        else:
+            log_probs = merged_log_probs(self.snapshot_heads, layout, fields, memory)
         choice, chosen_logp = merged_sample(log_probs, layout, fields, self.generator)
         mark("actor_and_sampling", "snapshot")
         return choice, chosen_logp.float()
@@ -1063,9 +1112,12 @@ class HistoryCollector:
             plan.host_fields.extend((
                 np.asarray([index[k] for k in keys], np.int64), r.prefix[rows],
                 r.obs[rows].astype(np.uint8), r.seat[rows], r.cand[src].astype(np.uint8),
-                local, np.repeat(np.arange(len(rows), dtype=np.int64), r.counts[rows])))
+                local, np.repeat(np.arange(len(rows), dtype=np.int64), r.counts[rows]),
+                r.round_index[rows]))
         if plan.merged:
-            from train.history_snapshot_batch import SnapshotHeads, merged_layout
+            from train.history_snapshot_batch import (
+                SnapshotHeads, decoder_extra_arrays, merged_layout,
+            )
             if self.snapshot_heads is None:
                 self.snapshot_heads = SnapshotHeads(encoder=self.batch_snapshot_encoder)
             plan.merged_actors = [self.resolve_policy(g.identity) for g in plan.merged]
@@ -1074,6 +1126,8 @@ class HistoryCollector:
             plan.layout = merged_layout(plan.merged, plan.slots, r.prefix, r.obs, r.seat, r.cand,
                                         r.offsets, r.counts, r.env_id, r.match_id)
             plan.host_fields.extend(plan.layout.arrays)
+            if self.actor.config.private_decoder_layers > 0:
+                plan.host_fields.extend(decoder_extra_arrays(plan.layout, plan.slots, r.round_index))
         return plan
 
     def _infer_group(self, group: _PolicyBatch, fields, r: _StepRows, stats: CollectStats,
@@ -1088,7 +1142,8 @@ class HistoryCollector:
             streams=stream_batch,
             match_index=fields[0], prefix=fields[1], obs=fields[2], seat=fields[3],
             cand=fields[4], offsets=fields[5], candidate_rows=fields[6],
-            one_decision_per_stream=group.one_decision_per_stream)
+            one_decision_per_stream=group.one_decision_per_stream,
+            round_index=fields[7])
         if actor.config.style_input:
             inputs.style = torch.as_tensor(
                 np.asarray([self.row_style(e, m) for e, m in
@@ -1144,11 +1199,17 @@ class HistoryCollector:
     def _store(self, r: _StepRows, stats: CollectStats) -> None:
         if ((r.choices < 0) | (r.choices >= r.counts)).any():
             raise ValueError("a choice lies outside its candidate list")
+        obs_mask_prob = (
+            (self.obs_mask_prob if self.obs_mask_prob is not None
+             else float(self.actor.obs_mask_prob))
+            if self.actor.obs_mask_prob is not None else None
+        )
         stored = self.buffer.add_step(
             keep=r.acting, env_id=r.env_id, match_id=r.match_id, round_index=r.round_index,
             seat=r.seat, phase=r.phase, obs=r.obs, hidden=r.hidden, cand=r.cand,
             offsets=r.offsets, chosen=r.choices, logp=r.logp, prefix=r.prefix,
-            version=self.version, behaviour_logp=r.behaviour_logp)
+            version=self.version, behaviour_logp=r.behaviour_logp,
+            obs_mask_prob=obs_mask_prob)
         if stored:
             rows = np.flatnonzero(r.acting)
             stats.learner_rows += stored
@@ -1177,12 +1238,17 @@ class HistoryCollector:
         uploaded = upload_arrays(plan.host_fields, self.device)
         mark("decision_upload")
         pending = [(group.identity, group.rows,
-                    self._infer_group(group, uploaded[7 * i:7 * (i + 1)], rows, stats, mark))
+                    self._infer_group(group, uploaded[8 * i:8 * (i + 1)], rows, stats, mark))
                    for i, group in enumerate(plan.groups)]
         if plan.layout is not None:
             # After the learner, as the per-identity calls were: identical
             # generator order. One merged actor call for every snapshot row.
-            fields = dict(zip(LAYOUT_FIELDS, uploaded[7 * len(plan.groups):]))
+            base = 8 * len(plan.groups)
+            fields = dict(zip(LAYOUT_FIELDS, uploaded[base:base + len(LAYOUT_FIELDS)]))
+            if self.actor.config.private_decoder_layers > 0:
+                extra_base = base + len(LAYOUT_FIELDS)
+                fields["round_index"] = uploaded[extra_base]
+                fields["stream_pad"] = uploaded[extra_base + 1]
             downloads = self._merged_snapshot_step(plan, fields, rows.prefix, mark)
             pending.append((-1, plan.layout.rows, downloads))
             self._count_call(stats, "snapshot", plan.merged)

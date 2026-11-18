@@ -154,6 +154,28 @@ the other arms. `--private-fusion sum|split`
 output under its own `reader_norm`, replacing the `query` arm (the two are
 mutually exclusive); it carries the same resume and guard restrictions.
 
+Multi-layer sequence decoder, card-counter observation masking and `nearest_pair`
+population archive (November 17, 2026;
+[report](reports/sequence-decoder-nearest-pair-2026-11-17.md)).
+`--private-decoder-layers L --private-query-slots K` (`train.history_decoder`)
+replaces the single-layer private cross-attention with an `L`-layer Pre-LN
+per-head QK-normalized cross-decoder with `K` query slots and query-conditioned
+relative `(seat, round, step)` attention biases. `--private-obs-mode`
+(`full|card_counter|private_only`, default `full`) controls actor observation
+masking via `--obs-mask-warmup-updates`: `card_counter` retains the 382 private
+hand, level/role and remaining-card counter dimensions while masking the 1,467
+action-history summary dimensions; `private_only` retains 171 strictly private
+dimensions; `HistoryCritic` keeps full `obs + hidden`. Offline checkpoint
+conversion runs via `python -m train.history_sequence_migrate` and continues a
+new lineage via `--init-checkpoint` (rebasing inherited snapshot updates to
+`<= 0`). Both ordinary/paged KV caches and `--batch-snapshot-policies` /
+`--batch-snapshot-encoder` support these options; `eval.botzone.numpy_actor`
+refuses them explicitly. `--population-archive-filter nearest_pair`
+(`train.history_population`, with optional `--population-archive-max-age-updates`
+and persistent stratified `--population-behavior-probe-rows` /
+`--population-behavior-probe-seed`) merges the closest behavioral pair when the
+archive is full instead of dropping the oldest snapshot.
+
 ### Runtime refactor (2026-10-18)
 
 The [October 18 implementation and measurements](reports/training-throughput-refactor-2026-10-18.md)

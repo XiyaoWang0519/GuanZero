@@ -36,6 +36,7 @@ unchanged; only the table they are added to carries float-order noise.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Sequence
 import weakref
 
 import numpy as np
@@ -43,6 +44,16 @@ import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
+from train.history_decoder import (
+    PrivateCrossDecoder,
+    PrivateDecoderLayer,
+    REL_SEAT_BUCKETS,
+    REL_STEP_BUCKETS,
+    _compute_rel_buckets,
+    _gather_attn_bias,
+    infer_decision_rounds,
+    mask_public_obs,
+)
 from train.history_model import HistoryActor, segment_log_softmax
 
 # Per-slot tensor names and the order of the uploaded layout fields.
@@ -62,19 +73,58 @@ def _mlp_linears(module: nn.Module, layers: int) -> tuple[nn.Linear, ...]:
 
 
 def head_parameters(actor: HistoryActor) -> tuple[Tensor, ...]:
-    """Every parameter the merged head reads, from the live module registries."""
+    """Every parameter (and mask buffer) the merged head reads, from live registries."""
+    cfg = actor.config
     p0, p1 = actor.private[0], actor.private[2]
     a0, a1 = actor.action_tower[0], actor.action_tower[2]
     u0, u1, u2 = actor.fusion[0][0], actor.fusion[0][2], actor.fusion[1]
     f0, f1 = actor.feed_forward[0], actor.feed_forward[2]
-    return (p0.weight, p0.bias, p1.weight, p1.bias, actor.seat.weight,
-            actor.q_proj.weight, actor.q_proj.bias, actor.kv_proj.weight, actor.kv_proj.bias,
+    if cfg.private_decoder_layers == 0 and cfg.private_obs_mode == "full":
+        return (p0.weight, p0.bias, p1.weight, p1.bias, actor.seat.weight,
+                actor.q_proj.weight, actor.q_proj.bias, actor.kv_proj.weight, actor.kv_proj.bias,
+                actor.out_proj.weight, actor.out_proj.bias,
+                actor.attention_norm.weight, actor.attention_norm.bias,
+                f0.weight, f0.bias, f1.weight, f1.bias,
+                actor.output_norm.weight, actor.output_norm.bias,
+                a0.weight, a0.bias, a1.weight, a1.bias,
+                u0.weight, u0.bias, u1.weight, u1.bias, u2.weight, u2.bias)
+    params: list[Tensor] = [p0.weight, p0.bias, p1.weight, p1.bias, actor.seat.weight]
+    if cfg.private_decoder_layers > 0:
+        dec = actor.private_decoder
+        params.extend((dec.reader_bias, dec.query_round.weight))
+        if dec.query_slots > 1:
+            params.extend((dec.slot_embeddings, dec.slot_proj.weight, dec.slot_proj.bias))
+        for layer in dec.layers:
+            params.extend((
+                layer.q_ln.weight, layer.q_ln.bias,
+                layer.q_proj.weight, layer.q_proj.bias,
+                layer.kv_proj.weight, layer.kv_proj.bias,
+                layer.q_norm.weight, layer.q_norm.bias,
+                layer.k_norm.weight, layer.k_norm.bias,
+                layer.rel_seat_proj.weight, layer.rel_seat_proj.bias,
+                layer.rel_round_proj.weight, layer.rel_round_proj.bias,
+                layer.rel_step_proj.weight, layer.rel_step_proj.bias,
+                layer.out_proj.weight, layer.out_proj.bias,
+                layer.ffn_ln.weight, layer.ffn_ln.bias,
+                layer.ffn[0].weight, layer.ffn[0].bias,
+                layer.ffn[2].weight, layer.ffn[2].bias,
+            ))
+    else:
+        params.extend((
+            actor.q_proj.weight, actor.q_proj.bias,
+            actor.kv_proj.weight, actor.kv_proj.bias,
             actor.out_proj.weight, actor.out_proj.bias,
-            actor.attention_norm.weight, actor.attention_norm.bias,
-            f0.weight, f0.bias, f1.weight, f1.bias,
-            actor.output_norm.weight, actor.output_norm.bias,
-            a0.weight, a0.bias, a1.weight, a1.bias,
-            u0.weight, u0.bias, u1.weight, u1.bias, u2.weight, u2.bias)
+        ))
+    params.extend((
+        actor.attention_norm.weight, actor.attention_norm.bias,
+        f0.weight, f0.bias, f1.weight, f1.bias,
+        actor.output_norm.weight, actor.output_norm.bias,
+        a0.weight, a0.bias, a1.weight, a1.bias,
+        u0.weight, u0.bias, u1.weight, u1.bias, u2.weight, u2.bias,
+    ))
+    if cfg.private_obs_mode != "full":
+        params.append(actor.obs_mask_prob)
+    return tuple(params)
 
 
 def head_signature(actor: HistoryActor) -> tuple:
@@ -83,6 +133,55 @@ def head_signature(actor: HistoryActor) -> tuple:
     also caught. Any change rewrites the identity's slot before it is read."""
     return tuple((id(t), t._version, t.data_ptr(), t.dtype, t.device)
                  for t in head_parameters(actor))
+
+
+def _validate_decoder(actor: HistoryActor, eps: float) -> None:
+    config = actor.config
+    dec = actor.private_decoder
+    if not isinstance(dec, PrivateCrossDecoder):
+        raise ValueError("merged snapshot inference requires PrivateCrossDecoder")
+    if (dec.width != config.width or dec.heads != config.heads
+            or len(dec.layers) != config.private_decoder_layers
+            or dec.max_rounds != config.max_rounds
+            or dec.query_slots != config.private_query_slots):
+        raise ValueError("private_decoder dimensions do not match actor.config")
+    if (not isinstance(dec.query_round, nn.Embedding)
+            or dec.query_round.num_embeddings != config.max_rounds
+            or dec.query_round.embedding_dim != config.width):
+        raise ValueError("merged snapshot inference requires standard query_round embedding")
+    if config.private_query_slots > 1:
+        if (dec.slot_embeddings is None
+                or dec.slot_embeddings.shape != (config.private_query_slots, config.width)
+                or not isinstance(dec.slot_proj, nn.Linear)
+                or dec.slot_proj.bias is None
+                or dec.slot_proj.in_features != config.private_query_slots * config.width
+                or dec.slot_proj.out_features != config.width):
+            raise ValueError("merged snapshot inference requires standard multi-slot projections")
+    depth = config.width // config.heads
+    for layer in dec.layers:
+        if not isinstance(layer, PrivateDecoderLayer):
+            raise ValueError("merged snapshot inference requires PrivateDecoderLayer")
+        for norm_layer, shape in (
+            (layer.q_ln, (config.width,)),
+            (layer.ffn_ln, (config.width,)),
+            (layer.q_norm, (depth,)),
+            (layer.k_norm, (depth,)),
+        ):
+            if (not isinstance(norm_layer, nn.LayerNorm)
+                    or not norm_layer.elementwise_affine
+                    or norm_layer.bias is None
+                    or norm_layer.normalized_shape != shape
+                    or norm_layer.eps != eps):
+                raise ValueError("merged snapshot inference requires matching affine decoder norms")
+        for lin in (layer.q_proj, layer.kv_proj, layer.rel_seat_proj, layer.rel_round_proj,
+                    layer.rel_step_proj, layer.out_proj):
+            if not isinstance(lin, nn.Linear) or lin.bias is None:
+                raise ValueError("merged snapshot inference requires biased decoder linears")
+        ffn_children = list(layer.ffn.children()) if isinstance(layer.ffn, nn.Sequential) else []
+        if (len(ffn_children) != 3 or not isinstance(ffn_children[0], nn.Linear)
+                or ffn_children[0].bias is None or type(ffn_children[1]) is not nn.ReLU
+                or not isinstance(ffn_children[2], nn.Linear) or ffn_children[2].bias is None):
+            raise ValueError("merged snapshot inference requires standard ReLU decoder FFN")
 
 
 def validate_actor(actor: HistoryActor) -> None:
@@ -98,6 +197,12 @@ def validate_actor(actor: HistoryActor) -> None:
     if config.private_fusion != "sum":
         raise ValueError("merged snapshot inference does not implement the split "
                          "private fusion")
+    if config.style_input:
+        raise ValueError("merged snapshot inference does not implement style_input")
+    if config.private_obs_mode != "full":
+        if (actor.obs_mask_prob is None or actor.obs_mask_prob.dtype != torch.float32
+                or actor.obs_mask_prob.numel() != 1):
+            raise ValueError("non-full obs mode requires scalar float32 obs_mask_prob buffer")
     _mlp_linears(actor.private, 2)
     _mlp_linears(actor.action_tower, 2)
     _mlp_linears(actor.fusion[0], 2)
@@ -109,6 +214,8 @@ def validate_actor(actor: HistoryActor) -> None:
     if any(not n.elementwise_affine or n.bias is None or n.normalized_shape != (config.width,)
            for n in norms):
         raise ValueError("merged snapshot inference requires affine width layer norms")
+    if config.private_decoder_layers > 0:
+        _validate_decoder(actor, actor.attention_norm.eps)
     if any(t.dtype != torch.float32 for t in head_parameters(actor)):
         raise ValueError("merged snapshot inference is FP32 only")
     for module in actor.modules():
@@ -119,7 +226,7 @@ def validate_actor(actor: HistoryActor) -> None:
 
 def _head_values(actor: HistoryActor) -> dict[str, Tensor]:
     """One identity's head in the stacked layout: Linear weights as [in, out],
-    biases as [1, out], key/value weights split per head."""
+    biases as [1, out], key/value weights split per head (or decoder layers)."""
     cfg = actor.config
     width, heads = cfg.width, cfg.heads
     depth = width // heads
@@ -128,23 +235,52 @@ def _head_values(actor: HistoryActor) -> dict[str, Tensor]:
     u0, u1 = _mlp_linears(actor.fusion[0], 2)
     u2 = actor.fusion[1]
     f0, f1 = actor.feed_forward[0], actor.feed_forward[2]
-    kv_w, kv_b = actor.kv_proj.weight, actor.kv_proj.bias
     linear = lambda layer, name: {f"{name}_w": layer.weight.t(), f"{name}_b": layer.bias[None]}
-    return {
+    norm = lambda layer, name: {f"{name}_w": layer.weight[None], f"{name}_b": layer.bias[None]}
+    values: dict[str, Tensor] = {
         **linear(p0, "p0"), **linear(p1, "p1"), "seat": actor.seat.weight,
-        **linear(actor.q_proj, "q"),
-        # query-side key weights: (W_k^T q) per head, [heads, depth, width]
-        "k_w": kv_w[:width].reshape(heads, depth, width),
-        # value weights applied after attention, [heads, width, depth]
-        "v_w": kv_w[width:].reshape(heads, depth, width).transpose(1, 2),
-        "v_b": kv_b[width:][None],
-        **linear(actor.out_proj, "o"),
         "n1_w": actor.attention_norm.weight[None], "n1_b": actor.attention_norm.bias[None],
         **linear(f0, "f0"), **linear(f1, "f1"),
         "n2_w": actor.output_norm.weight[None], "n2_b": actor.output_norm.bias[None],
         **linear(a0, "a0"), **linear(a1, "a1"),
         **linear(u0, "u0"), **linear(u1, "u1"), **linear(u2, "u2"),
     }
+    if cfg.private_decoder_layers > 0:
+        dec = actor.private_decoder
+        values["d_rb"] = dec.reader_bias[None]
+        values["d_qround"] = dec.query_round.weight
+        if dec.query_slots > 1:
+            values["d_slots"] = dec.slot_embeddings
+            values.update(linear(dec.slot_proj, "d_sproj"))
+        for idx, layer in enumerate(dec.layers):
+            values.update({
+                **norm(layer.q_ln, f"d{idx}_qln"),
+                **linear(layer.q_proj, f"d{idx}_q"),
+                **linear(layer.kv_proj, f"d{idx}_kv"),
+                **norm(layer.q_norm, f"d{idx}_qn"),
+                **norm(layer.k_norm, f"d{idx}_kn"),
+                **linear(layer.rel_seat_proj, f"d{idx}_rs"),
+                **linear(layer.rel_round_proj, f"d{idx}_rr"),
+                **linear(layer.rel_step_proj, f"d{idx}_rt"),
+                **linear(layer.out_proj, f"d{idx}_o"),
+                **norm(layer.ffn_ln, f"d{idx}_fln"),
+                **linear(layer.ffn[0], f"d{idx}_f0"),
+                **linear(layer.ffn[2], f"d{idx}_f1"),
+            })
+    else:
+        kv_w, kv_b = actor.kv_proj.weight, actor.kv_proj.bias
+        values.update({
+            **linear(actor.q_proj, "q"),
+            # query-side key weights: (W_k^T q) per head, [heads, depth, width]
+            "k_w": kv_w[:width].reshape(heads, depth, width),
+            # value weights applied after attention, [heads, width, depth]
+            "v_w": kv_w[width:].reshape(heads, depth, width).transpose(1, 2),
+            "v_b": kv_b[width:][None],
+            **linear(actor.out_proj, "o"),
+        })
+    if cfg.private_obs_mode != "full":
+        values["obs_mask_prob"] = actor.obs_mask_prob.reshape(1)
+    return values
 
 
 def encoder_parameters(actor: HistoryActor) -> tuple[Tensor, ...]:
@@ -404,9 +540,189 @@ def _pad(values: Tensor, index: Tensor, size: int) -> Tensor:
     return out.index_copy_(0, index, values)
 
 
+def decoder_extra_arrays(
+    layout: MergedLayout,
+    slots: Sequence[int],
+    round_index: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build ``(round_rows, stream_pad)`` host arrays for merged decoder inference."""
+    round_rows = np.ascontiguousarray(round_index[layout.rows], dtype=np.int64)
+    stream_slot = np.empty(layout.streams, dtype=np.int64)
+    local_idx = np.empty(layout.streams, dtype=np.int64)
+    seen: dict[int, int] = {}
+    for (first, last), slot in zip(layout.group_streams, slots):
+        s = int(slot)
+        count = last - first
+        start = seen.get(s, 0)
+        stream_slot[first:last] = s
+        local_idx[first:last] = np.arange(start, start + count, dtype=np.int64)
+        seen[s] = start + count
+    ms = max(seen.values(), default=1)
+    stream_pad = np.ascontiguousarray(stream_slot * ms + local_idx, dtype=np.int64)
+    return round_rows, stream_pad
+
+
+def _resolve_stream_pad(
+    layout: MergedLayout,
+    group_slots: Sequence[int] | None,
+    fields: dict[str, Tensor],
+    device: torch.device,
+) -> tuple[Tensor, int]:
+    """Return ``(stream_pad, max_streams_per_slot)`` on ``device`` without host syncs when ``group_slots`` is given."""
+    slots_seq = group_slots
+    if slots_seq is None:
+        m = layout.rows_per_slot
+        slots_seq = [int((fields["row_pad"][begin] // m).item()) for begin, _ in layout.group_rows]
+    seen: dict[int, int] = {}
+    if "stream_pad" in fields:
+        for (first, last), slot in zip(layout.group_streams, slots_seq):
+            s = int(slot)
+            seen[s] = seen.get(s, 0) + (last - first)
+        return fields["stream_pad"].to(device=device, dtype=torch.long), max(seen.values(), default=1)
+    stream_slot = np.empty(layout.streams, dtype=np.int64)
+    local_idx = np.empty(layout.streams, dtype=np.int64)
+    for (first, last), slot in zip(layout.group_streams, slots_seq):
+        s = int(slot)
+        count = last - first
+        start = seen.get(s, 0)
+        stream_slot[first:last] = s
+        local_idx[first:last] = np.arange(start, start + count, dtype=np.int64)
+        seen[s] = start + count
+    ms = max(seen.values(), default=1)
+    stream_pad = torch.as_tensor(stream_slot * ms + local_idx, device=device, dtype=torch.long)
+    return stream_pad, ms
+
+
+def _merged_decode_states(
+    heads: SnapshotHeads,
+    layout: MergedLayout,
+    fields: dict[str, Tensor],
+    memory: Tensor,
+    query: Tensor,
+    pos_seat: Tensor | None,
+    pos_round: Tensor | None,
+    group_slots: Sequence[int] | None,
+) -> Tensor:
+    """Stacked ``PrivateCrossDecoder`` forward across all active slots -> ``[S, M, width]``."""
+    tensors, cfg = heads.tensors, heads.config
+    S, M = layout.slots, layout.rows_per_slot
+    width, heads_n = cfg.width, cfg.heads
+    depth = width // heads_n
+    rows = len(layout.rows)
+    seq_len = memory.shape[1]
+
+    if pos_seat is None:
+        ps_all = torch.zeros((layout.streams, seq_len), device=memory.device, dtype=torch.long)
+    else:
+        ps_all = pos_seat.to(device=memory.device, dtype=torch.long)
+        if ps_all.shape[1] > seq_len:
+            ps_all = ps_all[:, :seq_len]
+        elif ps_all.shape[1] < seq_len:
+            ps_all = F.pad(ps_all, (0, seq_len - ps_all.shape[1]), value=0)
+    if pos_round is None:
+        pr_all = torch.zeros((layout.streams, seq_len), device=memory.device, dtype=torch.long)
+    else:
+        pr_all = pos_round.to(device=memory.device, dtype=torch.long)
+        if pr_all.shape[1] > seq_len:
+            pr_all = pr_all[:, :seq_len]
+        elif pr_all.shape[1] < seq_len:
+            pr_all = F.pad(pr_all, (0, seq_len - pr_all.shape[1]), value=0)
+
+    if layout.identity_streams:
+        own_ps, own_pr = ps_all, pr_all
+        stream_idx = torch.arange(rows, device=memory.device, dtype=torch.long)
+    else:
+        stream_idx = fields["stream"]
+        own_ps = ps_all[stream_idx]
+        own_pr = pr_all[stream_idx]
+
+    round_idx = infer_decision_rounds(
+        fields.get("round_index"), pr_all, stream_idx, fields["prefix"]
+    )
+    my_round = round_idx.to(device=memory.device, dtype=torch.long).clamp(0, cfg.max_rounds - 1)
+    row_pad = fields["row_pad"]
+    q_round_rows = tensors["d_qround"][row_pad // M, my_round]
+    q_round_emb = _pad(q_round_rows, row_pad, S * M).view(S, M, width)
+
+    base = _norm(query + tensors["d_rb"][:S], tensors, "n1", S, heads.eps) + q_round_emb
+    k_slots = cfg.private_query_slots
+    if k_slots == 1:
+        z0 = base[:, :, None, :]
+    else:
+        z0 = base[:, :, None, :] + tensors["d_slots"][:S, None, :, :]
+    z = z0.reshape(S, M * k_slots, width)
+
+    allowed, seat_b, round_b, step_b = _compute_rel_buckets(
+        own_ps,
+        own_pr,
+        fields["prefix"][:, None],
+        fields["seat"][:, None],
+        my_round[:, None],
+        cfg.max_rounds,
+    )
+    allowed_q = allowed[:, None, :].expand(rows, k_slots, seq_len)
+    seat_q = seat_b[:, None, :].expand(rows, k_slots, seq_len)
+    round_q = round_b[:, None, :].expand(rows, k_slots, seq_len)
+    step_q = step_b[:, None, :].expand(rows, k_slots, seq_len)
+    has_any = allowed_q.any(dim=-1, keepdim=True)
+
+    stream_pad, ms = _resolve_stream_pad(layout, group_slots, fields, memory.device)
+    mem_pad = _pad(memory, stream_pad, S * ms).view(S, ms * seq_len, width)
+    max_rounds_p1 = cfg.max_rounds + 1
+
+    for idx in range(cfg.private_decoder_layers):
+        kv = _linear(mem_pad, tensors, f"d{idx}_kv", S)
+        k_raw, v_raw = kv.chunk(2, dim=-1)
+        k_normed = _norm(k_raw.reshape(S, ms * seq_len * heads_n, depth), tensors,
+                         f"d{idx}_kn", S, heads.eps)
+        k_streams = k_normed.view(S * ms, seq_len, heads_n, depth)[stream_pad]
+        v_streams = v_raw.view(S * ms, seq_len, heads_n, depth)[stream_pad]
+        k_own = (k_streams if layout.identity_streams else k_streams[stream_idx]).transpose(1, 2)
+        v_own = (v_streams if layout.identity_streams else v_streams[stream_idx]).transpose(1, 2)
+
+        q_in = _norm(z, tensors, f"d{idx}_qln", S, heads.eps)
+        q_proj = _linear(q_in, tensors, f"d{idx}_q", S)
+        q_normed = _norm(q_proj.reshape(S, M * k_slots * heads_n, depth), tensors,
+                         f"d{idx}_qn", S, heads.eps)
+        q_r = (q_normed.view(S * M, k_slots, heads_n, depth)[row_pad].transpose(1, 2))
+        rs = (_linear(q_in, tensors, f"d{idx}_rs", S)
+              .view(S * M, k_slots, heads_n, REL_SEAT_BUCKETS)[row_pad].permute(0, 2, 1, 3))
+        rr = (_linear(q_in, tensors, f"d{idx}_rr", S)
+              .view(S * M, k_slots, heads_n, max_rounds_p1)[row_pad].permute(0, 2, 1, 3))
+        rt = (_linear(q_in, tensors, f"d{idx}_rt", S)
+              .view(S * M, k_slots, heads_n, REL_STEP_BUCKETS)[row_pad].permute(0, 2, 1, 3))
+
+        attn_bias = _gather_attn_bias(rs, rr, rt, allowed_q, seat_q, round_q, step_q)
+        mask = torch.where(has_any[:, None], attn_bias, 0.0)
+        if q_r.dtype != mask.dtype:
+            mask = mask.to(q_r.dtype)
+        out = F.scaled_dot_product_attention(q_r, k_own, v_own, attn_mask=mask, dropout_p=0.0)
+        out = out * has_any[:, None].to(out.dtype)
+        out_rows = out.transpose(1, 2).reshape(rows, k_slots, width)
+        attended = _pad(out_rows, row_pad, S * M).view(S, M * k_slots, width)
+
+        z = z + _linear(attended, tensors, f"d{idx}_o", S)
+        ffn_in = _norm(z, tensors, f"d{idx}_fln", S, heads.eps)
+        ffn_hidden = torch.relu(_linear(ffn_in, tensors, f"d{idx}_f0", S))
+        z = z + _linear(ffn_hidden, tensors, f"d{idx}_f1", S)
+
+    if k_slots == 1:
+        return z.view(S, M, width)
+    delta = (z.view(S, M, k_slots, width) - z0).reshape(S, M, k_slots * width)
+    return base + _linear(delta, tensors, "d_sproj", S)
+
+
 @torch.no_grad()
-def merged_log_probs(heads: SnapshotHeads, layout: MergedLayout, fields: dict[str, Tensor],
-                     memory: Tensor) -> Tensor:
+def merged_log_probs(
+    heads: SnapshotHeads,
+    layout: MergedLayout,
+    fields: dict[str, Tensor],
+    memory: Tensor,
+    *,
+    pos_seat: Tensor | None = None,
+    pos_round: Tensor | None = None,
+    group_slots: Sequence[int] | None = None,
+) -> Tensor:
     """Log-probability of every snapshot candidate, ``[sum_k]``, in merged order.
 
     ``memory`` is ``[layout.streams, T, width]``: each identity's encoded
@@ -418,27 +734,42 @@ def merged_log_probs(heads: SnapshotHeads, layout: MergedLayout, fields: dict[st
     width, heads_n = cfg.width, cfg.heads
     depth = width // heads_n
     rows = len(layout.rows)
+    if cfg.private_obs_mode != "full":
+        row_slots = fields["row_pad"] // M
+        row_prob = tensors["obs_mask_prob"][row_slots, 0]
+        obs_in = mask_public_obs(
+            fields["obs"], fields["seat"], fields["prefix"], row_prob, mode=cfg.private_obs_mode
+        )
+    else:
+        obs_in = fields["obs"].float()
     # Private query, [S, M, width].
-    x = _pad(fields["obs"].float(), fields["row_pad"], S * M).view(S, M, -1)
+    x = _pad(obs_in, fields["row_pad"], S * M).view(S, M, -1)
     x = torch.relu(_linear(x, tensors, "p0", S))
     x = torch.relu(_linear(x, tensors, "p1", S))
     query = x + tensors["seat"][:S].reshape(S * 4, width)[fields["seat_pad"]].view(S, M, width)
-    q = _linear(query, tensors, "q", S).view(S, M, heads_n, depth).transpose(1, 2)
-    # Keys folded into the query: [S, heads, M, width], then one row per decision.
-    folded = torch.matmul(q, tensors["k_w"][:S]) * depth ** -0.5
-    folded = folded.transpose(1, 2).reshape(S * M, heads_n, width)[fields["row_pad"]]
-    own = memory if layout.identity_streams else memory[fields["stream"]]
-    scores = torch.bmm(folded, own.transpose(1, 2))                  # [rows, heads, T]
-    allowed = torch.arange(own.shape[1], device=own.device)[None] <= fields["prefix"][:, None]
-    scores = scores.masked_fill(~allowed[:, None], float("-inf"))
-    context = torch.bmm(torch.softmax(scores, dim=-1), own)           # [rows, heads, width]
-    context = _pad(context, fields["row_pad"], S * M).view(S, M, heads_n, width).transpose(1, 2)
-    attended = torch.matmul(context, tensors["v_w"][:S])               # [S, heads, M, depth]
-    attended = attended.transpose(1, 2).reshape(S, M, width) + tensors["v_b"][:S]
-    attended = _linear(attended, tensors, "o", S)
-    state = _norm(query + attended, tensors, "n1", S, heads.eps)
-    hidden = _linear(torch.relu(_linear(state, tensors, "f0", S)), tensors, "f1", S)
-    state = _norm(state + hidden, tensors, "n2", S, heads.eps)
+    if cfg.private_decoder_layers > 0:
+        base_state = _merged_decode_states(
+            heads, layout, fields, memory, query, pos_seat, pos_round, group_slots
+        )
+        hidden = _linear(torch.relu(_linear(base_state, tensors, "f0", S)), tensors, "f1", S)
+        state = _norm(base_state + hidden, tensors, "n2", S, heads.eps)
+    else:
+        q = _linear(query, tensors, "q", S).view(S, M, heads_n, depth).transpose(1, 2)
+        # Keys folded into the query: [S, heads, M, width], then one row per decision.
+        folded = torch.matmul(q, tensors["k_w"][:S]) * depth ** -0.5
+        folded = folded.transpose(1, 2).reshape(S * M, heads_n, width)[fields["row_pad"]]
+        own = memory if layout.identity_streams else memory[fields["stream"]]
+        scores = torch.bmm(folded, own.transpose(1, 2))                  # [rows, heads, T]
+        allowed = torch.arange(own.shape[1], device=own.device)[None] <= fields["prefix"][:, None]
+        scores = scores.masked_fill(~allowed[:, None], float("-inf"))
+        context = torch.bmm(torch.softmax(scores, dim=-1), own)           # [rows, heads, width]
+        context = _pad(context, fields["row_pad"], S * M).view(S, M, heads_n, width).transpose(1, 2)
+        attended = torch.matmul(context, tensors["v_w"][:S])               # [S, heads, M, depth]
+        attended = attended.transpose(1, 2).reshape(S, M, width) + tensors["v_b"][:S]
+        attended = _linear(attended, tensors, "o", S)
+        state = _norm(query + attended, tensors, "n1", S, heads.eps)
+        hidden = _linear(torch.relu(_linear(state, tensors, "f0", S)), tensors, "f1", S)
+        state = _norm(state + hidden, tensors, "n2", S, heads.eps)
     # Candidates, [S, Cm, features].
     actions = _pad(fields["cand"].float(), fields["cand_pad"], S * Cm).view(S, Cm, -1)
     actions = torch.relu(_linear(actions, tensors, "a0", S))

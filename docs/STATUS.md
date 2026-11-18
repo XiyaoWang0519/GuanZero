@@ -1,5 +1,18 @@
 # Project orientation for agents
 
+November 17: [multi-layer sequence decoder, card-counter masking and nearest-pair archive](reports/sequence-decoder-nearest-pair-2026-11-17.md)
+implemented opt-in `PrivateCrossDecoder` (per-head QK-norm, multi-slot queries,
+relative seat/round/step biases), `card_counter`/`private_only` observation
+masking with PPO-consistent warmup, offline checkpoint migration
+(`train.history_sequence_migrate` + `--init-checkpoint`), merged snapshot
+inference/encoding support, and `nearest_pair` population archiving with a
+persistent stratified multi-round behavior probe. Local suites (87 C++, 1,764+
+Python, snapshot revision verification) and Velocity CPU preflight/migration job
+22039 (`u234993` -> `u234993-seq-cc-np.pt`, heldout TV 0.00262, 0% one-hot
+saturation) passed; 2xL40S training job 22040 is queued (`runs/seq-cc-np-u234993`).
+CUDA throughput and playing-strength gains remain unmeasured; paused `runs/main`
+is unchanged.
+
 November 15: [public-history identification and layer diagnostics](reports/history-identification-2026-11-15.md)
 completed 8,000 frozen rounds, 48 diagnostic fits, three fit audits and a fresh
 160-history conditional-opportunity test. Public policy likelihoods recover

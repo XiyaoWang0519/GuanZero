@@ -20,7 +20,8 @@ from train.history_model import (DecisionInputs, HistoryPolicyConfig, PublicStre
 from train.history_ppo import (HistoryPPOConfig, HistoryTrainer, build_parser, config_from_args,
                                parse_arm_schedule, parse_resume_overrides)
 from train.history_snapshot_batch import (LAYOUT_FIELDS, SnapshotHeads, _head_values,
-                                          merged_layout, merged_log_probs, merged_sample)
+                                          decoder_extra_arrays, merged_layout, merged_log_probs,
+                                          merged_sample, validate_actor)
 from train.logs import TOKEN_DIM
 from test_history_rollout import make_env
 
@@ -514,3 +515,340 @@ def test_trainer_with_merged_snapshots_trains_identically(tmp_path):
         assert torch.equal(a, b)
     assert torch.equal(trainers["plain"].generator.get_state(),
                        trainers["merged"].generator.get_state())
+
+
+# ---- sequence decoder & private_only merged snapshots ------------------------------
+
+
+def _decoder_config(
+    *,
+    decoder_layers: int = 3,
+    query_slots: int = 4,
+    obs_mode: str = "private_only",
+    response_mode: str = "auxiliary",
+    aux_heads: str = "",
+) -> HistoryPolicyConfig:
+    return HistoryPolicyConfig(
+        width=32,
+        layers=1,
+        heads=4,
+        max_rounds=8,
+        action_width=16,
+        fusion_width=24,
+        critic_width=16,
+        response_mode=response_mode,
+        aux_heads=aux_heads,
+        private_decoder_layers=decoder_layers,
+        private_query_slots=query_slots,
+        private_obs_mode=obs_mode,
+    )
+
+
+def _decoder_players(
+    identities,
+    device: str,
+    mask_probs: dict[int, float] | None = None,
+    **cfg_kwargs,
+) -> dict[int, object]:
+    cfg = _decoder_config(**cfg_kwargs)
+    result = {}
+    for idx, ident in enumerate(identities):
+        actor = fresh_player(cfg, 80 + ident)[0].to(device)
+        with torch.no_grad():
+            # Break zero-init on reader_bias/query_round/slot_proj so all decoder paths are exercised.
+            if actor.private_decoder is not None:
+                actor.private_decoder.reader_bias.normal_(std=0.2)
+                actor.private_decoder.query_round.weight.normal_(std=0.2)
+                for layer in actor.private_decoder.layers:
+                    layer.rel_seat_proj.weight.normal_(std=0.1)
+                    layer.rel_round_proj.weight.normal_(std=0.1)
+                    layer.rel_step_proj.weight.normal_(std=0.1)
+            if actor.obs_mask_prob is not None and mask_probs is not None:
+                actor.obs_mask_prob.fill_(float(mask_probs[ident]))
+            elif actor.obs_mask_prob is not None:
+                actor.obs_mask_prob.fill_(float((idx % 4) / 3.0))
+        result[ident] = actor
+    return result
+
+
+class _DecoderStep(Step):
+    """Synthetic step with multi-round streams, explicit ``round_index``, and zero-prefix rows."""
+
+    def __init__(self, spec, seed: int, *, zero_prefix_rows: tuple[int, ...] = ()):
+        super().__init__(spec, seed, max_candidates=7, longest=36, shorter_prefix=True)
+        rng = np.random.default_rng(seed + 900)
+        for row in zero_prefix_rows:
+            if row < len(self.prefix):
+                self.prefix[row] = 0
+        self.round_index = rng.integers(0, 6, size=len(self.prefix), dtype=np.int64)
+        for row in range(len(self.prefix)):
+            if self.prefix[row] == 0:
+                self.round_index[row] = 0
+
+    def inputs_with_round(self, group, device):
+        inp = self.inputs(group, device)
+        inp.round_index = torch.as_tensor(self.round_index[group.rows], device=device)
+        return inp
+
+
+def _merged_decoder(step, policies, device, heads=None, *, include_extra: bool = True):
+    from train.history_decoder import extract_stream_pos
+
+    groups = step.groups()
+    heads = heads or SnapshotHeads()
+    slots = [heads.slot(g.identity, policies[g.identity]) for g in groups]
+    layout = merged_layout(
+        groups, slots, step.prefix, step.obs, step.seat, step.cand,
+        step.offsets, step.counts, step.env_id, step.match_id,
+    )
+    fields = {name: torch.as_tensor(array, device=device)
+              for name, array in zip(LAYOUT_FIELDS, layout.arrays)}
+    if include_extra:
+        round_rows, stream_pad = decoder_extra_arrays(layout, slots, step.round_index)
+        fields["round_index"] = torch.as_tensor(round_rows, device=device)
+        fields["stream_pad"] = torch.as_tensor(stream_pad, device=device)
+    cfg = next(iter(policies.values())).config
+    width = cfg.width
+    memory = torch.zeros(layout.streams, layout.length, width, device=device)
+    pos_seat = torch.zeros((layout.streams, layout.length), dtype=torch.uint8, device=device)
+    pos_round = torch.zeros((layout.streams, layout.length), dtype=torch.uint8, device=device)
+    with torch.no_grad():
+        for group, (first, last) in zip(groups, layout.group_streams):
+            sb = StreamBatch.from_streams(group.streams, device)
+            encoded = policies[group.identity].encode_batch(sb)
+            span = min(layout.length, encoded.shape[1])
+            memory[first:last, :span] = encoded[:, :span]
+            ps, pr = extract_stream_pos(sb, encoded.shape[1], cfg.max_rounds, memory.device)
+            pos_seat[first:last, :span] = ps[:, :span].to(torch.uint8)
+            pos_round[first:last, :span] = pr[:, :span].to(torch.uint8)
+        log_probs = merged_log_probs(
+            heads, layout, fields, memory,
+            pos_seat=pos_seat, pos_round=pos_round,
+            group_slots=(slots if include_extra else None),
+        )
+    return groups, layout, fields, log_probs
+
+
+@pytest.mark.parametrize("decoder_layers,query_slots,obs_mode", [
+    (0, 1, "private_only"),
+    (0, 1, "card_counter"),
+    (1, 1, "private_only"),
+    (3, 4, "full"),
+    (3, 4, "private_only"),
+    (3, 4, "card_counter"),
+])
+@pytest.mark.parametrize("spec_name", ["one-per-stream", "multi-decision", "mixed"])
+def test_merged_decoder_log_probs_and_sampling_match_each_identity(
+    device, decoder_layers, query_slots, obs_mode, spec_name
+):
+    step = _DecoderStep(SPECS[spec_name], seed=10 + list(SPECS).index(spec_name),
+                        zero_prefix_rows=(0, 3))
+    idents = sorted({i for i, _, _ in SPECS[spec_name]})
+    probs = {ident: val for ident, val in zip(idents, [0.0, 0.35, 0.8, 1.0])}
+    policies = _decoder_players(
+        idents, device, mask_probs=probs,
+        decoder_layers=decoder_layers, query_slots=query_slots, obs_mode=obs_mode,
+    )
+
+    for include_extra in (True, False) if decoder_layers > 0 else (False,):
+        groups, layout, fields, log_probs = _merged_decoder(
+            step, policies, device, include_extra=include_extra
+        )
+        with torch.no_grad():
+            expected = torch.cat([
+                policies[g.identity].candidate_log_probs(
+                    step.inputs_with_round(g, device) if include_extra else step.inputs(g, device)
+                )
+                for g in groups
+            ])
+        assert log_probs.shape == expected.shape and log_probs.dtype == torch.float32
+        diff = float((log_probs - expected).abs().max())
+        assert diff < ATOL
+
+        if include_extra or decoder_layers == 0:
+            g0 = torch.Generator(device=device).manual_seed(77)
+            g1 = torch.Generator(device=device).manual_seed(77)
+            choice, chosen_logp = merged_sample(log_probs, layout, fields, g0)
+            with torch.no_grad():
+                ref_choice = torch.cat([
+                    policies[g.identity].act(
+                        step.inputs_with_round(g, device) if decoder_layers > 0
+                        else step.inputs(g, device),
+                        g1, max_candidates=g.max_candidates,
+                    )[0]
+                    for g in groups
+                ])
+            assert torch.equal(g0.get_state(), g1.get_state())
+            assert torch.equal(choice, ref_choice)
+            assert torch.isfinite(chosen_logp).all()
+
+
+def test_merged_decoder_slot_refresh_and_obs_mask_prob_invalidation(device):
+    step = _DecoderStep(SPECS["one-per-stream"], seed=21, zero_prefix_rows=())
+    probs = {1: 0.0, 2: 0.0, 3: 0.8, 4: 1.0}
+    policies = _decoder_players((1, 2, 3, 4), device, mask_probs=probs,
+                                decoder_layers=3, query_slots=4, obs_mode="private_only")
+    for actor in policies.values():
+        with torch.no_grad():
+            actor.fusion[-1].weight.mul_(20.0)
+            actor.private_decoder.slot_proj.weight.mul_(10.0)
+    heads = SnapshotHeads(capacity=2)
+    groups, _, _, before = _merged_decoder(step, policies, device, heads=heads)
+    writes_before = heads.writes
+
+    # Unchanged policies incur zero slot rewrites.
+    _merged_decoder(step, policies, device, heads=heads)
+    assert heads.writes == writes_before
+
+    # Mutate identity 2's obs_mask_prob in-place (0.0 -> 1.0), identity 1's decoder weights,
+    # and identity 3's reader_bias storage; identity 4 stays untouched.
+    with torch.no_grad():
+        policies[2].obs_mask_prob.fill_(1.0)
+        w1 = policies[1].private_decoder.layers[1].rel_seat_proj.weight
+        w1.add_(torch.linspace(-1.0, 1.0, w1.numel(), device=w1.device).view_as(w1))
+        policies[1].private_decoder.layers[1].out_proj.weight.mul_(10.0)
+        policies[1].private_decoder.layers[1].out_proj.bias.add_(0.5)
+        rb3 = policies[3].private_decoder.reader_bias.data
+        policies[3].private_decoder.reader_bias.data = (
+            rb3.clone() + torch.linspace(-1.0, 1.0, len(rb3), device=rb3.device)
+        )
+    _, _, _, after = _merged_decoder(step, policies, device, heads=heads)
+    assert heads.writes == writes_before + 3
+
+    untouched = np.zeros(len(before), dtype=bool)
+    per_ident_masks: dict[int, np.ndarray] = {}
+    cursor = 0
+    for g in groups:
+        size = int(step.counts[g.rows].sum())
+        mask = np.zeros(len(before), dtype=bool)
+        mask[cursor:cursor + size] = True
+        per_ident_masks[g.identity] = mask
+        if g.identity == 4:
+            untouched[cursor:cursor + size] = True
+        cursor += size
+    delta = (after - before).abs().cpu().numpy()
+    assert delta[untouched].max() == 0.0
+    for ident in (1, 2, 3):
+        assert delta[per_ident_masks[ident]].max() > 1e-4, ident
+
+    with torch.no_grad():
+        expected = torch.cat([
+            policies[g.identity].candidate_log_probs(step.inputs_with_round(g, device))
+            for g in groups
+        ])
+    assert float((after - expected).abs().max()) < ATOL
+
+    # style_input remains refused.
+    styled = fresh_player(HistoryPolicyConfig(width=32, layers=1, heads=4, style_input=True), 5)[0].to(device)
+    with pytest.raises(ValueError, match="style_input"):
+        validate_actor(styled)
+
+
+def test_merged_decoder_card_counter_masks_only_action_history_dims(device):
+    step = _DecoderStep(SPECS["mixed"], seed=31, zero_prefix_rows=(0, 3))
+    idents = sorted({i for i, _, _ in SPECS["mixed"]})
+    policies = _decoder_players(
+        idents,
+        device,
+        mask_probs={i: 1.0 for i in idents},
+        decoder_layers=3,
+        query_slots=4,
+        obs_mode="card_counter",
+    )
+    groups, _, _, base_lp = _merged_decoder(step, policies, device, include_extra=True)
+    with torch.no_grad():
+        expected = torch.cat([
+            policies[g.identity].candidate_log_probs(step.inputs_with_round(g, device))
+            for g in groups
+        ])
+    assert float((base_lp - expected).abs().max()) < ATOL
+
+    base_obs = step.obs.copy()
+    # Perturbing all 1,467 masked public dims leaves merged_log_probs unchanged at obs_mask_prob=1.0.
+    for start, end in ((216, 648), (805, 968), (968, 1430), (1439, 1849)):
+        step.obs[:, start:end] = (step.obs[:, start:end] == 0).astype(step.obs.dtype)
+    _, _, _, masked_pert_lp = _merged_decoder(step, policies, device, include_extra=True)
+    assert torch.equal(masked_pert_lp, base_lp)
+
+    # Perturbing kept card-counter slices alters merged_log_probs and still matches HistoryActor.
+    for start, end in ((108, 216), (648, 732), (732, 748), (790, 793)):
+        step.obs[:] = base_obs
+        step.obs[:, start:end] = (step.obs[:, start:end] == 0).astype(step.obs.dtype)
+        c_groups, _, _, counter_lp = _merged_decoder(step, policies, device, include_extra=True)
+        assert float((counter_lp - base_lp).abs().max()) > 1e-4, (start, end)
+        with torch.no_grad():
+            counter_expected = torch.cat([
+                policies[g.identity].candidate_log_probs(step.inputs_with_round(g, device))
+                for g in c_groups
+            ])
+        assert float((counter_lp - counter_expected).abs().max()) < ATOL
+
+
+@pytest.mark.parametrize("paged", [False, True])
+def test_collector_merged_decoder_matches_per_identity_rollout(device, paged):
+    probs = {0: 1.0, 1: 0.0, 2: 0.35, 3: 0.8}
+    policies = _decoder_players((0, 1, 2, 3), device, mask_probs=probs,
+                                decoder_layers=3, query_slots=4, obs_mode="private_only")
+    cache_opts = (
+        dict(kv_cache=True, paged_cache=True, page_span=True, batch_snapshot_encoder=True)
+        if paged else dict(kv_cache=False)
+    )
+    plain, plain_stats = run_collector(device, False, steps=48, policies=policies,
+                                       profile=True, **cache_opts)
+    fast, fast_stats = run_collector(device, True, steps=48, policies=policies,
+                                     profile=True, **cache_opts)
+    assert_same_collection(plain, fast)
+    assert fast.snapshot_heads is not None and fast.snapshot_heads.slots
+    for before, after in zip(plain_stats, fast_stats):
+        assert after.policy_call_rows["learner"] == before.policy_call_rows["learner"]
+        assert sum(after.policy_call_rows["snapshot"].values()) <= after.steps
+
+
+def test_trainer_merged_decoder_nearest_pair_update_and_resume(tmp_path):
+    base = dict(
+        width=32,
+        layers=1,
+        heads=4,
+        max_rounds=8,
+        response_mode="auxiliary",
+        aux_heads="next,belief,outcome",
+        private_decoder_layers=3,
+        private_query_slots=4,
+        private_obs_mode="private_only",
+        obs_mask_warmup_updates=2,
+        population_archive_filter="nearest_pair",
+        population_archive_every=1,
+        population_archive_size=4,
+        population_behavior_probe_rows=16,
+        snapshot_updates=1,
+        snapshot_probability=1.0,
+        num_envs=8,
+        steps_per_update=128,
+        epochs=1,
+        minibatch_matches=2,
+        seed=17,
+        rollout_kv_cache=True,
+        rollout_paged_cache=True,
+        rollout_page_span=True,
+        batch_snapshot_policies=True,
+        batch_snapshot_encoder=True,
+        updates=2,
+    )
+    trainer = HistoryTrainer(HistoryPPOConfig(**base), tmp_path / "run")
+    trainer._snapshot_population()
+    l1 = trainer.update()
+    l2 = trainer.update()
+    assert l1["obs_mask_prob"] == pytest.approx(0.0)
+    assert l2["obs_mask_prob"] == pytest.approx(0.5)
+    assert l1["snapshot_heads"].get("slots")
+    assert l2["snapshot_heads"].get("slots")
+    assert len(trainer.population.archive) >= 1
+    assert np.isfinite(l2["actor_grad_norm"]) and l2["actor_grad_norm"] > 0
+
+    ckpt = trainer.save()
+    resumed = HistoryTrainer(HistoryPPOConfig(updates=3), tmp_path / "resumed", resume=ckpt)
+    l3 = resumed.update()
+    assert l3["obs_mask_prob"] == pytest.approx(1.0)
+    assert l3["snapshot_heads"].get("slots")
+    assert np.isfinite(l3["actor_grad_norm"]) and l3["actor_grad_norm"] > 0
+    assert resumed.population.archive_diversity_stats()["archive_filter"] == "nearest_pair"

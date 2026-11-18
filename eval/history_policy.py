@@ -125,11 +125,12 @@ class HistoryPolicy:
             obs=torch.as_tensor(obs, device=self.device),
             seat=torch.tensor([seat], dtype=torch.long, device=self.device),
             cand=torch.as_tensor(cand, device=self.device),
-            offsets=torch.tensor([0, len(actions)], dtype=torch.long, device=self.device))
+            offsets=torch.tensor([0, len(actions)], dtype=torch.long, device=self.device),
+            round_index=torch.tensor([int(state.round_index)], dtype=torch.long, device=self.device))
 
     def batch_inputs(self, streams: Sequence[Any], match_index: np.ndarray, seat: np.ndarray,
                      obs: np.ndarray, cand: np.ndarray, offsets: np.ndarray,
-                     stream_batch: Any = None):
+                     stream_batch: Any = None, round_index: np.ndarray | None = None):
         """``DecisionInputs`` for several decisions over the given per-slot streams.
 
         ``stream_batch`` replaces the uploaded streams when a KV cache already
@@ -148,7 +149,9 @@ class HistoryPolicy:
             obs=torch.as_tensor(np.ascontiguousarray(obs), device=device),
             seat=torch.as_tensor(np.asarray(seat, dtype=np.int64), device=device),
             cand=torch.as_tensor(np.ascontiguousarray(cand), device=device),
-            offsets=torch.as_tensor(np.asarray(offsets, dtype=np.int64), device=device))
+            offsets=torch.as_tensor(np.asarray(offsets, dtype=np.int64), device=device),
+            round_index=(torch.as_tensor(np.asarray(round_index, dtype=np.int64), device=device)
+                         if round_index is not None else None))
 
     def act(self, inputs: Any, generator: Any = None, encoded: Any = None) -> np.ndarray:
         """Choice per decision (local candidate index), greedy or sampled."""

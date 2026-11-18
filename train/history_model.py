@@ -44,6 +44,8 @@ from train.history_response import RESPONSE_CLASSES
 from train.history_aux import (HIDDEN_SEATS, NEXT_LOGITS, NUM_CARDS, canonical_aux_heads,
                                parse_aux_heads)
 from train.history_attention import private_sdpa
+from train.history_decoder import (PRIVATE_OBS_MODES, PrivateCrossDecoder, extract_stream_pos,
+                                   infer_decision_rounds, mask_public_obs)
 
 STAGE = "history_ppo"
 PLAY_PHASE = int(gd.Phase.Play)
@@ -89,6 +91,11 @@ class HistoryPolicyConfig:
     # reader output under its own ``reader_norm``. Recorded in checkpoints
     # only when not "sum" (``config_record``).
     private_fusion: str = "sum"
+    # Multi-layer relative-position private cross-decoder and public obs masking.
+    # Recorded in checkpoints only when non-default (``config_record``).
+    private_decoder_layers: int = 0
+    private_query_slots: int = 1
+    private_obs_mode: str = "full"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "aux_heads", canonical_aux_heads(self.aux_heads))
@@ -109,6 +116,20 @@ class HistoryPolicyConfig:
             raise ValueError(f"private_fusion must be one of {PRIVATE_FUSIONS}")
         if self.private_fusion == "split" and self.private_qk_norm == "query":
             raise ValueError('private_fusion "split" already normalizes the q_proj input')
+        if self.private_decoder_layers < 0:
+            raise ValueError("private_decoder_layers must not be negative")
+        if self.private_query_slots < 1:
+            raise ValueError("private_query_slots must be positive")
+        if self.private_obs_mode not in PRIVATE_OBS_MODES:
+            raise ValueError(f"private_obs_mode must be one of {PRIVATE_OBS_MODES}")
+        if self.private_query_slots > 1 and self.private_decoder_layers < 1:
+            raise ValueError("private_query_slots > 1 requires private_decoder_layers >= 1")
+        if self.private_decoder_layers > 0 and (
+                self.window or self.private_qk_norm != "none" or self.private_fusion != "sum"):
+            raise ValueError(
+                "private_decoder_layers requires window == 0, private_qk_norm == 'none', "
+                "and private_fusion == 'sum'"
+            )
 
     @property
     def aux_head_names(self) -> tuple[str, ...]:
@@ -117,9 +138,10 @@ class HistoryPolicyConfig:
 
 def config_record(config: HistoryPolicyConfig) -> dict[str, Any]:
     """``asdict(config)`` without ``style_input`` when it is off, without
-    ``aux_heads`` when empty, without ``private_qk_norm`` when "none" and
-    without ``private_fusion`` when "sum", so every other checkpoint keeps
-    its exact architecture record."""
+    ``aux_heads`` when empty, without ``private_qk_norm`` when "none",
+    without ``private_fusion`` when "sum", and without sequence-decoder
+    fields when at their defaults, so every other checkpoint keeps its exact
+    architecture record."""
     record = asdict(config)
     if not record["style_input"]:
         del record["style_input"]
@@ -129,6 +151,12 @@ def config_record(config: HistoryPolicyConfig) -> dict[str, Any]:
         del record["private_qk_norm"]
     if record["private_fusion"] == "sum":
         del record["private_fusion"]
+    if record["private_decoder_layers"] == 0:
+        del record["private_decoder_layers"]
+    if record["private_query_slots"] == 1:
+        del record["private_query_slots"]
+    if record["private_obs_mode"] == "full":
+        del record["private_obs_mode"]
     return record
 
 
@@ -139,6 +167,8 @@ class StreamBatch:
     rounds: Tensor    # int64 [B, T]
     phases: Tensor    # int64 [B, T]
     lengths: Tensor   # int64 [B]
+    pos_seat: Tensor | None = None    # optional cached uint8/int64 [B, S]
+    pos_round: Tensor | None = None   # optional cached uint8/int64 [B, S]
 
     @staticmethod
     def host_arrays(streams: list[tuple[np.ndarray, np.ndarray, np.ndarray]]
@@ -250,6 +280,10 @@ class DecisionInputs:
     # int64 [n], the opponents' style z in {-1, +1}; read only by an actor
     # with ``config.style_input`` (planted-habit ORACLE arm).
     style: Tensor | None = None
+    # int64 [n], optional 0-based round index for each decision.
+    round_index: Tensor | None = None
+    # float32 [n], optional per-row observation mask probability for carried rows.
+    obs_mask_prob: Tensor | None = None
 
     @property
     def decisions(self) -> int:
@@ -337,9 +371,12 @@ class HistoryActor(nn.Module):
         self.stream_norm = nn.LayerNorm(width)
         self.private = mlp(config.obs_dim, width, 2)
         self.seat = nn.Embedding(4, width)
-        self.q_proj = nn.Linear(width, width)
-        self.kv_proj = nn.Linear(width, 2 * width)
-        self.out_proj = nn.Linear(width, width)
+        if config.private_decoder_layers == 0:
+            self.q_proj = nn.Linear(width, width)
+            self.kv_proj = nn.Linear(width, 2 * width)
+            self.out_proj = nn.Linear(width, width)
+        else:
+            self.q_proj = self.kv_proj = self.out_proj = None
         self.attention_norm = nn.LayerNorm(width)
         self.feed_forward = nn.Sequential(nn.Linear(width, width * 4), nn.ReLU(),
                                           nn.Linear(width * 4, width))
@@ -389,6 +426,21 @@ class HistoryActor(nn.Module):
                                                      nn.Linear(width, NUM_CARDS * HIDDEN_SEATS))
                 if "outcome" in heads:
                     self.outcome_head = nn.Sequential(mlp(width, width, 1), nn.Linear(width, 1))
+        if config.private_decoder_layers > 0:
+            with torch.random.fork_rng(devices=[]):
+                self.private_decoder = PrivateCrossDecoder(
+                    width,
+                    config.heads,
+                    config.private_decoder_layers,
+                    config.max_rounds,
+                    config.private_query_slots,
+                )
+        else:
+            self.private_decoder = None
+        if config.private_obs_mode != "full":
+            self.register_buffer("obs_mask_prob", torch.tensor(1.0, dtype=torch.float32))
+        else:
+            self.obs_mask_prob = None
 
     # -- auxiliary heads --------------------------------------------------------
 
@@ -569,7 +621,14 @@ class HistoryActor(nn.Module):
 
     def private_query(self, inputs: DecisionInputs) -> Tensor:
         """The private query ``private(obs) + seat [+ style_embedding]``, ``[n, w]``."""
-        query = self.private(inputs.obs.float()) + self.seat(inputs.seat)
+        if self.obs_mask_prob is None:
+            obs_float = inputs.obs.float()
+        else:
+            prob = self.obs_mask_prob if inputs.obs_mask_prob is None else inputs.obs_mask_prob
+            obs_float = mask_public_obs(
+                inputs.obs, inputs.seat, inputs.prefix, prob, mode=self.config.private_obs_mode
+            )
+        query = self.private(obs_float) + self.seat(inputs.seat)
         if self.config.style_input:
             if inputs.style is None:
                 raise ValueError("a style-input actor needs the opponents' style per decision")
@@ -590,6 +649,82 @@ class HistoryActor(nn.Module):
                  else self.attention_norm(reading + attended))
         return self.output_norm(state + self.feed_forward(state))
 
+    def _decode_decision_states(self, query: Tensor, encoded: Tensor | None,
+                                inputs: DecisionInputs, collect: list | None = None) -> Tensor:
+        """Decode ``[n, width]`` base states through ``self.private_decoder``."""
+        if encoded is None and inputs.match_groups is not None:
+            s = inputs.streams
+            parts, rows = [], []
+            for group in inputs.match_groups:
+                n = group.tokens
+                group_streams = StreamBatch(
+                    s.tokens[group.matches, :n],
+                    s.rounds[group.matches, :n],
+                    s.phases[group.matches, :n],
+                    s.lengths[group.matches].clamp(max=n),
+                    pos_seat=(s.pos_seat[group.matches, :n + 1]
+                              if s.pos_seat is not None else None),
+                    pos_round=(s.pos_round[group.matches, :n + 1]
+                               if s.pos_round is not None else None),
+                )
+                encoded_g = self.encode_batch(group_streams)
+                if collect is not None:
+                    collect.append((encoded_g, group))
+                pos_seat_g, pos_round_g = extract_stream_pos(
+                    group_streams, encoded_g.shape[1], self.config.max_rounds, encoded_g.device
+                )
+                round_g = infer_decision_rounds(
+                    None if inputs.round_index is None else inputs.round_index[group.rows],
+                    pos_round_g,
+                    group.local_match,
+                    inputs.prefix[group.rows],
+                )
+                parts.append(self.private_decoder(
+                    query[group.rows],
+                    self.attention_norm,
+                    encoded_g,
+                    pos_seat_g,
+                    pos_round_g,
+                    group.local_match,
+                    inputs.prefix[group.rows],
+                    inputs.seat[group.rows],
+                    round_g,
+                    batched_match_attention=self.batched_match_attention,
+                    rank=group.match_rank,
+                    slots=group.match_slots,
+                ))
+                rows.append(group.rows)
+            if not rows:
+                return query.new_zeros(len(query), self.config.width)
+            return torch.zeros_like(query).index_copy(0, torch.cat(rows), torch.cat(parts))
+        if encoded is None:
+            encoded = self.encode_batch(inputs.streams)
+        if collect is not None:
+            collect.append((encoded, None))
+        pos_seat, pos_round = extract_stream_pos(
+            inputs.streams, encoded.shape[1], self.config.max_rounds, encoded.device
+        )
+        round_idx = infer_decision_rounds(
+            inputs.round_index, pos_round, inputs.match_index, inputs.prefix
+        )
+        return self.private_decoder(
+            query,
+            self.attention_norm,
+            encoded,
+            pos_seat,
+            pos_round,
+            inputs.match_index,
+            inputs.prefix,
+            inputs.seat,
+            round_idx,
+            one_decision_per_stream=inputs.one_decision_per_stream,
+            batched_private_attention=self.batched_private_attention,
+            wide_private_projection=self.wide_private_projection,
+            batched_match_attention=self.batched_match_attention,
+            rank=inputs.match_rank,
+            slots=inputs.match_slots,
+        )
+
     def decision_states(self, encoded: Tensor | None, inputs: DecisionInputs,
                         collect: list | None = None) -> Tensor:
         """One state per decision from its private query and visible prefix.
@@ -602,6 +737,9 @@ class HistoryActor(nn.Module):
         batch) for the next-token head; the computation itself is unchanged.
         """
         query = self.private_query(inputs)
+        if self.private_decoder is not None:
+            base_state = self._decode_decision_states(query, encoded, inputs, collect)
+            return self.output_norm(base_state + self.feed_forward(base_state))
         reading = self.reader_input(query)
         if self.config.window:
             stream, lengths = self._windowed(inputs)

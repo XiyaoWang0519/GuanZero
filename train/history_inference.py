@@ -14,6 +14,7 @@ from torch import Tensor
 from torch.nn import functional as F
 
 from train.history_attention import finish, project, validate
+from train.history_decoder import compute_stream_pos_arrays
 from train.history_model import HistoryActor, StreamBatch, sinusoidal
 from train.history_transfers import upload_arrays
 from train.public_history import TOKEN_DIM, PublicStream
@@ -32,6 +33,8 @@ class Entry:
     keys: list[Tensor]
     values: list[Tensor]
     memory: Tensor
+    pos_seat: Tensor | None = None
+    pos_round: Tensor | None = None
 
 
 class BatchedHistoryCache:
@@ -40,6 +43,7 @@ class BatchedHistoryCache:
             raise ValueError("KV cache requires full history and a positive prefill chunk")
         validate(actor.stream)
         self.actor = actor
+        self._track_pos = actor.config.private_decoder_layers > 0
         self.chunk_size = chunk_size
         self.entries: dict[tuple[int, int], Entry] = {}
         self.signature = self._signature()
@@ -109,7 +113,8 @@ class BatchedHistoryCache:
     @property
     def bytes(self) -> int:
         entry_bytes = sum(t.numel() * t.element_size() for e in self.entries.values()
-                          for t in (*e.keys, *e.values, e.memory))
+                          for t in (*e.keys, *e.values, e.memory, e.pos_seat, e.pos_round)
+                          if t is not None)
         position_bytes = (sum(t.numel() * t.element_size() for t in self._position_cache[1:])
                           if self._position_cache is not None else 0)
         return entry_bytes + position_bytes
@@ -135,15 +140,23 @@ class BatchedHistoryCache:
         capacity = bucket(size)
         cfg, prototype = self.actor.config, self.actor.bos
         shape = (cfg.heads, capacity, cfg.width // cfg.heads)
+        pos_seat = (torch.zeros(capacity, dtype=torch.uint8, device=prototype.device)
+                    if self._track_pos else None)
+        pos_round = (torch.zeros(capacity, dtype=torch.uint8, device=prototype.device)
+                     if self._track_pos else None)
         result = Entry(stream, stream.generation, 0, capacity,
                        [prototype.new_zeros(shape) for _ in range(cfg.layers)],
                        [prototype.new_zeros(shape) for _ in range(cfg.layers)],
-                       prototype.new_zeros(capacity, cfg.width))
+                       prototype.new_zeros(capacity, cfg.width),
+                       pos_seat=pos_seat, pos_round=pos_round)
         if old is not None:
             result.length = old.length
             for target, source in zip(result.keys + result.values, old.keys + old.values):
                 target[:, :old.length].copy_(source[:, :old.length])
             result.memory[:old.length].copy_(old.memory[:old.length])
+            if self._track_pos:
+                result.pos_seat[:old.length].copy_(old.pos_seat[:old.length])
+                result.pos_round[:old.length].copy_(old.pos_round[:old.length])
         else:
             self.rebuilds += 1
         self.entries[key] = result
@@ -174,13 +187,14 @@ class BatchedHistoryCache:
             raise ValueError("host lengths require an uploaded lengths tensor")
         entries = self._extend(keys, streams, targets)
         # Power-of-two shapes reduce allocator churn without truncating history.
-        memory = self._gather_memory(entries, self._memory_size(max(targets)))
+        memory, pos_seat, pos_round = self._gather_outputs(entries, self._memory_size(max(targets)))
         device = memory.device
         metadata = StreamBatch(torch.empty(len(entries), 0, TOKEN_DIM, dtype=torch.uint8, device=device),
                                torch.empty(len(entries), 0, dtype=torch.long, device=device),
                                torch.empty(len(entries), 0, dtype=torch.long, device=device),
                                preuploaded_lengths if preuploaded_lengths is not None else
-                               torch.tensor([n - 1 for n in targets], device=device))
+                               torch.tensor([n - 1 for n in targets], device=device),
+                               pos_seat=pos_seat, pos_round=pos_round)
         return metadata, memory
 
     def _extend(self, keys: list[tuple[int, int]], streams: list[PublicStream],
@@ -230,6 +244,29 @@ class BatchedHistoryCache:
             memory[i, :entry.length].copy_(entry.memory[:entry.length])
         return memory
 
+    def _gather_pos(self, entries: list[Entry], size: int) -> tuple[Tensor, Tensor]:
+        """``([len(entries), size], [len(entries), size])`` uint8 position arrays."""
+        if all(entry.capacity >= size for entry in entries):
+            return (
+                torch.stack([entry.pos_seat[:size] for entry in entries]),
+                torch.stack([entry.pos_round[:size] for entry in entries]),
+            )
+        device = self.actor.bos.device
+        pos_seat = torch.zeros((len(entries), size), dtype=torch.uint8, device=device)
+        pos_round = torch.zeros((len(entries), size), dtype=torch.uint8, device=device)
+        for i, entry in enumerate(entries):
+            pos_seat[i, :entry.length].copy_(entry.pos_seat[:entry.length])
+            pos_round[i, :entry.length].copy_(entry.pos_round[:entry.length])
+        return pos_seat, pos_round
+
+    def _gather_outputs(self, entries: list[Entry], size: int
+                        ) -> tuple[Tensor, Tensor | None, Tensor | None]:
+        memory = self._gather_memory(entries, size)
+        if not self._track_pos:
+            return memory, None, None
+        pos_seat, pos_round = self._gather_pos(entries, size)
+        return memory, pos_seat, pos_round
+
     def _pack_keys_values(self, entries: list[Entry], counts: list[int], layer_index: int,
                           new_k: Tensor, new_v: Tensor, capacity: int
                           ) -> tuple[Tensor, Tensor]:
@@ -266,6 +303,9 @@ class BatchedHistoryCache:
         # Upload only new raw events, not the complete historical prefix.
         tokens = np.zeros((batch, width, TOKEN_DIM), np.uint8)
         rounds, phases = np.zeros((batch, width), np.int64), np.zeros((batch, width), np.int64)
+        if self._track_pos:
+            ps_arr = np.zeros((batch, width), np.uint8)
+            pr_arr = np.zeros((batch, width), np.uint8)
         for i, (entry, count) in enumerate(zip(entries, counts)):
             begin = max(entry.length - 1, 0)
             offset = int(entry.length == 0)  # first new item is BOS
@@ -275,9 +315,20 @@ class BatchedHistoryCache:
                 tokens[i, offset:offset+count] = entry.stream.tokens[begin:end]
                 rounds[i, offset:offset+count] = entry.stream.rounds[begin:end]
                 phases[i, offset:offset+count] = entry.stream.phases[begin:end]
-        t, r, p, start_positions, end_positions = upload_arrays(
-            (tokens, rounds, phases, np.asarray(starts, dtype=np.int64),
-             np.asarray(ends, dtype=np.int64)), device)
+                if self._track_pos:
+                    ps, pr = compute_stream_pos_arrays(
+                        tokens[i, offset:offset+count],
+                        rounds[i, offset:offset+count],
+                        cfg.max_rounds,
+                    )
+                    ps_arr[i, offset:offset+count] = ps
+                    pr_arr[i, offset:offset+count] = pr
+        host_arrays = (tokens, rounds, phases, np.asarray(starts, dtype=np.int64),
+                       np.asarray(ends, dtype=np.int64))
+        if self._track_pos:
+            host_arrays = (*host_arrays, ps_arr, pr_arr)
+        uploaded = upload_arrays(host_arrays, device)
+        t, r, p, start_positions, end_positions = uploaded[:5]
         state = (actor.public(t.to(dtype)) + actor.round_embedding(r.clamp(0, cfg.max_rounds-1))
                  + actor.phase_embedding(p.clamp(0, 3)))
         for i, start in enumerate(starts):
@@ -300,6 +351,9 @@ class BatchedHistoryCache:
         state = actor.stream_norm(state)
         for i, (entry, count) in enumerate(zip(entries, counts)):
             entry.memory[entry.length:entry.length+count].copy_(state[i, :count])
+            if self._track_pos:
+                entry.pos_seat[entry.length:entry.length+count].copy_(uploaded[5][i, :count])
+                entry.pos_round[entry.length:entry.length+count].copy_(uploaded[6][i, :count])
             entry.length += count
         self.encoded_tokens += sum(counts)
 
@@ -328,12 +382,15 @@ class ForkedHistoryCache:
                     or not np.array_equal(stream.phases[:events], source.stream.phases[:events])):
                 raise ValueError("a forked stream must extend the root's encoded events")
         self.root = root
+        self._track_pos = root._track_pos
         self.streams = list(streams)
         self.lengths = np.full(len(streams), source.length, dtype=np.int64)
         self.capacity = 0
         self.keys: list[Tensor] = []
         self.values: list[Tensor] = []
         self.memory: Tensor | None = None
+        self.pos_seat: Tensor | None = None
+        self.pos_round: Tensor | None = None
         self._grow(bucket(max(s.prefix + 1 for s in streams)), source)
 
     def _grow(self, capacity: int, source: Entry | None = None) -> None:
@@ -342,17 +399,28 @@ class ForkedHistoryCache:
         keys = [prototype.new_zeros(rows, cfg.heads, capacity, depth) for _ in range(cfg.layers)]
         values = [prototype.new_zeros(rows, cfg.heads, capacity, depth) for _ in range(cfg.layers)]
         memory = prototype.new_zeros(rows, capacity, cfg.width)
+        pos_seat = (torch.zeros((rows, capacity), dtype=torch.uint8, device=prototype.device)
+                    if self._track_pos else None)
+        pos_round = (torch.zeros((rows, capacity), dtype=torch.uint8, device=prototype.device)
+                     if self._track_pos else None)
         if source is not None:
             n = source.length
             for target, part in zip(keys + values, source.keys + source.values):
                 target[:, :, :n].copy_(part[:, :n].unsqueeze(0).expand(rows, -1, -1, -1))
             memory[:, :n].copy_(source.memory[:n].unsqueeze(0).expand(rows, -1, -1))
+            if self._track_pos:
+                pos_seat[:, :n].copy_(source.pos_seat[:n].unsqueeze(0).expand(rows, -1))
+                pos_round[:, :n].copy_(source.pos_round[:n].unsqueeze(0).expand(rows, -1))
         else:
             n = self.capacity
             for target, part in zip(keys + values, self.keys + self.values):
                 target[:, :, :n].copy_(part)
             memory[:, :n].copy_(self.memory)
+            if self._track_pos:
+                pos_seat[:, :n].copy_(self.pos_seat)
+                pos_round[:, :n].copy_(self.pos_round)
         self.capacity, self.keys, self.values, self.memory = capacity, keys, values, memory
+        self.pos_seat, self.pos_round = pos_seat, pos_round
 
     @torch.no_grad()
     def encode(self, rows: list[int]) -> tuple[StreamBatch, Tensor]:
@@ -373,11 +441,15 @@ class ForkedHistoryCache:
             self.root.appends += 1
         device = self.memory.device
         selected = torch.as_tensor(index, device=device)
-        memory = self.memory.index_select(0, selected)[:, :bucket(longest)]
+        size = bucket(longest)
+        memory = self.memory.index_select(0, selected)[:, :size]
+        pos_seat = self.pos_seat.index_select(0, selected)[:, :size] if self._track_pos else None
+        pos_round = self.pos_round.index_select(0, selected)[:, :size] if self._track_pos else None
         metadata = StreamBatch(torch.empty(len(rows), 0, TOKEN_DIM, dtype=torch.uint8, device=device),
                                torch.empty(len(rows), 0, dtype=torch.long, device=device),
                                torch.empty(len(rows), 0, dtype=torch.long, device=device),
-                               torch.as_tensor(targets - 1, device=device))
+                               torch.as_tensor(targets - 1, device=device),
+                               pos_seat=pos_seat, pos_round=pos_round)
         return metadata, memory
 
     def _append(self, rows: np.ndarray, counts: np.ndarray) -> None:
@@ -389,18 +461,29 @@ class ForkedHistoryCache:
         capacity = bucket(int(ends.max()))
         tokens = np.zeros((batch, width, TOKEN_DIM), np.uint8)
         rounds, phases = np.zeros((batch, width), np.int64), np.zeros((batch, width), np.int64)
+        if self._track_pos:
+            ps_arr = np.zeros((batch, width), np.uint8)
+            pr_arr = np.zeros((batch, width), np.uint8)
         for i, (row, start, count) in enumerate(zip(rows, starts, counts)):
             stream, begin = self.streams[row], start - 1   # BOS is already encoded
             tokens[i, :count] = stream.tokens[begin:begin + count]
             rounds[i, :count] = stream.rounds[begin:begin + count]
             phases[i, :count] = stream.phases[begin:begin + count]
+            if self._track_pos:
+                ps, pr = compute_stream_pos_arrays(tokens[i, :count], rounds[i, :count],
+                                                   cfg.max_rounds)
+                ps_arr[i, :count] = ps
+                pr_arr[i, :count] = pr
         valid = np.arange(width)[None] < counts[:, None]
         write_rows = np.broadcast_to(rows[:, None], valid.shape)[valid]
         write_positions = (starts[:, None] + np.arange(width)[None])[valid]
-        t, r, p, start_positions, end_positions, row_index, write_row, write_position, flat = \
-            upload_arrays((tokens, rounds, phases, starts, ends, rows, write_rows,
-                           write_positions, np.flatnonzero(valid)), device,
-                          packed=torch.device(device).type != "cpu")
+        host_arrays = (tokens, rounds, phases, starts, ends, rows, write_rows,
+                       write_positions, np.flatnonzero(valid))
+        if self._track_pos:
+            host_arrays = (*host_arrays, ps_arr, pr_arr)
+        uploaded = upload_arrays(host_arrays, device,
+                                 packed=torch.device(device).type != "cpu")
+        t, r, p, start_positions, end_positions, row_index, write_row, write_position, flat = uploaded[:9]
         state = (actor.public(t.to(dtype)) + actor.round_embedding(r.clamp(0, cfg.max_rounds-1))
                  + actor.phase_embedding(p.clamp(0, 3)))
         position_table, key_positions = self.root._position_buffers(capacity)
@@ -422,5 +505,8 @@ class ForkedHistoryCache:
             state = actor.stream.norm(state)
         state = actor.stream_norm(state)
         self.memory[write_row, write_position] = state.reshape(batch * width, -1).index_select(0, flat)
+        if self._track_pos:
+            self.pos_seat[write_row, write_position] = uploaded[9].reshape(batch * width).index_select(0, flat)
+            self.pos_round[write_row, write_position] = uploaded[10].reshape(batch * width).index_select(0, flat)
         self.lengths[rows] = ends
         self.root.encoded_tokens += int(counts.sum())

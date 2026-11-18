@@ -58,7 +58,8 @@ from train.history_model import (extend_actor, STAGE, TOKEN_SCHEMA_VERSION,
                                  fresh_player, load_history_checkpoint, save_history_checkpoint)
 from train.history_rollout import (CollectStats, HistoryCollector, MatchEventStore,
                                    SequenceRolloutBuffer, _PhaseTimer)
-from train.history_population import HistoryPopulation
+from train.history_population import (HistoryPopulation, behavior_fingerprint,
+                                      build_behavior_probe, decision_inputs_on_device)
 from train.history_response import RESPONSE_SCHEMA, opponent_response_labels
 from train.history_aux import (belief_loss, next_token_loss, outcome_loss,
                                round_outcomes)
@@ -113,6 +114,36 @@ def load_habit_optimizers(trainer: "HistoryTrainer", payload: dict[str, Any]) ->
                 lineage=payload.get("lineage"), update=payload["progress"]["updates"],
                 decisions=payload["progress"]["decisions"])
 
+
+def load_init_optimizers(trainer: "HistoryTrainer", payload: dict[str, Any]) -> dict[str, Any]:
+    """Restore compatible Adam moments from ``init_checkpoint``, keeping configured LRs."""
+    saved_opt = payload.get("optimizer") or {}
+    for name, optimizer in (("actor", trainer.actor_optimizer),
+                            ("critic", trainer.critic_optimizer)):
+        if name not in saved_opt:
+            continue
+        saved = copy.deepcopy(saved_opt[name])
+        params = list(optimizer.param_groups[0]["params"])
+        if len(saved["param_groups"]) != 1 or len(saved["param_groups"][0]["params"]) != len(params):
+            raise ValueError(f"init_checkpoint {name} optimizer does not match parameter count")
+        for idx, param in enumerate(params):
+            if idx in saved.get("state", {}):
+                entry = saved["state"][idx]
+                for key in ("exp_avg", "exp_avg_sq"):
+                    if key in entry and tuple(entry[key].shape) != tuple(param.shape):
+                        raise ValueError(
+                            f"init_checkpoint {name} optimizer state shape mismatch at index {idx}"
+                        )
+        lr = optimizer.param_groups[0]["lr"]
+        optimizer.load_state_dict(saved)
+        optimizer.param_groups[0]["lr"] = lr
+    progress = payload.get("progress") or {}
+    return dict(path=str(trainer.config.init_checkpoint),
+                sha256=sha256(Path(trainer.config.init_checkpoint)),
+                lineage=payload.get("lineage"),
+                update=int(progress.get("updates", 0)),
+                decisions=int(progress.get("decisions", 0)))
+
 def segment_entropy(log_probs: torch.Tensor, rows: torch.Tensor, count: int) -> torch.Tensor:
     """Entropy of each decision's full candidate distribution, ``[count]``."""
     terms = -(log_probs.exp() * log_probs)
@@ -145,8 +176,11 @@ class HistoryTrainer:
         if config.torch_threads:
             torch.set_num_threads(config.torch_threads)
         payload: dict[str, Any] | None = None
+        init_payload: dict[str, Any] | None = None
         extended = False
         if resume is not None:
+            if config.init_checkpoint:
+                raise ValueError("cannot combine --resume with --init-checkpoint")
             actor, critic, payload = load_history_checkpoint(resume, self.device)
             if payload.get("averaged_from"):
                 raise ValueError("an averaged checkpoint (train.checkpoint_average) is for "
@@ -169,6 +203,12 @@ class HistoryTrainer:
         elif config.habit_init:
             actor, critic, init_payload = habit_init_player(config)
             self.lineage = f"habit-{config.habit_view}-{config.seed}-{uuid.uuid4().hex[:8]}"
+        elif config.init_checkpoint:
+            actor, critic, init_payload = load_history_checkpoint(config.init_checkpoint,
+                                                                  self.device)
+            if actor.config != config.policy_config():
+                raise ValueError("init_checkpoint architecture differs from the configured one")
+            self.lineage = f"{STAGE}-{config.seed}-{uuid.uuid4().hex[:8]}"
         else:
             actor, critic = fresh_player(config.policy_config(), config.seed)
             self.lineage = f"{STAGE}-{config.seed}-{uuid.uuid4().hex[:8]}"
@@ -229,17 +269,52 @@ class HistoryTrainer:
                                         config.habit_pack, config.habit_axis,
                                         config.habit_strength, self.rollout_device)
         else:
-            self.population = HistoryPopulation(self.actor, self.lineage, config.seed + 17,
-                                                config.population_recent,
-                                                config.snapshot_probability,
-                                                config.population_archive_every,
-                                                config.population_archive_size,
-                                                config.population_archive_share)
+            self.population = HistoryPopulation(
+                self.actor, self.lineage, config.seed + 17,
+                config.population_recent,
+                config.snapshot_probability,
+                config.population_archive_every,
+                config.population_archive_size,
+                config.population_archive_share,
+                archive_filter=config.population_archive_filter,
+                archive_min_tv=config.population_archive_min_tv,
+                archive_max_age_updates=config.population_archive_max_age_updates,
+            )
+        self._probe_source_obj = None
+        self._probe_device_inputs = None
+        self.resume_count = int(payload.get("resume_count", 0)) + 1 if payload else 0
         self.habit_init = None
+        self.init_checkpoint = None
         if payload is None and config.habit_init:
             self.habit_init = load_habit_optimizers(self, init_payload)
+        elif payload is None and config.init_checkpoint:
+            self.init_checkpoint = load_init_optimizers(self, init_payload)
+            if "population" in init_payload and not config.habit_pack:
+                pop_state = copy.deepcopy(init_payload["population"])
+                pop_state["lineage"] = self.lineage
+                source_update = int((init_payload.get("progress") or {}).get("updates", 0))
+                for snap in pop_state.get("snapshots", {}).values():
+                    meta = dict(snap["metadata"])
+                    orig_u = int(meta["update"])
+                    meta.setdefault("source_update", orig_u)
+                    meta["lineage"] = self.lineage
+                    meta["update"] = orig_u - source_update
+                    snap["metadata"] = meta
+                self.population.adopt_state_dict(
+                    pop_state,
+                    current_update=0,
+                    expected_probe_rows=config.population_behavior_probe_rows,
+                    expected_probe_seed=config.population_behavior_probe_seed,
+                )
+                self.population.prune({})
+            if config.aux_heads:
+                self.progress["aux_start_update"] = 0
+            if config.private_obs_mode != "full":
+                self.progress["obs_mask_start_update"] = 0
+                self.progress["obs_mask_initial_prob"] = float(self.actor.obs_mask_prob.item())
         elif payload is not None:
             self.habit_init = payload.get("habit_init")
+            self.init_checkpoint = payload.get("init_checkpoint")
         if payload is not None:
             if extended:
                 load_extended_optimizers(self, payload, keep_lr=False)
@@ -249,18 +324,70 @@ class HistoryTrainer:
             self.progress.update(payload["progress"])
             if extended or (config.aux_heads and "aux_start_update" not in self.progress):
                 self.progress["aux_start_update"] = int(self.progress["updates"])
+            if config.private_obs_mode != "full":
+                if "obs_mask_start_update" not in self.progress:
+                    self.progress["obs_mask_start_update"] = int(self.progress["updates"])
+                if "obs_mask_initial_prob" not in self.progress:
+                    self.progress["obs_mask_initial_prob"] = float(self.actor.obs_mask_prob.item())
+                if saved_config.obs_mask_warmup_updates != config.obs_mask_warmup_updates:
+                    self.progress["obs_mask_start_update"] = int(self.progress["updates"])
+                    self.progress["obs_mask_initial_prob"] = float(self.actor.obs_mask_prob.item())
             rng = payload["rng"]
             if rng.get("sampler_device", "cpu") != self.rollout_device.type:
                 raise ValueError("resume requires the same sampler device type")
             if "population" in payload:
-                self.population.load_state_dict(payload["population"])
-                self.population.prune({})  # resumed environments discard old assignments
+                saved_pop = payload["population"]
+                if isinstance(self.population, HistoryPopulation):
+                    saved_schedule = dict(
+                        recent=saved_pop["recent"],
+                        probability=saved_pop["probability"],
+                        archive_every=saved_pop.get("archive_every", 0),
+                        archive_size=saved_pop.get("archive_size", 16),
+                        archive_share=saved_pop.get("archive_share", 0.5),
+                        archive_filter=saved_pop.get("archive_filter", "thin"),
+                        archive_min_tv=float(saved_pop.get("archive_min_tv", 0.05)),
+                        archive_max_age_updates=int(saved_pop.get("archive_max_age_updates", 0)),
+                    )
+                    probe_unchanged = (
+                        saved_config.population_behavior_probe_rows
+                        == config.population_behavior_probe_rows
+                        and saved_config.population_behavior_probe_seed
+                        == config.population_behavior_probe_seed
+                    )
+                    if saved_schedule == self.population.config() and probe_unchanged:
+                        self.population.load_state_dict(saved_pop)
+                        self.population.prune({})
+                    else:
+                        self.population.adopt_state_dict(
+                            saved_pop,
+                            current_update=int(self.progress["updates"]),
+                            expected_probe_rows=config.population_behavior_probe_rows,
+                            expected_probe_seed=config.population_behavior_probe_seed,
+                        )
+                        self.population.prune({})
+                        self.population_event(dict(
+                            event="population_schedule_change",
+                            previous=saved_schedule,
+                            new=self.population.config(),
+                            retained_snapshots=len(self.population.models),
+                            retained_archive=len(self.population.archive),
+                            at_update=int(self.progress["updates"]),
+                        ))
+                else:
+                    self.population.load_state_dict(saved_pop)
+                    self.population.prune({})  # resumed environments discard old assignments
             elif config.snapshot_updates:
                 raise ValueError("population-enabled resume requires saved population state")
             restore_rng(rng, self.rng)
             self.generator.set_state(rng["sampler"].cpu())
-        elif config.aux_heads:
-            self.progress["aux_start_update"] = 0
+        elif not config.init_checkpoint:
+            if config.aux_heads:
+                self.progress["aux_start_update"] = 0
+            if config.private_obs_mode != "full":
+                self.progress["obs_mask_start_update"] = 0
+                self.progress["obs_mask_initial_prob"] = (
+                    0.0 if config.obs_mask_warmup_updates > 0 else 1.0
+                )
         self.session_first_update = int(self.progress["updates"])
         self.env = gd.VecEnv(num_envs=config.num_envs, num_threads=config.num_threads,
                              seed=config.seed + 1000 * self.progress["updates"],
@@ -275,11 +402,11 @@ class HistoryTrainer:
                               copy.deepcopy(self.actor).to(self.rollout_device).requires_grad_(False))
         self.rollout_snapshots: dict[int, Any] = {}
         self.collector = self.make_collector()
+        self.apply_obs_mask_schedule()
         self.prior_elapsed = float(self.progress["elapsed_seconds"])
         self.started = time.monotonic()
         self.metrics_path = self.output / "metrics.jsonl"
         self.stop_requested = False
-        self.resume_count = int(payload.get("resume_count", 0)) + 1 if payload else 0
         self.population_event(dict(event="resume" if payload else "start",
                                    resume_count=self.resume_count,
                                    discarded_partial_trajectories=bool(payload),
@@ -438,6 +565,7 @@ class HistoryTrainer:
             "stage": STAGE, "lineage": self.lineage, "init": "random", "teacher": None,
             "config": asdict(self.config), "model_config": config_record(self.actor.config),
             "habit": self.habit_record(),
+            "init_checkpoint": self.init_checkpoint,
             "engine_digest": self.run_identity["engine_digest"],
             "source": self.run_identity["source"],
             "source_changes": self.source_changes,
@@ -469,6 +597,11 @@ class HistoryTrainer:
                            "archive_every": self.config.population_archive_every,
                            "archive_size": self.config.population_archive_size,
                            "archive_share": self.config.population_archive_share,
+                           "archive_filter": self.config.population_archive_filter,
+                           "archive_min_tv": self.config.population_archive_min_tv,
+                           "archive_max_age_updates": self.config.population_archive_max_age_updates,
+                           "behavior_probe_rows": self.config.population_behavior_probe_rows,
+                           "behavior_probe_seed": self.config.population_behavior_probe_seed,
                            "guaranteed_learner_seats": 1},
             "inference": {**runtime_settings(self.rollout_device),
                           "causal_sdpa": self.rollout_actor.causal_sdpa,
@@ -854,11 +987,107 @@ class HistoryTrainer:
                 group["lr"] = critic_lr * scale
         return scale
 
+    def _ensure_behavior_probe(self):
+        cfg = self.config
+        if self.population.needs_probe_rebind(
+            expected_decisions=cfg.population_behavior_probe_rows,
+            expected_seed=cfg.population_behavior_probe_seed,
+        ):
+            existing = self.population.behavior_probe
+            existing_meta = self.population.behavior_probe_meta
+            rows_ok = (
+                existing is not None
+                and int(existing.decisions) == int(cfg.population_behavior_probe_rows)
+            )
+            seed_ok = (
+                existing_meta is None
+                or "seed" not in existing_meta
+                or int(existing_meta["seed"]) == int(cfg.population_behavior_probe_seed)
+            )
+            if rows_ok and seed_ok:
+                frozen, meta = existing, existing_meta
+            else:
+                frozen, meta = build_behavior_probe(
+                    self.population.resolve(0),
+                    rows=cfg.population_behavior_probe_rows,
+                    seed=cfg.population_behavior_probe_seed,
+                    device=self.device,
+                )
+            probe = decision_inputs_on_device(frozen, self.device)
+            if self.population.archive:
+                self.population.rebind_behavior_probe(probe, frozen_probe=frozen, meta=meta)
+                self.population_event(dict(
+                    event="behavior_probe_rebind",
+                    archive_members=len(self.population.archive),
+                    at_update=int(self.progress["updates"]),
+                    **(meta or {}),
+                ))
+            else:
+                self.population.set_behavior_probe(frozen, meta=meta)
+                self.population_event(dict(
+                    event="behavior_probe_init",
+                    archive_members=0,
+                    at_update=int(self.progress["updates"]),
+                    **(meta or {}),
+                ))
+            self._probe_source_obj = self.population.behavior_probe
+            self._probe_device_inputs = probe
+            return probe
+
+        if (
+            self._probe_device_inputs is not None
+            and self._probe_source_obj is self.population.behavior_probe
+        ):
+            return self._probe_device_inputs
+        probe = decision_inputs_on_device(self.population.behavior_probe, self.device)
+        self._probe_source_obj = self.population.behavior_probe
+        self._probe_device_inputs = probe
+        return probe
+
+    def _snapshot_population(self, update: int | None = None) -> int:
+        target_update = int(self.progress["updates"]) if update is None else int(update)
+        cfg = self.config
+        if (
+            not isinstance(self.population, HistoryPopulation)
+            or cfg.population_archive_filter == "thin"
+            or cfg.population_archive_every <= 0
+            or target_update % cfg.population_archive_every != 0
+        ):
+            return self.population.snapshot(target_update)
+        probe = self._ensure_behavior_probe()
+        vector = behavior_fingerprint(self.population.resolve(0), probe)
+        return self.population.snapshot(
+            target_update,
+            behavior=vector,
+            behavior_decisions=int(probe.decisions),
+        )
+
+    def apply_obs_mask_schedule(self) -> float | None:
+        """Set actor ``obs_mask_prob`` for the upcoming update and sync rollout_actor."""
+        if self.actor.obs_mask_prob is None:
+            return None
+        warmup = int(self.config.obs_mask_warmup_updates)
+        if warmup <= 0:
+            prob = 1.0
+        else:
+            start = int(self.progress.get("obs_mask_start_update", 0))
+            initial = float(self.progress.get("obs_mask_initial_prob", 0.0))
+            done = max(0, int(self.progress["updates"]) - start)
+            prob = min(1.0, initial + (1.0 - initial) * (done / warmup))
+        self.actor.obs_mask_prob.fill_(prob)
+        rollout = getattr(self, "rollout_actor", None)
+        if rollout is not None and rollout is not self.actor and rollout.obs_mask_prob is not None:
+            rollout.obs_mask_prob.fill_(prob)
+        if getattr(self, "collector", None) is not None:
+            self.collector.obs_mask_prob = float(prob)
+        return float(prob)
+
     def update(self) -> dict[str, Any]:
         """Collect, learn, log one metrics line and advance the counters."""
         if self.device.type == "cuda":
             torch.cuda.synchronize(self.device)
             torch.cuda.reset_peak_memory_stats(self.device)
+        obs_mask_prob = self.apply_obs_mask_schedule()
         # Profiling only adds synchronized timings and counters; it never changes
         # what is collected, so switching it between updates is safe.
         self.collector.profile = self.collection_profiled()
@@ -900,7 +1129,7 @@ class HistoryTrainer:
         self.population.decisions.update(self.collector.policy_decisions)
         if (stats["minibatches"] and self.config.snapshot_updates
                 and self.progress["updates"] % self.config.snapshot_updates == 0):
-            identity = self.population.snapshot(self.progress["updates"])
+            identity = self._snapshot_population()
             self.population_event(dict(event="snapshot", **self.population.metadata[identity]))
         self.population.prune(self.collector.assignments)
         self.progress["decisions"] += collected.decisions
@@ -957,6 +1186,8 @@ class HistoryTrainer:
             "cuda_allocation_retries": torch.cuda.memory_stats(self.device).get("num_alloc_retries", 0) if self.device.type == "cuda" else 0,
         }
         line.update(stats)
+        if obs_mask_prob is not None:
+            line["obs_mask_prob"] = obs_mask_prob
         self.extend_metrics(line)
         with self.metrics_path.open("a") as stream:
             stream.write(json.dumps(line) + "\n")
@@ -990,6 +1221,8 @@ class HistoryTrainer:
             config=asdict(self.config), progress=dict(self.progress), rng=rng)
         if self.config.habit_pack:
             payload.update(habit=self.habit_record(), habit_init=self.habit_init)
+        if self.init_checkpoint is not None:
+            payload.update(init_checkpoint=self.init_checkpoint)
         payload.update(population=self.population.state_dict(), run_identity=self.run_identity,
                        resume_count=self.resume_count, source_changes=self.source_changes,
                        config_changes=self.config_changes)

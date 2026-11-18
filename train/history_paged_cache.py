@@ -52,6 +52,7 @@ from torch import Tensor
 from torch.nn import functional as F
 
 from train.history_attention import finish
+from train.history_decoder import compute_stream_pos_arrays
 from train.history_inference import BatchedHistoryCache, bucket
 from train.history_model import HistoryActor
 from train.history_paged_attention import (
@@ -69,15 +70,19 @@ class KVPagePool:
     """
 
     def __init__(self, layers: int, heads: int, width: int, device, dtype=torch.float32, *,
-                 page_tokens: int = PAGE_TOKENS, pages: int = 16) -> None:
+                 page_tokens: int = PAGE_TOKENS, pages: int = 16,
+                 track_pos: bool = False) -> None:
         if min(layers, heads, width, page_tokens) < 1 or width % heads or pages < 2:
             raise ValueError("positive pool dimensions and at least two pages required")
         self.layers, self.heads, self.width = layers, heads, width
         self.depth = width // heads
         self.page_tokens = page_tokens
         self.device, self.dtype = torch.device(device), dtype
+        self.track_pos = bool(track_pos)
         self.kv: list[Tensor] = []
         self.memory = torch.zeros(0, width, device=self.device, dtype=dtype)
+        self.pos_seat = torch.zeros(0, device=self.device, dtype=torch.uint8) if self.track_pos else None
+        self.pos_round = torch.zeros(0, device=self.device, dtype=torch.uint8) if self.track_pos else None
         self.pages = 0
         self.free: list[int] = []
         self.grows = 0
@@ -88,18 +93,24 @@ class KVPagePool:
     @classmethod
     def for_actor(cls, actor: HistoryActor, **kwargs) -> "KVPagePool":
         cfg, prototype = actor.config, actor.bos
+        if "track_pos" not in kwargs and cfg.private_decoder_layers > 0:
+            kwargs["track_pos"] = True
         return cls(cfg.layers, cfg.heads, cfg.width, prototype.device, prototype.dtype, **kwargs)
 
     def check(self, actor: HistoryActor) -> None:
         cfg, prototype = actor.config, actor.bos
         if ((cfg.layers, cfg.heads, cfg.width) != (self.layers, self.heads, self.width)
-                or prototype.device != self.device or prototype.dtype != self.dtype):
+                or prototype.device != self.device or prototype.dtype != self.dtype
+                or (cfg.private_decoder_layers > 0 and not self.track_pos)):
             raise ValueError("a shared KV page pool needs one architecture, device and dtype")
 
     @property
     def page_bytes(self) -> int:
         element = torch.empty((), dtype=self.dtype).element_size()
-        return self.page_tokens * (self.layers * 2 * self.width + self.width) * element
+        total = self.page_tokens * (self.layers * 2 * self.width + self.width) * element
+        if self.track_pos:
+            total += 2 * self.page_tokens * torch.empty((), dtype=torch.uint8).element_size()
+        return total
 
     @property
     def reserved_bytes(self) -> int:
@@ -119,6 +130,13 @@ class KVPagePool:
                 new[:old_rows].copy_(old)
             memory[:old_rows].copy_(self.memory)
         self.kv, self.memory = kv, memory
+        if self.track_pos:
+            pos_seat = torch.zeros(rows, device=self.device, dtype=torch.uint8)
+            pos_round = torch.zeros(rows, device=self.device, dtype=torch.uint8)
+            if old_rows:
+                pos_seat[:old_rows].copy_(self.pos_seat)
+                pos_round[:old_rows].copy_(self.pos_round)
+            self.pos_seat, self.pos_round = pos_seat, pos_round
         # Page 0 stays unallocated: the zero rows every padded gather reads.
         self.free.extend(range(pages - 1, max(self.pages, 1) - 1, -1))
         self.pages = pages
@@ -153,6 +171,9 @@ class KVPagePool:
         self._peak_used = 0
         self.kv = []
         self.memory = torch.zeros(0, self.width, device=self.device, dtype=self.dtype)
+        if self.track_pos:
+            self.pos_seat = torch.zeros(0, device=self.device, dtype=torch.uint8)
+            self.pos_round = torch.zeros(0, device=self.device, dtype=torch.uint8)
         self.pages = 0
         self.free = []
 
@@ -277,6 +298,19 @@ class PagedHistoryCache(BatchedHistoryCache):
         rows = self._rows(table, lengths, torch.arange(size, device=self.pool.device))
         return torch.index_select(self.pool.memory, 0, rows.view(-1)).view(len(entries), size, self.pool.width)
 
+    def _gather_outputs(self, entries: list[PagedEntry], size: int
+                        ) -> tuple[Tensor, Tensor | None, Tensor | None]:
+        table, lengths = upload_arrays(
+            (self._page_table(entries, size), np.asarray([e.length for e in entries], np.int64)),
+            self.pool.device)
+        rows = self._rows(table, lengths, torch.arange(size, device=self.pool.device)).view(-1)
+        memory = torch.index_select(self.pool.memory, 0, rows).view(len(entries), size, self.pool.width)
+        if not self._track_pos:
+            return memory, None, None
+        pos_seat = torch.index_select(self.pool.pos_seat, 0, rows).view(len(entries), size)
+        pos_round = torch.index_select(self.pool.pos_round, 0, rows).view(len(entries), size)
+        return memory, pos_seat, pos_round
+
     def _append(self, entries: list[PagedEntry], counts: list[int]) -> None:
         if self.attention_backend == "triton" and torch.is_grad_enabled():
             raise RuntimeError("experimental paged attention requires torch.no_grad()")
@@ -293,6 +327,9 @@ class PagedHistoryCache(BatchedHistoryCache):
         # Upload only new raw events, not the complete historical prefix.
         tokens = np.zeros((batch, width, TOKEN_DIM), np.uint8)
         rounds, phases = np.zeros((batch, width), np.int64), np.zeros((batch, width), np.int64)
+        if self._track_pos:
+            ps_arr = np.zeros((batch, width), np.uint8)
+            pr_arr = np.zeros((batch, width), np.uint8)
         for i, (entry, count) in enumerate(zip(entries, counts)):
             begin = max(entry.length - 1, 0)
             offset = int(entry.length == 0)  # first new item is BOS
@@ -302,6 +339,14 @@ class PagedHistoryCache(BatchedHistoryCache):
                 tokens[i, offset:offset + count] = entry.stream.tokens[begin:end]
                 rounds[i, offset:offset + count] = entry.stream.rounds[begin:end]
                 phases[i, offset:offset + count] = entry.stream.phases[begin:end]
+                if self._track_pos:
+                    ps, pr = compute_stream_pos_arrays(
+                        tokens[i, offset:offset + count],
+                        rounds[i, offset:offset + count],
+                        cfg.max_rounds,
+                    )
+                    ps_arr[i, offset:offset + count] = ps
+                    pr_arr[i, offset:offset + count] = pr
         table = self._page_table(entries, span)
         # New positions (row b, slot t < count_b) and the pool rows they fill.
         write_batch = np.repeat(np.arange(batch, dtype=np.int64), count_array)
@@ -310,10 +355,13 @@ class PagedHistoryCache(BatchedHistoryCache):
         position = starts[write_batch] + write_slot
         write_rows = table[write_batch, position // P] * P + position % P
         fresh = np.flatnonzero(starts == 0)
+        host_arrays = (tokens, rounds, phases, starts, ends, table, write_batch, write_slot,
+                       write_rows, fresh)
+        if self._track_pos:
+            host_arrays = (*host_arrays, ps_arr, pr_arr)
+        uploaded = upload_arrays(host_arrays, device)
         (t, r, p, start_positions, end_positions, table_d, write_batch_d, write_slot_d,
-         write_rows_d, fresh_d) = upload_arrays(
-            (tokens, rounds, phases, starts, ends, table, write_batch, write_slot, write_rows,
-             fresh), device)
+         write_rows_d, fresh_d) = uploaded[:10]
         state = (actor.public(t.to(dtype)) + actor.round_embedding(r.clamp(0, cfg.max_rounds - 1))
                  + actor.phase_embedding(p.clamp(0, 3)))
         if len(fresh):
@@ -353,6 +401,9 @@ class PagedHistoryCache(BatchedHistoryCache):
             state = actor.stream.norm(state)
         state = actor.stream_norm(state)
         pool.memory[write_rows_d] = state[write_batch_d, write_slot_d]
+        if self._track_pos:
+            pool.pos_seat[write_rows_d] = uploaded[10][write_batch_d, write_slot_d]
+            pool.pos_round[write_rows_d] = uploaded[11][write_batch_d, write_slot_d]
         for entry, end in zip(entries, ends.tolist()):
             entry.length = end
         self.encoded_tokens += int(count_array.sum())
@@ -361,7 +412,8 @@ class PagedHistoryCache(BatchedHistoryCache):
 # ---- merged snapshot encoding ----------------------------------------------------
 
 def merged_encode(parts: list[tuple[PagedHistoryCache, list[tuple[int, int]], list[PublicStream], int]],
-                  heads, size: int) -> Tensor:
+                  heads, size: int, *, return_pos: bool = False
+                  ) -> Tensor | tuple[Tensor, Tensor | None, Tensor | None]:
     """Encode several frozen identities' streams in ONE append pass per chunk.
 
     ``parts`` are ``(cache, keys, streams, slot)`` per identity, in identity
@@ -371,7 +423,8 @@ def merged_encode(parts: list[tuple[PagedHistoryCache, list[tuple[int, int]], li
     only the arithmetic is shared: every linear layer runs as one batched
     matrix multiply over the identities' slots, attention as one SDPA over all
     rows. Returns ``[sum of streams, size, width]`` memory in part order, zero
-    past each stream's length. Same function as ``cache.encode`` per part,
+    past each stream's length (or ``(memory, pos_seat, pos_round)`` when
+    ``return_pos=True``). Same function as ``cache.encode`` per part,
     with FP32 reduction-order differences (acceptance tier 2).
     """
     if not parts:
@@ -404,6 +457,8 @@ def merged_encode(parts: list[tuple[PagedHistoryCache, list[tuple[int, int]], li
         parts[0][0].appends += 1    # one shared pass, counted once
         for i, count in zip(short, counts):
             owners[i].encoded_tokens += count
+    if return_pos:
+        return parts[0][0]._gather_outputs(entries, size)
     return parts[0][0]._gather_memory(entries, size)
 
 
@@ -422,6 +477,7 @@ def _merged_append(cache: PagedHistoryCache, entries: list[PagedEntry], counts: 
         raise RuntimeError("experimental merged attention requires torch.no_grad()")
     pool, tensors, cfg, eps = cache.pool, heads.tensors, heads.config, heads.eps
     device = pool.device
+    track_pos = cache._track_pos
     batch, width = len(entries), max(counts)
     S = max(slots) + 1
     rank = np.zeros(batch, np.int64)
@@ -441,6 +497,9 @@ def _merged_append(cache: PagedHistoryCache, entries: list[PagedEntry], counts: 
     cache._allocate_pages(entries, ends)
     tokens = np.zeros((R, width, TOKEN_DIM), np.uint8)
     rounds, phases = np.zeros((R, width), np.int64), np.zeros((R, width), np.int64)
+    if track_pos:
+        ps_arr = np.zeros((R, width), np.uint8)
+        pr_arr = np.zeros((R, width), np.uint8)
     starts_pad = np.zeros(R, np.int64)
     starts_pad[pad] = starts
     for i, (entry, count) in enumerate(zip(entries, counts)):
@@ -452,6 +511,14 @@ def _merged_append(cache: PagedHistoryCache, entries: list[PagedEntry], counts: 
             tokens[pad[i], offset:offset + count] = entry.stream.tokens[begin:end]
             rounds[pad[i], offset:offset + count] = entry.stream.rounds[begin:end]
             phases[pad[i], offset:offset + count] = entry.stream.phases[begin:end]
+            if track_pos:
+                ps, pr = compute_stream_pos_arrays(
+                    tokens[pad[i], offset:offset + count],
+                    rounds[pad[i], offset:offset + count],
+                    cfg.max_rounds,
+                )
+                ps_arr[pad[i], offset:offset + count] = ps
+                pr_arr[pad[i], offset:offset + count] = pr
     table = cache._page_table(entries, span)
     write_batch = np.repeat(np.arange(batch, dtype=np.int64), count_array)
     write_slot = np.arange(len(write_batch), dtype=np.int64) - np.repeat(
@@ -459,10 +526,14 @@ def _merged_append(cache: PagedHistoryCache, entries: list[PagedEntry], counts: 
     position = starts[write_batch] + write_slot
     write_rows = table[write_batch, position // P] * P + position % P
     fresh = np.flatnonzero(starts == 0)
+    host_arrays = (tokens, rounds, phases, starts_pad, starts, ends, table, pad,
+                   pad[write_batch], write_slot, write_rows, pad[fresh],
+                   np.asarray(slots, np.int64)[fresh])
+    if track_pos:
+        host_arrays = (*host_arrays, ps_arr, pr_arr)
+    uploaded = upload_arrays(host_arrays, device)
     (t, r, p, starts_pad_d, start_positions, end_positions, table_d, pad_d, write_pad_d,
-     write_slot_d, write_rows_d, fresh_pad_d, fresh_slot_d) = upload_arrays(
-        (tokens, rounds, phases, starts_pad, starts, ends, table, pad, pad[write_batch],
-         write_slot, write_rows, pad[fresh], np.asarray(slots, np.int64)[fresh]), device)
+     write_slot_d, write_rows_d, fresh_pad_d, fresh_slot_d) = uploaded[:13]
     W, H = cfg.width, cfg.heads
     depth = W // H
     flat = lambda x: x.reshape(S, M * width, x.shape[-1])
@@ -508,5 +579,8 @@ def _merged_append(cache: PagedHistoryCache, entries: list[PagedEntry], counts: 
         state = state + hidden.view(R, width, W)
     state = _norm(flat(state), tensors, "e_out", S, eps).view(R, width, W)
     pool.memory[write_rows_d] = state[write_pad_d, write_slot_d]
+    if track_pos:
+        pool.pos_seat[write_rows_d] = uploaded[13][write_pad_d, write_slot_d]
+        pool.pos_round[write_rows_d] = uploaded[14][write_pad_d, write_slot_d]
     for entry, end in zip(entries, ends.tolist()):
         entry.length = end

@@ -67,6 +67,10 @@ class NumpyHistoryActor(object):
             raise ValueError("private Q/K norms are not supported")
         if config.get("private_fusion", "sum") != "sum":
             raise ValueError("private fusion modes other than 'sum' are not supported")
+        if int(config.get("private_decoder_layers", 0)) > 0:
+            raise ValueError("private_decoder_layers > 0 is not supported")
+        if config.get("private_obs_mode", "full") != "full":
+            raise ValueError("private_obs_mode other than 'full' is not supported")
 
     @staticmethod
     def load(path: object) -> "NumpyHistoryActor":
