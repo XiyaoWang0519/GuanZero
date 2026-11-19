@@ -6,16 +6,41 @@ boundary is in [DESIGN.md](DESIGN.md); dated readiness and research directions
 are in [STATUS.md](STATUS.md). Experiment chronology is in
 [TRAINING_EVIDENCE.md](TRAINING_EVIDENCE.md), not a launch configuration.
 
-## Experimental paged rollout attention (October 18, 2026)
+## Rollout speed options (November 18, 2026)
 
-The [FP32 Triton prototype and GPU acceptance guide](reports/paged-attention-prototype-2026-10-18.md)
-adds explicit `PagedHistoryCache(..., attention_backend="triton")` selection for
-isolated experiments. The default remains `torch`; ordinary and merged snapshot
-rollout caches are covered, while learner/private-attention backward is unchanged.
-CUDA compilation, numerical parity, and throughput are not yet verified. Do not
-enable this in production on the basis of CPU tests. The guide includes a
-fail-closed GPU gate runner and separate component/complete-PPO benchmarks.
-No production CLI, checkpoint schema, or research boundary is changed.
+`train.history_ppo` and `train.history_ddp` accept three independent, opt-in
+flags. All three default to off, including when reading older checkpoints.
+
+| Flag | Where it acts | Requirements |
+|---|---|---|
+| `--rollout-triton-paged-attention` | Public encoder attention reads page tables directly during learner and snapshot collection. The collection cache metrics report kernel calls. | Paged KV cache, FP32, NVIDIA CUDA and Triton with supported head depth |
+| `--rollout-decoder-kv-cache` | Projects each newly encoded public token once per private decoder layer for learner seats. Pages are released before PPO learns and rebuilt on demand. | Paged KV cache and a private sequence decoder |
+| `--rollout-compact-snapshot-kv` | Projects occupied streams in the merged snapshot decoder when its sequence dimension is at least 64 and some stream slots are empty. | Private sequence decoder and merged snapshot policies |
+
+For a resume, use the existing `--resume-set rollout_decoder_kv_cache=true`
+syntax with each desired option. A resume across source identities also uses
+the existing `--allow-source-change` mechanism. PPO recomputes from the public
+token stream. At width 128 with three FP32 decoder layers the learner pool uses
+192 KiB more per 64-token page, plus a transient gathered batch during inference.
+
+The [implementation and replay results](reports/velocity-rollout-optimizations-2026-11-18.md)
+cover the queued sequence-decoder configuration. The
+[October L40S measurements](reports/paged-attention-prototype-2026-10-18.md)
+cover an earlier model. For full PPO timing on the current configuration use a
+scratch directory and a training checkpoint from that recipe. For example, in
+an allocation with two visible L40S GPUs:
+
+```sh
+python -m bench.history_arms --resume "$CHECKPOINT" --output "$NEW_SCRATCH_DIR" \
+  --device cuda --world-size 8 --spread-gpus --warmup 25 --blocks 4 --block-updates 6 \
+  --arm base= --arm cache=rollout_decoder_kv_cache=true
+```
+
+Use a baseline checkpoint with all three switches off. Compare each switch
+independently and then the combination. The benchmark records global decisions
+per wall second, the slowest rank's update time, and the largest per-rank
+allocation and reservation. Check whole-GPU memory as four ranks share each
+card. Checkpoint writes are outside the timed updates.
 
 ## Choose the entrypoint
 
@@ -162,10 +187,11 @@ replaces the single-layer private cross-attention with an `L`-layer Pre-LN
 per-head QK-normalized cross-decoder with `K` query slots and query-conditioned
 relative `(seat, round, step)` attention biases. `--private-obs-mode`
 (`full|card_counter|private_only`, default `full`) controls actor observation
-masking via `--obs-mask-warmup-updates`: `card_counter` retains the 382 private
-hand, level/role and remaining-card counter dimensions while masking the 1,467
-action-history summary dimensions; `private_only` retains 171 strictly private
-dimensions; `HistoryCritic` keeps full `obs + hidden`. Offline checkpoint
+masking via `--obs-mask-warmup-updates`. As of November 18, `card_counter` retains
+545 dimensions, including hand, level/role, remaining-card counter and the
+current trick (`obs[805:968]`). It masks 1,304 dimensions in the played-card,
+last-action, tribute and known-holdings summaries. `private_only` retains 171
+strictly private dimensions. `HistoryCritic` keeps full `obs + hidden`. Offline checkpoint
 conversion runs via `python -m train.history_sequence_migrate` and continues a
 new lineage via `--init-checkpoint` (rebasing inherited snapshot updates to
 `<= 0`). Both ordinary/paged KV caches and `--batch-snapshot-policies` /
@@ -175,6 +201,35 @@ refuses them explicitly. `--population-archive-filter nearest_pair`
 and persistent stratified `--population-behavior-probe-rows` /
 `--population-behavior-probe-seed`) merges the closest behavioral pair when the
 archive is full instead of dropping the oldest snapshot.
+
+### Wider decision path (2026-11-18)
+
+For a randomly initialized lineage, `--private-hidden 512 --private-layers 3
+--trunk-hidden 1024` enables the wider private MLP and residual state trunk.
+The public reader still runs at `--width 128 --layers 4 --heads 8` in the target
+configuration, with `--private-decoder-layers 3 --private-query-slots 4`.
+The new path requires a sequence decoder, full history (`--window 0`), no style
+input, `--private-qk-norm none` and `--private-fusion sum`. All three observation
+modes work. The private decision representation feeds belief, outcome and the
+candidate head. The next-token head reads the public encoder at its original width.
+
+Set `--action-width 128 --fusion-width 1024 --critic-width 512 --critic-layers 3`
+for the target candidate and value towers. The actor has 6,269,945 parameters, or
+6,578,150 with response and all three auxiliary heads. The critic has 1,555,969.
+Leaving the new private and trunk fields at `0, 2, 0` keeps the previous actor
+and its original `model_config` record. Resume uses the checkpoint architecture.
+The new architecture dimensions are unavailable through `--resume-set`.
+
+Ordinary and paged caches, learner decoder K/V caching, and merged snapshot
+inference/encoding with compact projections passed the local CPU checks. The
+CUDA private graphs, NumPy Botzone actor and both migration tools reject the
+wider path. The three evaluation entry points passed local CPU smoke checks.
+On CPU, batched greedy evaluation replays close top logits at scalar shape and
+uses the resulting strict argmax. The November 19 Velocity gate passed the
+single-device CUDA tests on both L40S cards and stopped on a legacy frozen
+replay tolerance failure. Eight-rank CUDA validation, throughput, peak memory
+and playing strength are unmeasured. See the
+[gate result](reports/large-decision-trunk-plan-2026-11-18.md#11-velocity-门禁结果2026-11-19).
 
 ### Runtime refactor (2026-10-18)
 

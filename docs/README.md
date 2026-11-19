@@ -8,7 +8,9 @@ Updated October 6, 2026.
 
 | Document | Role / when to read |
 |---|---|
-| [STATUS.md](STATUS.md) | Dated orientation, current directions and unresolved boundaries |
+| [GLOSSARY.md](GLOSSARY.md) | 术语对照表：报告和代码里的内部叫法用大白话解释 |
+| [STATUS.md](STATUS.md) | 项目现状：模型多强、在跑什么、卡在哪、下一步（大白话，11 月 19 日改写） |
+| [STATUS_HISTORY.md](STATUS_HISTORY.md) | 11 月 19 日以前 STATUS.md 的逐日记录，原样保留 |
 | [DESIGN.md](DESIGN.md) | Baseline architecture, information boundaries and research contract |
 | [RULES.md](RULES.md) | Engine acceptance standard; read before C++ rule changes |
 | [STATE_SPEC.md](STATE_SPEC.md), [MOVEGEN_SPEC.md](MOVEGEN_SPEC.md), [PY_API.md](PY_API.md) | State, action generation and Python interface contracts |

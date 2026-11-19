@@ -29,6 +29,9 @@ class PublicHistoryCache:
     """
 
     def __init__(self, model: HistoryBelief, *, max_tokens: int = 160) -> None:
+        if not isinstance(model, HistoryBelief):
+            raise ValueError("PublicHistoryCache requires HistoryBelief; "
+                             "use HistoryActor's rollout caches for policy inference")
         if not isinstance(max_tokens, Integral) or isinstance(max_tokens, bool) or max_tokens < 1:
             raise ValueError("max_tokens must be a positive integer")
         self.model = model

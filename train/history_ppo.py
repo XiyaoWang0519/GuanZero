@@ -437,6 +437,9 @@ class HistoryTrainer:
                                 paged_cache=config.rollout_paged_cache,
                                 batch_snapshot_encoder=config.batch_snapshot_encoder,
                                 page_span=config.rollout_page_span,
+                                triton_paged_attention=config.rollout_triton_paged_attention,
+                                decoder_kv_cache=config.rollout_decoder_kv_cache,
+                                compact_snapshot_kv=config.rollout_compact_snapshot_kv,
                                 round_streams=config.habit_round,
                                 row_style=(self.population.style
                                            if self.actor.config.style_input else None),
@@ -619,6 +622,9 @@ class HistoryTrainer:
                           "rollout_paged_cache": self.collector.paged_cache,
                           "batch_snapshot_encoder": self.collector.batch_snapshot_encoder,
                           "rollout_page_span": self.collector.page_span,
+                          "rollout_triton_paged_attention": self.collector.triton_paged_attention,
+                          "rollout_decoder_kv_cache": self.collector.decoder_kv_cache,
+                          "rollout_compact_snapshot_kv": self.collector.compact_snapshot_kv,
                           "rollout_prefill_learner_cache":
                               self.collector.prefill_learner_cache,
                           "batch_snapshot_policies": self.config.batch_snapshot_policies,

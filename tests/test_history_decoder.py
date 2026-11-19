@@ -92,7 +92,7 @@ def test_constants_and_keep_slices_match_encoder_header() -> None:
     assert PRIVATE_OBS_KEEP_SLICES == expected_slices
     expected_card_counter_slices = (
         (consts["kObsOwnHand"], consts["kObsPlayed"]),
-        (consts["kObsCardsLeft"], consts["kObsTrick"]),
+        (consts["kObsCardsLeft"], consts["kObsLastAction"]),
         (consts["kObsPhase"], consts["kObsTribute"]),
     )
     assert CARD_COUNTER_OBS_KEEP_SLICES == expected_card_counter_slices
@@ -101,7 +101,7 @@ def test_constants_and_keep_slices_match_encoder_header() -> None:
     # Verify non-overlapping, ordered, exact kept/masked counts.
     for slices, expected_kept in (
         (PRIVATE_OBS_KEEP_SLICES, 171),
-        (CARD_COUNTER_OBS_KEEP_SLICES, 382),
+        (CARD_COUNTER_OBS_KEEP_SLICES, 545),
     ):
         prev_end = -1
         kept = 0
@@ -124,18 +124,18 @@ def test_constants_and_keep_slices_match_encoder_header() -> None:
     cc_mask = private_obs_keep_mask(consts["kObsDim"], torch.device("cpu"), mode="card_counter")
     assert cc_mask.shape == (1, 1849)
     assert cc_mask.dtype == torch.float32
-    assert int(cc_mask.sum().item()) == 382
-    assert int((1.0 - cc_mask).sum().item()) == 1467
+    assert int(cc_mask.sum().item()) == 545
+    assert int((1.0 - cc_mask).sum().item()) == 1304
     for start, end in CARD_COUNTER_OBS_KEEP_SLICES:
         assert torch.all(cc_mask[:, start:end] == 1.0)
-    # Verify exact kept counter blocks and all 5 masked history/tribute blocks.
+    # Verify the counter and current trick are kept, and the history summaries are masked.
     assert torch.all(cc_mask[:, consts["kObsUnseen"] : consts["kObsPlayed"]] == 1.0)
     assert torch.all(cc_mask[:, consts["kObsCardsLeft"] : consts["kObsFinishStatus"]] == 1.0)
     assert torch.all(cc_mask[:, consts["kObsFinishStatus"] : consts["kObsLevels"]] == 1.0)
     assert torch.all(cc_mask[:, consts["kObsWildUnseen"] : consts["kObsWildFlags"]] == 1.0)
+    assert torch.all(cc_mask[:, consts["kObsTrick"] : consts["kObsLastAction"]] == 1.0)
     for start, end in (
         (consts["kObsPlayed"], consts["kObsCardsLeft"]),
-        (consts["kObsTrick"], consts["kObsLastAction"]),
         (consts["kObsLastAction"], consts["kObsPhase"]),
         (consts["kObsTribute"], consts["kObsKnownHoldings"]),
         (consts["kObsKnownHoldings"], consts["kObsDim"]),
@@ -212,8 +212,7 @@ def test_mask_public_obs_behavior_and_no_host_sync(monkeypatch: pytest.MonkeyPat
     empty_idx = torch.zeros(0, dtype=torch.long)
     assert mask_public_obs(empty_obs, empty_idx, empty_idx, 0.5).shape == (0, obs_dim)
 
-    # card_counter mode keeps 382 dims (hand + unseen/card counts/finish/wild + levels/flags/phase/roles)
-    # and masks the remaining 1467 action-history / tribute dims without host syncs.
+    # card_counter keeps the remaining-card counter and current trick throughout warmup.
     cc_keep = private_obs_keep_mask(obs_dim, obs.device, mode="card_counter").bool()[0]
     cc_one = mask_public_obs(obs, seat, prefix, 1.0, mode="card_counter")
     assert torch.equal(cc_one[:, cc_keep], obs.float()[:, cc_keep])
@@ -698,9 +697,9 @@ def test_history_actor_card_counter_mode_masking_and_gradients() -> None:
 
     with torch.no_grad():
         base_lp = actor.candidate_log_probs(inputs)
-        # Perturb every masked public dim (1,467 dims across all 5 masked slices); output must be invariant.
+        # Perturb every masked public dimension; the output must be invariant.
         obs_masked_pert = obs.clone()
-        for start, end in ((216, 648), (805, 968), (968, 1430), (1439, 1849)):
+        for start, end in ((216, 648), (968, 1430), (1439, 1849)):
             obs_masked_pert[:, start:end] += 3.5
         pert_masked_inputs = DecisionInputs(
             streams=streams,
@@ -714,8 +713,8 @@ def test_history_actor_card_counter_mode_masking_and_gradients() -> None:
         )
         assert torch.equal(actor.candidate_log_probs(pert_masked_inputs), base_lp)
 
-        # Perturbing kept card-counter blocks must affect outputs unlike private_only.
-        for start, end in ((108, 216), (648, 732), (732, 748), (790, 793)):
+        # Perturbing the counter or current trick must affect policy outputs.
+        for start, end in ((108, 216), (648, 732), (732, 748), (790, 793), (805, 968)):
             obs_counter_pert = obs.clone()
             obs_counter_pert[:, start:end] += 2.0
             counter_inputs = DecisionInputs(

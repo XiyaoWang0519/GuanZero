@@ -102,6 +102,8 @@ class SharedPrefixCache:
 
     def __init__(self, actor, roots: list[tuple]) -> None:
         self.actor, cfg = actor, actor.config
+        if cfg.private_decoder_layers > 0:
+            raise ValueError("the shared-prefix search cache requires the single-layer reader")
         self.heads, self.depth, self.width = cfg.heads, cfg.width // cfg.heads, cfg.width
         proto = actor.bos
         self.device, self.dtype = proto.device, proto.dtype

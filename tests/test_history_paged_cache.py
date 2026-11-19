@@ -174,6 +174,53 @@ def test_returned_memory_is_independent_of_later_appends():
 
 
 @pytest.mark.parametrize("device", devices())
+@torch.no_grad()
+def test_decoder_kv_appends_once_and_survives_page_reuse(device):
+    skip_without(device)
+    actor, _ = fresh_player(HistoryPolicyConfig(width=32, layers=1, heads=4,
+                                                private_decoder_layers=3), 5)
+    actor.to(device)
+    pool = KVPagePool.for_actor(actor, page_tokens=8, pages=2, decoder_layers=3)
+    cache = PagedHistoryCache(actor, pool, chunk_size=16)
+    streams = [PublicStream(i) for i in range(2)]
+    append(streams[0], 23)
+    append(streams[1], 5)
+    rows_projected = []
+    hook = actor.private_decoder.layers[0].kv_proj.register_forward_pre_hook(
+        lambda module, inputs: rows_projected.append(inputs[0].numel() // 32))
+
+    def check(order, new_rows):
+        rows_projected.clear()
+        meta, memory = cache.encode([(i, i) for i in order], [streams[i] for i in order])
+        assert sum(rows_projected) == new_rows
+        for i, layer in enumerate(actor.private_decoder.layers):
+            keys, values = layer.project_kv(memory)
+            for j, stream_id in enumerate(order):
+                n = streams[stream_id].prefix + 1
+                for actual, expected in zip(meta.decoder_kv[i, :, j], (keys[j], values[j])):
+                    torch.testing.assert_close(actual[:, :n], expected[:, :n], rtol=1e-5, atol=1e-5)
+                    assert not actual[:, n:].count_nonzero()
+
+    try:
+        check([0, 1], 30)
+        append(streams[1], 4)
+        check([1, 0], 4)
+        check([0], 0)
+        cache.prune({(1, 1)})
+        streams[1].reset(match_id=1)
+        append(streams[1], 2)
+        check([1, 0], 27)
+        actor.private_decoder.layers[0].kv_proj.weight.mul_(0.5)
+        check([0, 1], 27)
+        cache.clear()
+        pool.reset()
+        assert pool.decoder_kv is None and pool.reserved_bytes == 0
+        check([1], 3)
+    finally:
+        hook.remove()
+
+
+@pytest.mark.parametrize("device", devices())
 def test_merged_snapshot_encode_matches_per_identity_encodes(device):
     """One merged pass over three identities equals their separate encodes up to
     FP32 reduction order, including prefill chunks, fresh BOS rows, uneven row

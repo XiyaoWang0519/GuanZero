@@ -66,6 +66,40 @@ def gather(obs, cand, offsets, index):
     return obs[index], cand[flat], sub
 
 
+@torch.inference_mode()
+def _greedy_history_choices(policy: HistoryPolicy, inputs, encoded, streams) -> np.ndarray:
+    """Score the batch normally and replay ambiguous FP32 rows at scalar shape."""
+    from train.history_model import DecisionInputs, StreamBatch
+
+    actor = policy.actor
+    rows = inputs.rows
+    state = actor.decision_states(encoded, inputs)
+    logits = actor.candidate_logits(state, inputs.cand, inputs.offsets, rows=rows)
+    if not torch.isfinite(logits).all():
+        raise ValueError(f"{policy.name}: policy must produce finite logits")
+    choices = select_actions(logits, inputs.offsets)
+    chosen = inputs.offsets[:-1] + choices
+    best = logits[chosen]
+    logits[chosen] = -torch.inf
+    second = torch.full_like(best, -torch.inf).scatter_reduce_(0, rows, logits, reduce="amax")
+    # This margin only selects rows to replay. Every replay takes the strict
+    # argmax of the uncached, single-decision logits used by scalar evaluation.
+    margin = 8 * torch.finfo(logits.dtype).eps * best.abs().clamp_min(1.0)
+    for index in torch.nonzero(best - second <= margin, as_tuple=True)[0].tolist():
+        row = slice(index, index + 1)
+        begin, end = inputs.offsets[index:index + 2].tolist()
+        scalar = DecisionInputs(
+            streams=StreamBatch.from_streams([streams[int(inputs.match_index[index])]], policy.device),
+            match_index=torch.zeros_like(inputs.match_index[row]),
+            prefix=inputs.prefix[row], obs=inputs.obs[row], seat=inputs.seat[row],
+            cand=inputs.cand[begin:end], offsets=inputs.offsets[index:index + 2] - begin,
+            round_index=inputs.round_index[row],
+        )
+        choice, _ = actor.act(scalar, greedy=True)
+        choices[row] = choice
+    return choices.cpu().numpy()
+
+
 class BatchActor:
     def __init__(self, policy: Policy, seed: int, streams: HistoryStreamStore | None = None,
                  kv_cache: bool = False):
@@ -117,10 +151,16 @@ class BatchActor:
                 # Entries of finished matches go; slots not deciding now keep theirs.
                 self.cache.prune({(e, s.match_id) for e, s in enumerate(self.streams.streams)})
                 stream_batch, encoded = self.cache.encode(keys, streams)
+            decision_trunk = policy.actor.config.private_hidden > 0
+            round_index = np.asarray(batch.round_index)[rows] if decision_trunk else None
             inputs = policy.batch_inputs(streams, match_index, np.asarray(batch.seat)[rows],
-                                         obs, cand, off, stream_batch=stream_batch)
-            out[positions] = policy.act(inputs, self.generator if policy.sample else None,
-                                        encoded=encoded)
+                                         obs, cand, off, stream_batch=stream_batch,
+                                         round_index=round_index)
+            if decision_trunk and not policy.sample and policy.device.type == "cpu":
+                out[positions] = _greedy_history_choices(policy, inputs, encoded, streams)
+            else:
+                out[positions] = policy.act(inputs, self.generator if policy.sample else None,
+                                            encoded=encoded)
             return out
         device = policy.device
         o = torch.from_numpy(obs).to(device)

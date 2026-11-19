@@ -67,11 +67,13 @@ PAGE_TOKENS = 64
 class KVPagePool:
     """Token-major page storage: per layer ``[rows, 2, heads, depth]`` keys and
     values, plus ``[rows, width]`` top-layer memory; ``rows = pages * page_tokens``.
+    Learner pools may additionally store the private decoder's public-memory
+    projections in ``[rows, decoder_layers, 2, heads, depth]``.
     """
 
     def __init__(self, layers: int, heads: int, width: int, device, dtype=torch.float32, *,
                  page_tokens: int = PAGE_TOKENS, pages: int = 16,
-                 track_pos: bool = False) -> None:
+                 track_pos: bool = False, decoder_layers: int = 0) -> None:
         if min(layers, heads, width, page_tokens) < 1 or width % heads or pages < 2:
             raise ValueError("positive pool dimensions and at least two pages required")
         self.layers, self.heads, self.width = layers, heads, width
@@ -79,6 +81,10 @@ class KVPagePool:
         self.page_tokens = page_tokens
         self.device, self.dtype = torch.device(device), dtype
         self.track_pos = bool(track_pos)
+        if decoder_layers < 0 or (decoder_layers and not self.track_pos):
+            raise ValueError("decoder K/V pages require seat and round metadata")
+        self.decoder_layers = decoder_layers
+        self.decoder_kv: Tensor | None = None
         self.kv: list[Tensor] = []
         self.memory = torch.zeros(0, width, device=self.device, dtype=dtype)
         self.pos_seat = torch.zeros(0, device=self.device, dtype=torch.uint8) if self.track_pos else None
@@ -101,13 +107,14 @@ class KVPagePool:
         cfg, prototype = actor.config, actor.bos
         if ((cfg.layers, cfg.heads, cfg.width) != (self.layers, self.heads, self.width)
                 or prototype.device != self.device or prototype.dtype != self.dtype
+                or (self.decoder_layers and self.decoder_layers != cfg.private_decoder_layers)
                 or (cfg.private_decoder_layers > 0 and not self.track_pos)):
             raise ValueError("a shared KV page pool needs one architecture, device and dtype")
 
     @property
     def page_bytes(self) -> int:
         element = torch.empty((), dtype=self.dtype).element_size()
-        total = self.page_tokens * (self.layers * 2 * self.width + self.width) * element
+        total = self.page_tokens * (2 * (self.layers + self.decoder_layers) + 1) * self.width * element
         if self.track_pos:
             total += 2 * self.page_tokens * torch.empty((), dtype=torch.uint8).element_size()
         return total
@@ -130,6 +137,11 @@ class KVPagePool:
                 new[:old_rows].copy_(old)
             memory[:old_rows].copy_(self.memory)
         self.kv, self.memory = kv, memory
+        if self.decoder_layers:
+            decoder_kv = memory.new_zeros((rows, self.decoder_layers, 2, self.heads, self.depth))
+            if old_rows:
+                decoder_kv[:old_rows].copy_(self.decoder_kv)
+            self.decoder_kv = decoder_kv
         if self.track_pos:
             pos_seat = torch.zeros(rows, device=self.device, dtype=torch.uint8)
             pos_round = torch.zeros(rows, device=self.device, dtype=torch.uint8)
@@ -170,6 +182,7 @@ class KVPagePool:
             self._restore = self._peak_used + self._peak_used // 8 + 1
         self._peak_used = 0
         self.kv = []
+        self.decoder_kv = None
         self.memory = torch.zeros(0, self.width, device=self.device, dtype=self.dtype)
         if self.track_pos:
             self.pos_seat = torch.zeros(0, device=self.device, dtype=torch.uint8)
@@ -299,17 +312,21 @@ class PagedHistoryCache(BatchedHistoryCache):
         return torch.index_select(self.pool.memory, 0, rows.view(-1)).view(len(entries), size, self.pool.width)
 
     def _gather_outputs(self, entries: list[PagedEntry], size: int
-                        ) -> tuple[Tensor, Tensor | None, Tensor | None]:
+                        ) -> tuple[Tensor, Tensor | None, Tensor | None, Tensor | None]:
         table, lengths = upload_arrays(
             (self._page_table(entries, size), np.asarray([e.length for e in entries], np.int64)),
             self.pool.device)
         rows = self._rows(table, lengths, torch.arange(size, device=self.pool.device)).view(-1)
         memory = torch.index_select(self.pool.memory, 0, rows).view(len(entries), size, self.pool.width)
         if not self._track_pos:
-            return memory, None, None
+            return memory, None, None, None
         pos_seat = torch.index_select(self.pool.pos_seat, 0, rows).view(len(entries), size)
         pos_round = torch.index_select(self.pool.pos_round, 0, rows).view(len(entries), size)
-        return memory, pos_seat, pos_round
+        decoder_kv = None
+        if self.pool.decoder_kv is not None:
+            packed = self.pool.decoder_kv.index_select(0, rows).unflatten(0, (len(entries), size))
+            decoder_kv = packed.permute(2, 3, 0, 4, 1, 5)
+        return memory, pos_seat, pos_round, decoder_kv
 
     def _append(self, entries: list[PagedEntry], counts: list[int]) -> None:
         if self.attention_backend == "triton" and torch.is_grad_enabled():
@@ -400,7 +417,15 @@ class PagedHistoryCache(BatchedHistoryCache):
         if actor.stream.norm is not None:
             state = actor.stream.norm(state)
         state = actor.stream_norm(state)
-        pool.memory[write_rows_d] = state[write_batch_d, write_slot_d]
+        new_memory = state[write_batch_d, write_slot_d]
+        pool.memory[write_rows_d] = new_memory
+        if pool.decoder_kv is not None:
+            # Only the final public encoder state feeds these projections. Dynamic
+            # private queries, relative biases and attention are evaluated per decision.
+            for index, layer in enumerate(actor.private_decoder.layers):
+                keys, values = layer.project_kv(new_memory.unsqueeze(0))
+                pool.decoder_kv[write_rows_d, index] = torch.stack(
+                    (keys[0].transpose(0, 1), values[0].transpose(0, 1)), dim=1)
         if self._track_pos:
             pool.pos_seat[write_rows_d] = uploaded[10][write_batch_d, write_slot_d]
             pool.pos_round[write_rows_d] = uploaded[11][write_batch_d, write_slot_d]
@@ -435,6 +460,8 @@ def merged_encode(parts: list[tuple[PagedHistoryCache, list[tuple[int, int]], li
     if backend == "triton" and torch.is_grad_enabled():
         raise RuntimeError("experimental merged attention requires torch.no_grad()")
     pool, chunk = parts[0][0].pool, parts[0][0].chunk_size
+    if pool.decoder_layers:
+        raise ValueError("merged snapshot encoders must use a separate pool from learner decoder K/V")
     entries, targets, slots, owners = [], [], [], []
     for cache, keys, streams, slot in parts:
         if cache.pool is not pool or cache.chunk_size != chunk:
@@ -458,7 +485,7 @@ def merged_encode(parts: list[tuple[PagedHistoryCache, list[tuple[int, int]], li
         for i, count in zip(short, counts):
             owners[i].encoded_tokens += count
     if return_pos:
-        return parts[0][0]._gather_outputs(entries, size)
+        return parts[0][0]._gather_outputs(entries, size)[:3]
     return parts[0][0]._gather_memory(entries, size)
 
 

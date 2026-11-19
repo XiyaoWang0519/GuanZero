@@ -10,13 +10,14 @@ which enters the actor's inputs or scoring path (``aux_heads`` in
   target is factorised over the token's fields (one cross-entropy per one-hot
   field, a mean binary cross-entropy per multi-hot field) instead of a flat
   action vocabulary, so the head stays a width x 179 linear map.
-* ``belief``: who holds which unseen cards, from the decision state. The
+* ``belief``: who holds which unseen cards, from the final decision state
+  (``HistoryPolicyConfig.state_width``). The
   rollout buffer stores the three hidden hands' per-card counts (relative
   seats +1, +2, +3) for the critic; the head predicts, per card, the seat each
   unseen copy sits in. That per-card seat distribution is exactly what a
   constrained hidden-hand sampler for test-time search needs.
-* ``outcome``: the acting team's return of the current round, from the
-  decision state (regression; the dense value-like signal DanLM's trunk gets).
+* ``outcome``: the acting team's return of the current round, from the same
+  final decision state (regression; the dense value-like signal DanLM's trunk gets).
 
 Information boundary: labels are only read by the losses below, which the
 learner computes from stored rows and public streams; ``HistoryActor`` never

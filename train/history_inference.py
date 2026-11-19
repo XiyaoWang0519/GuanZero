@@ -187,14 +187,15 @@ class BatchedHistoryCache:
             raise ValueError("host lengths require an uploaded lengths tensor")
         entries = self._extend(keys, streams, targets)
         # Power-of-two shapes reduce allocator churn without truncating history.
-        memory, pos_seat, pos_round = self._gather_outputs(entries, self._memory_size(max(targets)))
+        size = self._memory_size(max(targets))
+        memory, pos_seat, pos_round, decoder_kv = self._gather_outputs(entries, size)
         device = memory.device
         metadata = StreamBatch(torch.empty(len(entries), 0, TOKEN_DIM, dtype=torch.uint8, device=device),
                                torch.empty(len(entries), 0, dtype=torch.long, device=device),
                                torch.empty(len(entries), 0, dtype=torch.long, device=device),
                                preuploaded_lengths if preuploaded_lengths is not None else
                                torch.tensor([n - 1 for n in targets], device=device),
-                               pos_seat=pos_seat, pos_round=pos_round)
+                               pos_seat=pos_seat, pos_round=pos_round, decoder_kv=decoder_kv)
         return metadata, memory
 
     def _extend(self, keys: list[tuple[int, int]], streams: list[PublicStream],
@@ -260,12 +261,12 @@ class BatchedHistoryCache:
         return pos_seat, pos_round
 
     def _gather_outputs(self, entries: list[Entry], size: int
-                        ) -> tuple[Tensor, Tensor | None, Tensor | None]:
+                        ) -> tuple[Tensor, Tensor | None, Tensor | None, Tensor | None]:
         memory = self._gather_memory(entries, size)
         if not self._track_pos:
-            return memory, None, None
+            return memory, None, None, None
         pos_seat, pos_round = self._gather_pos(entries, size)
-        return memory, pos_seat, pos_round
+        return memory, pos_seat, pos_round, None
 
     def _pack_keys_values(self, entries: list[Entry], counts: list[int], layer_index: int,
                           new_k: Tensor, new_v: Tensor, capacity: int

@@ -22,7 +22,7 @@ def test_switch_rebuilds_caches_in_place_and_measures(tmp_path):
     source = tmp_path / "source"
     config = HistoryPPOConfig(width=32, layers=2, heads=4, num_envs=4, steps_per_update=24,
                               snapshot_updates=1, rollout_kv_cache=True, causal_sdpa=True,
-                              batch_snapshot_policies=True, updates=2)
+                              private_decoder_layers=1, batch_snapshot_policies=True, updates=2)
     trainer = HistoryTrainer(config, source)
     trainer.run()
     output = tmp_path / "arms"
@@ -30,7 +30,8 @@ def test_switch_rebuilds_caches_in_place_and_measures(tmp_path):
                               "--device", "cpu", "--warmup", "1", "--blocks", "2",
                               "--block-updates", "2", "--arm", "base=",
                               "--arm", "fast=rollout_paged_cache=true,rollout_page_span=true,"
-                                       "batch_snapshot_encoder=true,learner_length_groups=2"]) == 0
+                                       "batch_snapshot_encoder=true,learner_length_groups=2,"
+                                       "rollout_decoder_kv_cache=true,rollout_compact_snapshot_kv=true"]) == 0
     rows = [json.loads(line) for line in (output / "arms.jsonl").open()]
     assert [r["arm"] for r in rows] == ["base"] * 3 + ["fast"] * 4 + ["base"] * 2
     assert rows[3]["cache"].get("pool_used_pages", 0) > 0 and "pool_used_pages" not in rows[-1]["cache"]

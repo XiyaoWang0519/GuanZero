@@ -39,7 +39,7 @@ from torch import Tensor, nn
 
 from train.ckpt import load_checkpoint, save_checkpoint
 from train.public_history import TOKEN_DIM, TOKEN_SCHEMA_VERSION, PublicStream, public_token
-from train.model import mlp
+from train.model import mlp, select_actions
 from train.history_response import RESPONSE_CLASSES
 from train.history_aux import (HIDDEN_SEATS, NEXT_LOGITS, NUM_CARDS, canonical_aux_heads,
                                parse_aux_heads)
@@ -96,6 +96,9 @@ class HistoryPolicyConfig:
     private_decoder_layers: int = 0
     private_query_slots: int = 1
     private_obs_mode: str = "full"
+    private_hidden: int = 0
+    private_layers: int = 2
+    trunk_hidden: int = 0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "aux_heads", canonical_aux_heads(self.aux_heads))
@@ -122,6 +125,16 @@ class HistoryPolicyConfig:
             raise ValueError("private_query_slots must be positive")
         if self.private_obs_mode not in PRIVATE_OBS_MODES:
             raise ValueError(f"private_obs_mode must be one of {PRIVATE_OBS_MODES}")
+        if self.private_hidden < 0 or self.trunk_hidden < 0 or self.private_layers < 1:
+            raise ValueError("private_hidden and trunk_hidden must be nonnegative; "
+                             "private_layers must be positive")
+        if self.private_hidden > 0 and (
+                self.trunk_hidden < 1 or self.private_decoder_layers < 1 or self.window
+                or self.style_input or self.private_qk_norm != "none"
+                or self.private_fusion != "sum"):
+            raise ValueError("private_hidden > 0 requires trunk_hidden > 0, "
+                             "private_decoder_layers >= 1, window == 0, no style_input, "
+                             "private_qk_norm == 'none', and private_fusion == 'sum'")
         if self.private_query_slots > 1 and self.private_decoder_layers < 1:
             raise ValueError("private_query_slots > 1 requires private_decoder_layers >= 1")
         if self.private_decoder_layers > 0 and (
@@ -135,13 +148,17 @@ class HistoryPolicyConfig:
     def aux_head_names(self) -> tuple[str, ...]:
         return parse_aux_heads(self.aux_heads)
 
+    @property
+    def state_width(self) -> int:
+        return self.private_hidden or self.width
+
 
 def config_record(config: HistoryPolicyConfig) -> dict[str, Any]:
     """``asdict(config)`` without ``style_input`` when it is off, without
     ``aux_heads`` when empty, without ``private_qk_norm`` when "none",
     without ``private_fusion`` when "sum", and without sequence-decoder
-    fields when at their defaults, so every other checkpoint keeps its exact
-    architecture record."""
+    and decision-trunk fields when at their defaults, so every other
+    checkpoint keeps its exact architecture record."""
     record = asdict(config)
     if not record["style_input"]:
         del record["style_input"]
@@ -157,6 +174,8 @@ def config_record(config: HistoryPolicyConfig) -> dict[str, Any]:
         del record["private_query_slots"]
     if record["private_obs_mode"] == "full":
         del record["private_obs_mode"]
+    if (config.private_hidden, config.private_layers, config.trunk_hidden) == (0, 2, 0):
+        del record["private_hidden"], record["private_layers"], record["trunk_hidden"]
     return record
 
 
@@ -169,6 +188,7 @@ class StreamBatch:
     lengths: Tensor   # int64 [B]
     pos_seat: Tensor | None = None    # optional cached uint8/int64 [B, S]
     pos_round: Tensor | None = None   # optional cached uint8/int64 [B, S]
+    decoder_kv: Tensor | None = None  # frozen rollout only: [layers, 2, B, heads, S, depth]
 
     @staticmethod
     def host_arrays(streams: list[tuple[np.ndarray, np.ndarray, np.ndarray]]
@@ -361,6 +381,8 @@ class HistoryActor(nn.Module):
         # nonzero each. Same FP32 math; reduction order may differ (not bitwise).
         self.batched_match_attention = False
         width = config.width
+        state_width = config.state_width
+        fused_width = state_width + config.action_width
         self.public = nn.Linear(TOKEN_DIM, width)
         self.round_embedding = nn.Embedding(config.max_rounds, width)
         self.phase_embedding = nn.Embedding(4, width)
@@ -369,7 +391,16 @@ class HistoryActor(nn.Module):
                                            batch_first=True, norm_first=True)
         self.stream = nn.TransformerEncoder(layer, config.layers, enable_nested_tensor=False)
         self.stream_norm = nn.LayerNorm(width)
-        self.private = mlp(config.obs_dim, width, 2)
+        self.private = mlp(config.obs_dim, state_width,
+                           config.private_layers if config.private_hidden else 2)
+        if config.private_hidden:
+            self.query_proj = nn.Linear(state_width, width)
+            self.trunk_norm = nn.LayerNorm(state_width + width)
+            self.trunk = nn.Sequential(nn.Linear(state_width + width, config.trunk_hidden),
+                                       nn.ReLU(), nn.Linear(config.trunk_hidden, state_width))
+            self.state_norm = nn.LayerNorm(state_width)
+            nn.init.zeros_(self.trunk[-1].weight)
+            nn.init.zeros_(self.trunk[-1].bias)
         self.seat = nn.Embedding(4, width)
         if config.private_decoder_layers == 0:
             self.q_proj = nn.Linear(width, width)
@@ -382,18 +413,22 @@ class HistoryActor(nn.Module):
                                           nn.Linear(width * 4, width))
         self.output_norm = nn.LayerNorm(width)
         self.action_tower = mlp(config.act_dim, config.action_width, 2)
-        self.fusion = nn.Sequential(mlp(width + config.action_width, config.fusion_width, 2),
+        self.fusion = nn.Sequential(mlp(fused_width, config.fusion_width, 2),
                                     nn.Linear(config.fusion_width, 1))
+        if config.private_hidden:
+            with torch.no_grad():
+                self.fusion[-1].weight.mul_(0.01)
+                self.fusion[-1].bias.zero_()
         if config.response_mode != "none":
             # Preserve the base actor AND subsequent critic initialization.
             # B/C allocate identical parameters. A zero bridge keeps their
             # initial policy identical; only C receives nonzero bridge inputs.
             with torch.random.fork_rng(devices=[]):
                 self.response_head = nn.Sequential(
-                    mlp(width + config.action_width, width, 2),
+                    mlp(fused_width, width, 2),
                     nn.Linear(width, RESPONSE_CLASSES))
                 self.response_bridge = nn.Linear(RESPONSE_CLASSES,
-                                                  width + config.action_width, bias=False)
+                                                 fused_width, bias=False)
                 nn.init.zeros_(self.response_bridge.weight)
         if config.style_input:
             # After the base actor, so every other parameter keeps its initialisation and order.
@@ -422,10 +457,10 @@ class HistoryActor(nn.Module):
                 if "next" in heads:
                     self.next_head = nn.Sequential(mlp(width, width, 1), nn.Linear(width, NEXT_LOGITS))
                 if "belief" in heads:
-                    self.belief_head = nn.Sequential(mlp(width, width, 1),
+                    self.belief_head = nn.Sequential(mlp(state_width, width, 1),
                                                      nn.Linear(width, NUM_CARDS * HIDDEN_SEATS))
                 if "outcome" in heads:
-                    self.outcome_head = nn.Sequential(mlp(width, width, 1), nn.Linear(width, 1))
+                    self.outcome_head = nn.Sequential(mlp(state_width, width, 1), nn.Linear(width, 1))
         if config.private_decoder_layers > 0:
             with torch.random.fork_rng(devices=[]):
                 self.private_decoder = PrivateCrossDecoder(
@@ -619,8 +654,7 @@ class HistoryActor(nn.Module):
         out = out.transpose(1, 2)[match_index, rank].reshape(count, width)
         return self.out_proj(out)
 
-    def private_query(self, inputs: DecisionInputs) -> Tensor:
-        """The private query ``private(obs) + seat [+ style_embedding]``, ``[n, w]``."""
+    def _encode_private(self, inputs: DecisionInputs) -> Tensor:
         if self.obs_mask_prob is None:
             obs_float = inputs.obs.float()
         else:
@@ -628,12 +662,20 @@ class HistoryActor(nn.Module):
             obs_float = mask_public_obs(
                 inputs.obs, inputs.seat, inputs.prefix, prob, mode=self.config.private_obs_mode
             )
-        query = self.private(obs_float) + self.seat(inputs.seat)
+        return self.private(obs_float)
+
+    def _private_query(self, inputs: DecisionInputs, private: Tensor) -> Tensor:
+        query = (self.query_proj(private) if self.config.private_hidden else private)
+        query = query + self.seat(inputs.seat)
         if self.config.style_input:
             if inputs.style is None:
                 raise ValueError("a style-input actor needs the opponents' style per decision")
             query = query + self.style_embedding(inputs.style + 1)
         return query
+
+    def private_query(self, inputs: DecisionInputs) -> Tensor:
+        """Project the private observation and add the seat embedding, ``[n, width]``."""
+        return self._private_query(inputs, self._encode_private(inputs))
 
     def reader_input(self, query: Tensor) -> Tensor:
         """The reader's and ``q_proj``'s input: ``attention_norm(query)`` under
@@ -695,7 +737,7 @@ class HistoryActor(nn.Module):
                 ))
                 rows.append(group.rows)
             if not rows:
-                return query.new_zeros(len(query), self.config.width)
+                return torch.zeros_like(query)
             return torch.zeros_like(query).index_copy(0, torch.cat(rows), torch.cat(parts))
         if encoded is None:
             encoded = self.encode_batch(inputs.streams)
@@ -723,6 +765,7 @@ class HistoryActor(nn.Module):
             batched_match_attention=self.batched_match_attention,
             rank=inputs.match_rank,
             slots=inputs.match_slots,
+            cached_kv=inputs.streams.decoder_kv,
         )
 
     def decision_states(self, encoded: Tensor | None, inputs: DecisionInputs,
@@ -736,10 +779,19 @@ class HistoryActor(nn.Module):
         call produced as ``(encoded, group)`` (``group`` None for the whole
         batch) for the next-token head; the computation itself is unchanged.
         """
-        query = self.private_query(inputs)
+        private = None
+        if self.config.private_hidden:
+            private = self._encode_private(inputs)
+            query = self._private_query(inputs, private)
+        else:
+            query = self.private_query(inputs)
         if self.private_decoder is not None:
-            base_state = self._decode_decision_states(query, encoded, inputs, collect)
-            return self.output_norm(base_state + self.feed_forward(base_state))
+            base = self._decode_decision_states(query, encoded, inputs, collect)
+            readout = self.output_norm(base + self.feed_forward(base))
+            if private is None:
+                return readout
+            combined = torch.cat((private, readout), dim=-1)
+            return self.state_norm(private + self.trunk(self.trunk_norm(combined)))
         reading = self.reader_input(query)
         if self.config.window:
             stream, lengths = self._windowed(inputs)
@@ -867,6 +919,16 @@ class HistoryActor(nn.Module):
         ``choice[i]``; ``log_prob[i]`` is the behaviour log-probability under
         this actor, which PPO stores.
         """
+        if self.config.private_hidden and greedy and inference_log_probs is None:
+            # The small initial fusion scale leaves distinct logits much closer
+            # than one ULP of the normalized log probabilities. Preserve their
+            # order for greedy evaluation and still return the selected logp.
+            rows = inputs.rows
+            state = self.decision_states(encoded, inputs)
+            logits = self.candidate_logits(state, inputs.cand, inputs.offsets, rows=rows)
+            choice = select_actions(logits, inputs.offsets)
+            log_probs = segment_log_softmax(logits, rows, inputs.decisions)
+            return choice, log_probs[inputs.offsets[:-1] + choice]
         table = self._log_prob_table(inputs, encoded, max_candidates, inference_log_probs)
         choice = table.argmax(1) if greedy else _gumbel_argmax(table, generator)
         chosen = table.gather(1, choice[:, None])[:, 0]

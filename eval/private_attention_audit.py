@@ -143,6 +143,8 @@ class Stress:
 
 
 def apply_stress(actor: HistoryActor, stress: Stress) -> None:
+    if actor.config.private_decoder_layers > 0:
+        raise ValueError("the private attention audit requires the single-layer reader")
     width = actor.config.width
     direction = torch.randn(width, generator=torch.Generator().manual_seed(stress.seed))
     with torch.no_grad():
@@ -188,6 +190,8 @@ def capture(actor: HistoryActor, inputs: DecisionInputs, chunk: int = 32,
             hooks: dict[str, Any] | None = None) -> dict[str, Any]:
     """Recompute the private attention with FP64 scores; per (row, head) arrays."""
     config = actor.config
+    if config.private_decoder_layers > 0:
+        raise ValueError("the private attention audit requires the single-layer reader")
     if config.window or config.style_input:
         raise ValueError("the audit covers full-history actors without the style input")
     heads, width = config.heads, config.width

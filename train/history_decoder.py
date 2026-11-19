@@ -13,7 +13,7 @@ Implements the sequence-decoder architecture components:
 """
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 import numpy as np
 import torch
@@ -24,7 +24,7 @@ from train.history_attention import private_sdpa
 
 PRIVATE_OBS_MODES = ("full", "private_only", "card_counter")
 PRIVATE_OBS_KEEP_SLICES = ((0, 108), (748, 790), (793, 805), (1430, 1439))
-CARD_COUNTER_OBS_KEEP_SLICES = ((0, 216), (648, 805), (1430, 1439))
+CARD_COUNTER_OBS_KEEP_SLICES = ((0, 216), (648, 968), (1430, 1439))
 REL_SEAT_BUCKETS = 5
 REL_STEP_EXACT = 32
 REL_STEP_BUCKETS = 39
@@ -408,6 +408,7 @@ class PrivateCrossDecoder(nn.Module):
         batched_match_attention: bool = False,
         rank: Tensor | None = None,
         slots: int = 0,
+        cached_kv: Tensor | None = None,
     ) -> Tensor:
         """Decode ``[n, width]`` decision states from ``encoded [B, S, width]``."""
         if encoded.ndim != 3 or encoded.shape[2] != self.width:
@@ -423,6 +424,11 @@ class PrivateCrossDecoder(nn.Module):
             return base + self.slot_proj(query.new_zeros(0, self.query_slots * self.width))
 
         batches, seq_len, _ = encoded.shape
+        if cached_kv is not None:
+            if torch.is_grad_enabled():
+                raise ValueError("cached decoder K/V is for frozen rollout inference only")
+            if cached_kv.shape != (len(self.layers), 2, batches, self.heads, seq_len, self.depth):
+                raise ValueError("cached decoder K/V dimensions do not match the encoded streams")
         if batches == 0 or seq_len == 0:
             raise ValueError("encoded must have non-zero batch and sequence length when n > 0")
 
@@ -440,11 +446,13 @@ class PrivateCrossDecoder(nn.Module):
 
         if batched_private_attention and one_decision_per_stream and n > 1:
             z = self._forward_batched_private(
-                z, encoded, pos_seat_l, pos_round_l, prefix, seat, my_round, wide_private_projection
+                z, encoded, pos_seat_l, pos_round_l, prefix, seat, my_round, wide_private_projection,
+                cached_kv,
             )
         elif batched_match_attention and not one_decision_per_stream and n > 1:
             z = self._forward_batched_match(
-                z, encoded, pos_seat_l, pos_round_l, match_index, prefix, seat, my_round, rank, slots
+                z, encoded, pos_seat_l, pos_round_l, match_index, prefix, seat, my_round, rank,
+                slots, cached_kv,
             )
         else:
             z = self._forward_per_match(
@@ -457,11 +465,18 @@ class PrivateCrossDecoder(nn.Module):
                 seat,
                 my_round,
                 one_decision_per_stream,
+                cached_kv,
             )
 
         if self.slot_proj is None:
             return z[:, 0]
         return base + self.slot_proj((z - z0).reshape(n, -1))
+
+    def _layer_projections(self, encoded: Tensor, cached_kv: Tensor | None
+                           ) -> Iterator[tuple[PrivateDecoderLayer, tuple[Tensor, Tensor]]]:
+        for index, layer in enumerate(self.layers):
+            kv = layer.project_kv(encoded) if cached_kv is None else cached_kv[index].unbind(0)
+            yield layer, kv
 
     def _forward_batched_private(
         self,
@@ -473,6 +488,7 @@ class PrivateCrossDecoder(nn.Module):
         seat: Tensor,
         my_round: Tensor,
         wide_private_projection: bool,
+        cached_kv: Tensor | None,
     ) -> Tensor:
         n, seq_len = encoded.shape[0], encoded.shape[1]
         if n != len(z):
@@ -487,8 +503,7 @@ class PrivateCrossDecoder(nn.Module):
         round_q = round_b[:, None, :].expand(n, k_slots, seq_len)
         step_q = step_b[:, None, :].expand(n, k_slots, seq_len)
 
-        for layer in self.layers:
-            k, v = layer.project_kv(encoded)
+        for layer, (k, v) in self._layer_projections(encoded, cached_kv):
             q, r_seat, r_round, r_step = layer.project_queries(z, project)
             q_sdpa = q.transpose(1, 2)
             attn_bias = _gather_attn_bias(
@@ -518,6 +533,7 @@ class PrivateCrossDecoder(nn.Module):
         my_round: Tensor,
         rank: Tensor | None,
         slots: int,
+        cached_kv: Tensor | None,
     ) -> Tensor:
         n = len(z)
         batches, seq_len, _ = encoded.shape
@@ -560,8 +576,7 @@ class PrivateCrossDecoder(nn.Module):
             batches, q_rows, seq_len
         )
 
-        for layer in self.layers:
-            k, v = layer.project_kv(encoded)
+        for layer, (k, v) in self._layer_projections(encoded, cached_kv):
             q, r_seat, r_round, r_step = layer.project_queries(z, _wide_project)
             q_sdpa = _scatter_slots(q, batches, slots, match_index, rank)
             rs = _scatter_slots(r_seat, batches, slots, match_index, rank)
@@ -587,11 +602,12 @@ class PrivateCrossDecoder(nn.Module):
         seat: Tensor,
         my_round: Tensor,
         one_decision_per_stream: bool,
+        cached_kv: Tensor | None,
     ) -> Tensor:
         batches, seq_len, _ = encoded.shape
         if one_decision_per_stream and batches != len(z):
             raise ValueError("one_decision_per_stream requires one stream per decision")
-        kv_layers = [layer.project_kv(encoded) for layer in self.layers]
+        layers_kv = list(self._layer_projections(encoded, cached_kv))
         k_slots = self.query_slots
         parts: list[Tensor] = []
         row_indices: list[Tensor] = []
@@ -630,7 +646,7 @@ class PrivateCrossDecoder(nn.Module):
                 1, q_rows, seq_len
             )
 
-            for layer, (k_all, v_all) in zip(self.layers, kv_layers):
+            for layer, (k_all, v_all) in layers_kv:
                 q, r_seat, r_round, r_step = layer.project_queries(zb, _wide_project)
                 q_sdpa = q.reshape(1, q_rows, self.heads, self.depth).transpose(1, 2)
                 rs = r_seat.reshape(1, q_rows, self.heads, REL_SEAT_BUCKETS).transpose(1, 2)

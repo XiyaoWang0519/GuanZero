@@ -75,12 +75,12 @@ def _mlp_linears(module: nn.Module, layers: int) -> tuple[nn.Linear, ...]:
 def head_parameters(actor: HistoryActor) -> tuple[Tensor, ...]:
     """Every parameter (and mask buffer) the merged head reads, from live registries."""
     cfg = actor.config
-    p0, p1 = actor.private[0], actor.private[2]
+    private_params = tuple(actor.private.parameters())
     a0, a1 = actor.action_tower[0], actor.action_tower[2]
     u0, u1, u2 = actor.fusion[0][0], actor.fusion[0][2], actor.fusion[1]
     f0, f1 = actor.feed_forward[0], actor.feed_forward[2]
     if cfg.private_decoder_layers == 0 and cfg.private_obs_mode == "full":
-        return (p0.weight, p0.bias, p1.weight, p1.bias, actor.seat.weight,
+        return (*private_params, actor.seat.weight,
                 actor.q_proj.weight, actor.q_proj.bias, actor.kv_proj.weight, actor.kv_proj.bias,
                 actor.out_proj.weight, actor.out_proj.bias,
                 actor.attention_norm.weight, actor.attention_norm.bias,
@@ -88,7 +88,10 @@ def head_parameters(actor: HistoryActor) -> tuple[Tensor, ...]:
                 actor.output_norm.weight, actor.output_norm.bias,
                 a0.weight, a0.bias, a1.weight, a1.bias,
                 u0.weight, u0.bias, u1.weight, u1.bias, u2.weight, u2.bias)
-    params: list[Tensor] = [p0.weight, p0.bias, p1.weight, p1.bias, actor.seat.weight]
+    params: list[Tensor] = [*private_params, actor.seat.weight]
+    if cfg.private_hidden:
+        for module in (actor.query_proj, actor.trunk_norm, actor.trunk, actor.state_norm):
+            params.extend(module.parameters())
     if cfg.private_decoder_layers > 0:
         dec = actor.private_decoder
         params.extend((dec.reader_bias, dec.query_round.weight))
@@ -203,17 +206,31 @@ def validate_actor(actor: HistoryActor) -> None:
         if (actor.obs_mask_prob is None or actor.obs_mask_prob.dtype != torch.float32
                 or actor.obs_mask_prob.numel() != 1):
             raise ValueError("non-full obs mode requires scalar float32 obs_mask_prob buffer")
-    _mlp_linears(actor.private, 2)
+    _mlp_linears(actor.private, config.private_layers if config.private_hidden else 2)
     _mlp_linears(actor.action_tower, 2)
     _mlp_linears(actor.fusion[0], 2)
     feed = list(actor.feed_forward.children())
     if (len(feed) != 3 or not isinstance(feed[0], nn.Linear) or type(feed[1]) is not nn.ReLU
             or not isinstance(feed[2], nn.Linear) or not isinstance(actor.fusion[1], nn.Linear)):
         raise ValueError("merged snapshot inference requires the standard history actor head")
-    norms = (actor.attention_norm, actor.output_norm)
-    if any(not n.elementwise_affine or n.bias is None or n.normalized_shape != (config.width,)
-           for n in norms):
-        raise ValueError("merged snapshot inference requires affine width layer norms")
+    norms = [(actor.attention_norm, config.width), (actor.output_norm, config.width)]
+    if config.private_hidden:
+        width, state_width = config.width, config.state_width
+        trunk = list(actor.trunk.children())
+        if len(trunk) != 3 or type(trunk[1]) is not nn.ReLU or any(
+            not isinstance(layer, nn.Linear) or layer.bias is None
+            or (layer.in_features, layer.out_features) != dims
+            for layer, dims in ((actor.query_proj, (state_width, width)),
+                                (trunk[0], (state_width + width, config.trunk_hidden)),
+                                (trunk[2], (config.trunk_hidden, state_width)))
+        ):
+            raise ValueError("merged snapshot inference requires the standard decision trunk")
+        norms.extend(((actor.trunk_norm, state_width + width), (actor.state_norm, state_width)))
+        if any(n.eps != actor.attention_norm.eps for n, _ in norms):
+            raise ValueError("stacked snapshot weights need one layer norm epsilon")
+    if any(not isinstance(n, nn.LayerNorm) or not n.elementwise_affine or n.bias is None
+           or n.normalized_shape != (width,) for n, width in norms):
+        raise ValueError("merged snapshot inference requires affine layer norms of the configured widths")
     if config.private_decoder_layers > 0:
         _validate_decoder(actor, actor.attention_norm.eps)
     if any(t.dtype != torch.float32 for t in head_parameters(actor)):
@@ -230,7 +247,7 @@ def _head_values(actor: HistoryActor) -> dict[str, Tensor]:
     cfg = actor.config
     width, heads = cfg.width, cfg.heads
     depth = width // heads
-    p0, p1 = _mlp_linears(actor.private, 2)
+    private = _mlp_linears(actor.private, cfg.private_layers if cfg.private_hidden else 2)
     a0, a1 = _mlp_linears(actor.action_tower, 2)
     u0, u1 = _mlp_linears(actor.fusion[0], 2)
     u2 = actor.fusion[1]
@@ -238,13 +255,22 @@ def _head_values(actor: HistoryActor) -> dict[str, Tensor]:
     linear = lambda layer, name: {f"{name}_w": layer.weight.t(), f"{name}_b": layer.bias[None]}
     norm = lambda layer, name: {f"{name}_w": layer.weight[None], f"{name}_b": layer.bias[None]}
     values: dict[str, Tensor] = {
-        **linear(p0, "p0"), **linear(p1, "p1"), "seat": actor.seat.weight,
+        "seat": actor.seat.weight,
         "n1_w": actor.attention_norm.weight[None], "n1_b": actor.attention_norm.bias[None],
         **linear(f0, "f0"), **linear(f1, "f1"),
         "n2_w": actor.output_norm.weight[None], "n2_b": actor.output_norm.bias[None],
         **linear(a0, "a0"), **linear(a1, "a1"),
         **linear(u0, "u0"), **linear(u1, "u1"), **linear(u2, "u2"),
     }
+    for index, layer in enumerate(private):
+        values.update(linear(layer, f"p{index}"))
+    if cfg.private_hidden:
+        values.update({
+            **linear(actor.query_proj, "pq"),
+            **norm(actor.trunk_norm, "tn"),
+            **linear(actor.trunk[0], "t0"), **linear(actor.trunk[2], "t1"),
+            **norm(actor.state_norm, "sn"),
+        })
     if cfg.private_decoder_layers > 0:
         dec = actor.private_decoder
         values["d_rb"] = dec.reader_bias[None]
@@ -602,6 +628,7 @@ def _merged_decode_states(
     pos_seat: Tensor | None,
     pos_round: Tensor | None,
     group_slots: Sequence[int] | None,
+    compact_kv: bool,
 ) -> Tensor:
     """Stacked ``PrivateCrossDecoder`` forward across all active slots -> ``[S, M, width]``."""
     tensors, cfg = heads.tensors, heads.config
@@ -667,16 +694,30 @@ def _merged_decode_states(
     has_any = allowed_q.any(dim=-1, keepdim=True)
 
     stream_pad, ms = _resolve_stream_pad(layout, group_slots, fields, memory.device)
-    mem_pad = _pad(memory, stream_pad, S * ms).view(S, ms * seq_len, width)
+    # Amortize per-stream weight copies over longer prefixes.
+    compact = compact_kv and seq_len >= 64 and layout.streams < S * ms
+    if compact:
+        stream_slots = stream_pad // ms
+    else:
+        mem_pad = _pad(memory, stream_pad, S * ms).view(S, ms * seq_len, width)
     max_rounds_p1 = cfg.max_rounds + 1
 
     for idx in range(cfg.private_decoder_layers):
-        kv = _linear(mem_pad, tensors, f"d{idx}_kv", S)
-        k_raw, v_raw = kv.chunk(2, dim=-1)
-        k_normed = _norm(k_raw.reshape(S, ms * seq_len * heads_n, depth), tensors,
-                         f"d{idx}_kn", S, heads.eps)
-        k_streams = k_normed.view(S * ms, seq_len, heads_n, depth)[stream_pad]
-        v_streams = v_raw.view(S * ms, seq_len, heads_n, depth)[stream_pad]
+        if compact:
+            kv = torch.baddbmm(tensors[f"d{idx}_kv_b"][stream_slots], memory,
+                               tensors[f"d{idx}_kv_w"][stream_slots])
+            k_raw, v_raw = kv.view(layout.streams, seq_len, 2, heads_n, depth).unbind(2)
+            k_streams = torch.addcmul(tensors[f"d{idx}_kn_b"][stream_slots, None],
+                                      F.layer_norm(k_raw, (depth,), eps=heads.eps),
+                                      tensors[f"d{idx}_kn_w"][stream_slots, None])
+            v_streams = v_raw
+        else:
+            kv = _linear(mem_pad, tensors, f"d{idx}_kv", S)
+            k_raw, v_raw = kv.chunk(2, dim=-1)
+            k_normed = _norm(k_raw.reshape(S, ms * seq_len * heads_n, depth), tensors,
+                             f"d{idx}_kn", S, heads.eps)
+            k_streams = k_normed.view(S * ms, seq_len, heads_n, depth)[stream_pad]
+            v_streams = v_raw.view(S * ms, seq_len, heads_n, depth)[stream_pad]
         k_own = (k_streams if layout.identity_streams else k_streams[stream_idx]).transpose(1, 2)
         v_own = (v_streams if layout.identity_streams else v_streams[stream_idx]).transpose(1, 2)
 
@@ -722,6 +763,7 @@ def merged_log_probs(
     pos_seat: Tensor | None = None,
     pos_round: Tensor | None = None,
     group_slots: Sequence[int] | None = None,
+    compact_kv: bool = False,
 ) -> Tensor:
     """Log-probability of every snapshot candidate, ``[sum_k]``, in merged order.
 
@@ -742,17 +784,21 @@ def merged_log_probs(
         )
     else:
         obs_in = fields["obs"].float()
-    # Private query, [S, M, width].
-    x = _pad(obs_in, fields["row_pad"], S * M).view(S, M, -1)
-    x = torch.relu(_linear(x, tensors, "p0", S))
-    x = torch.relu(_linear(x, tensors, "p1", S))
-    query = x + tensors["seat"][:S].reshape(S * 4, width)[fields["seat_pad"]].view(S, M, width)
+    private = _pad(obs_in, fields["row_pad"], S * M).view(S, M, -1)
+    for index in range(cfg.private_layers if cfg.private_hidden else 2):
+        private = torch.relu(_linear(private, tensors, f"p{index}", S))
+    query = _linear(private, tensors, "pq", S) if cfg.private_hidden else private
+    query = query + tensors["seat"][:S].reshape(S * 4, width)[fields["seat_pad"]].view(S, M, width)
     if cfg.private_decoder_layers > 0:
         base_state = _merged_decode_states(
-            heads, layout, fields, memory, query, pos_seat, pos_round, group_slots
+            heads, layout, fields, memory, query, pos_seat, pos_round, group_slots, compact_kv
         )
         hidden = _linear(torch.relu(_linear(base_state, tensors, "f0", S)), tensors, "f1", S)
         state = _norm(base_state + hidden, tensors, "n2", S, heads.eps)
+        if cfg.private_hidden:
+            combined = _norm(torch.cat((private, state), dim=-1), tensors, "tn", S, heads.eps)
+            hidden = torch.relu(_linear(combined, tensors, "t0", S))
+            state = _norm(private + _linear(hidden, tensors, "t1", S), tensors, "sn", S, heads.eps)
     else:
         q = _linear(query, tensors, "q", S).view(S, M, heads_n, depth).transpose(1, 2)
         # Keys folded into the query: [S, heads, M, width], then one row per decision.
@@ -774,7 +820,8 @@ def merged_log_probs(
     actions = _pad(fields["cand"].float(), fields["cand_pad"], S * Cm).view(S, Cm, -1)
     actions = torch.relu(_linear(actions, tensors, "a0", S))
     actions = torch.relu(_linear(actions, tensors, "a1", S))
-    states = state.reshape(S * M, width)[fields["cand_state_pad"]].view(S, Cm, width)
+    state_width = cfg.state_width
+    states = state.reshape(S * M, state_width)[fields["cand_state_pad"]].view(S, Cm, state_width)
     fused = torch.cat((states, actions), dim=-1)
     fused = torch.relu(_linear(fused, tensors, "u0", S))
     fused = torch.relu(_linear(fused, tensors, "u1", S))

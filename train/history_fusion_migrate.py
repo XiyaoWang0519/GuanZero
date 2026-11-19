@@ -62,6 +62,8 @@ def validate_source(actor: HistoryActor) -> None:
     """Only plain "sum"/"none" actors convert: split reuses ``attention_norm``
     on the query and every other arm combination is undefined here."""
     config = actor.config
+    if config.private_hidden > 0:
+        raise ValueError("fusion migration does not support private_hidden > 0")
     if config.private_fusion != "sum":
         raise ValueError("the source must be a 'sum'-fusion checkpoint")
     if config.private_qk_norm != "none":
@@ -77,6 +79,8 @@ def validate_source(actor: HistoryActor) -> None:
 def convert(actor: HistoryActor, gain: float) -> HistoryActor:
     """The ``split``+``qk`` twin of ``actor``: identical weights, identity
     q/k norms and ``reader_norm.weight = gain * attention_norm.weight``."""
+    if actor.config.private_hidden > 0:
+        raise ValueError("fusion migration does not support private_hidden > 0")
     config = replace(actor.config, private_fusion="split", private_qk_norm="qk")
     converted = HistoryActor(config)
     missing, unexpected = converted.load_state_dict(actor.state_dict(), strict=False)

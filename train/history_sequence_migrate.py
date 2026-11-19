@@ -91,6 +91,8 @@ def validate_source(actor: HistoryActor) -> None:
         raise ValueError("windowed sources are not supported")
     if config.style_input:
         raise ValueError("style-input sources are not supported")
+    if config.private_hidden > 0:
+        raise ValueError("sequence migration does not support private_hidden > 0")
     if getattr(config, "private_decoder_layers", 0) > 0:
         raise ValueError("sources with a private decoder are not supported")
     if config.private_fusion != "sum":
@@ -409,6 +411,8 @@ def capture_decoder_attention(
     chunk: int = 32,
 ) -> dict[str, Any]:
     """Explicit FP64 per-layer, per-head attention audit on ``PrivateCrossDecoder``."""
+    if actor.config.private_hidden > 0:
+        raise ValueError("the sequence migration audit does not support private_hidden > 0")
     dec = actor.private_decoder
     if dec is None:
         raise ValueError("actor does not have a private_decoder")

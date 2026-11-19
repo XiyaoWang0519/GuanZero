@@ -103,10 +103,11 @@ class HistoryPPOConfig:
     rollout_graph_policy_budget_mb: int = 128  # per-policy cap inside the total budget
     rollout_triton_cache: bool = False  # lossless KV update/packing; requires Triton
     rollout_triton_min_batch: int = 1
-    # One shared page pool for every identity's public KV cache
-    # (train/history_paged_cache.py): a fixed number of operations per encode
-    # call instead of several per cached match. Bitwise on CPU; replaces Triton.
+    # Page pools for public KV, shared across snapshots and separate for the learner.
     rollout_paged_cache: bool = False
+    rollout_triton_paged_attention: bool = False  # NVIDIA FP32 public encoder attention
+    rollout_decoder_kv_cache: bool = False        # learner rollout decoder projections
+    rollout_compact_snapshot_kv: bool = False     # project occupied snapshot streams
     # Paged cache: pad attention keys and the decision memory to the next 64-token
     # page instead of the next power of two. Tier 2 (FP32 reduction shapes change).
     rollout_page_span: bool = False
@@ -185,6 +186,14 @@ class HistoryPPOConfig:
     habit_strength: float = 1.0
     habit_view: str = "full"            # full | round | oracle
     habit_init: str = ""
+    # Decision-path dimensions and independent action / value towers.
+    private_hidden: int = 0
+    private_layers: int = 2
+    trunk_hidden: int = 0
+    action_width: int = 128
+    fusion_width: int = 128
+    critic_width: int = 256
+    critic_layers: int = 3
 
     def __post_init__(self) -> None:
         if self.rollout_graph_budget_mb < 1 or self.rollout_graph_policy_budget_mb < 1:
@@ -230,6 +239,13 @@ class HistoryPPOConfig:
         if (self.rollout_private_graphs or self.rollout_triton_cache
                 or self.rollout_paged_cache) and not self.rollout_kv_cache:
             raise ValueError('KV cache layouts and CUDA rollout optimizations require rollout_kv_cache')
+        if self.rollout_triton_paged_attention and not self.rollout_paged_cache:
+            raise ValueError("Triton paged attention requires rollout_paged_cache")
+        if self.rollout_decoder_kv_cache and not (self.rollout_paged_cache and self.private_decoder_layers):
+            raise ValueError("decoder K/V cache requires rollout_paged_cache and a private decoder")
+        if self.rollout_compact_snapshot_kv and not (self.private_decoder_layers and
+                (self.batch_snapshot_policies or self.batch_snapshot_policies_schedule)):
+            raise ValueError("compact snapshot K/V requires merged snapshot policies and a private decoder")
         if self.rollout_paged_cache and self.rollout_triton_cache:
             raise ValueError('rollout_paged_cache replaces rollout_triton_cache; choose one')
         if self.rollout_page_span and (not self.rollout_paged_cache
@@ -318,6 +334,13 @@ class HistoryPPOConfig:
                                    private_decoder_layers=self.private_decoder_layers,
                                    private_query_slots=self.private_query_slots,
                                    private_obs_mode=self.private_obs_mode,
+                                   private_hidden=self.private_hidden,
+                                   private_layers=self.private_layers,
+                                   trunk_hidden=self.trunk_hidden,
+                                   action_width=self.action_width,
+                                   fusion_width=self.fusion_width,
+                                   critic_width=self.critic_width,
+                                   critic_layers=self.critic_layers,
                                    style_input=bool(self.habit_pack)
                                    and self.habit_view == "oracle")
 
@@ -370,6 +393,8 @@ RESUME_OVERRIDES = frozenset({"num_envs", "num_threads", "minibatch_matches", "t
                               "batch_snapshot_policies", "batch_snapshot_policies_schedule",
                               "rollout_trim_cuda_cache", "rollout_paged_cache",
                               "rollout_triton_cache", "batch_snapshot_encoder",
+                              "rollout_triton_paged_attention", "rollout_decoder_kv_cache",
+                              "rollout_compact_snapshot_kv",
                               "learner_length_groups", "learner_chosen_response",
                               "rollout_page_span", "rollout_prefill_learner_cache",
                               "profile_learn",
@@ -442,6 +467,16 @@ def build_parser() -> argparse.ArgumentParser:
                         help="layers in the relative-position private cross-decoder (0: legacy)")
     parser.add_argument("--private-query-slots", type=int, default=1,
                         help="query slots per decision in PrivateCrossDecoder (1: single slot)")
+    parser.add_argument("--private-hidden", type=int, default=0,
+                        help="private decision width (0: legacy decision path)")
+    parser.add_argument("--private-layers", type=int, default=2,
+                        help="private MLP depth when --private-hidden is positive")
+    parser.add_argument("--trunk-hidden", type=int, default=0,
+                        help="hidden width of the residual decision trunk")
+    parser.add_argument("--action-width", type=int, default=128)
+    parser.add_argument("--fusion-width", type=int, default=128)
+    parser.add_argument("--critic-width", type=int, default=256)
+    parser.add_argument("--critic-layers", type=int, default=3)
     parser.add_argument("--private-obs-mode", choices=_PRIVATE_OBS_MODES, default="full",
                         help="actor observation mode: 'full' (legacy), 'private_only', or 'card_counter'")
     parser.add_argument("--obs-mask-warmup-updates", type=int, default=0,
@@ -514,6 +549,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="per-policy private-graph cap within the total budget")
     parser.add_argument("--rollout-triton-cache", action="store_true")
     parser.add_argument("--rollout-triton-min-batch", type=int, default=1)
+    parser.add_argument("--rollout-triton-paged-attention", action="store_true",
+                        help="read public encoder K/V directly from pages with Triton on NVIDIA CUDA")
+    parser.add_argument("--rollout-decoder-kv-cache", action="store_true",
+                        help="cache the learner decoder's K/V alongside public rollout pages")
+    parser.add_argument("--rollout-compact-snapshot-kv", action="store_true",
+                        help="project only occupied snapshot streams in the merged decoder")
     parser.add_argument("--rollout-paged-cache", action="store_true",
                         help="one shared page pool for the public KV cache: fixed operations "
                              "per encode call (bitwise on CPU; replaces --rollout-triton-cache)")

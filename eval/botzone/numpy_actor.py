@@ -51,6 +51,8 @@ class NumpyHistoryActor(object):
     """Scores the candidates of one decision from its public stream."""
 
     def __init__(self, weights: Dict[str, np.ndarray], config: dict) -> None:
+        if int(config.get("private_hidden", 0)) > 0:
+            raise ValueError("private_hidden > 0 is not supported by the Botzone NumPy actor")
         self.w = {k: np.asarray(v, dtype=np.float32) for k, v in weights.items()}
         self.config = dict(config)
         self.width = int(config["width"])

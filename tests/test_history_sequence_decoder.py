@@ -324,12 +324,17 @@ def test_private_only_obs_mask_isolates_public_obs_and_keeps_critic_privileged()
     [
         dict(**BASE, private_decoder_layers=1, private_query_slots=1, private_obs_mode="full"),
         dict(**SEQ),
+        dict(**SEQ, private_hidden=64, private_layers=3, trunk_hidden=96, fusion_width=80),
     ],
 )
 def test_dispatch_paths_and_caches_match_over_multiround_matches(cfg_kwargs):
     cfg = HistoryPolicyConfig(**cfg_kwargs)
     actor, _ = fresh_player(cfg, 9)
     actor.train()
+    if cfg.private_hidden:
+        with torch.no_grad():
+            actor.trunk[-1].weight.normal_(std=0.05)
+            actor.fusion[-1].weight.mul_(100.0)
     if actor.obs_mask_prob is not None:
         actor.obs_mask_prob.fill_(1.0)
 
@@ -398,15 +403,26 @@ def test_dispatch_paths_and_caches_match_over_multiround_matches(cfg_kwargs):
         batched_cache = BatchedHistoryCache(actor, chunk_size=32)
         b_meta, b_mem = batched_cache.encode(keys, streams)
         b_lp = actor.candidate_log_probs(replace(re_inputs, streams=b_meta), encoded=b_mem)
-        assert float((b_lp - uncached_lp).abs().max()) < 1e-5
+        batched_diff = float((b_lp - uncached_lp).abs().max())
+        assert batched_diff < 1e-5
+        if cfg.private_hidden:
+            print(f"ordinary KV max |dlogp|={batched_diff:.9g}")
 
-        for page_span in (False, True):
-            pool = KVPagePool.for_actor(actor, page_tokens=16, pages=4)
+        modes = [(False, 0), (True, 0)]
+        if cfg.private_hidden:
+            modes.append((True, cfg.private_decoder_layers))
+        for page_span, decoder_layers in modes:
+            pool = KVPagePool.for_actor(actor, page_tokens=16, pages=4, decoder_layers=decoder_layers)
             assert pool.track_pos is True
             paged_cache = PagedHistoryCache(actor, pool, chunk_size=32, page_span=page_span)
             p_meta, p_mem = paged_cache.encode(keys, streams)
             p_lp = actor.candidate_log_probs(replace(re_inputs, streams=p_meta), encoded=p_mem)
-            assert float((p_lp - uncached_lp).abs().max()) < 1e-5
+            assert (p_meta.decoder_kv is not None) == bool(decoder_layers)
+            paged_diff = float((p_lp - uncached_lp).abs().max())
+            assert paged_diff < 1e-5
+            if cfg.private_hidden:
+                print(f"page_span={page_span}, cached decoder layers={decoder_layers}, "
+                      f"max |dlogp|={paged_diff:.9g}")
             assert not pool.pos_seat[:16].any() and not pool.pos_round[:16].any()
 
 
@@ -744,12 +760,15 @@ def test_warmup_schedule_init_checkpoint_resume_aux_and_eval(tmp_path):
     assert line_ov2["obs_mask_prob"] == pytest.approx(0.25)
 
 
-def test_card_counter_ppo_warmup_resume_and_carried_ratio_one(tmp_path):
+@pytest.mark.parametrize("trunk", [{}, dict(private_hidden=64, private_layers=3, trunk_hidden=96)],
+                         ids=["sequence", "large-trunk"])
+def test_card_counter_ppo_warmup_resume_and_carried_ratio_one(tmp_path, trunk):
     """card_counter mode supports obs_mask warmup, --resume, carried-row ratio==1.0,
     and merged snapshot batching + paged cache."""
     cc_seq = dict(**BASE, private_decoder_layers=2, private_query_slots=2, private_obs_mode="card_counter")
     carried_cfg = HistoryPPOConfig(
         **cc_seq,
+        **trunk,
         aux_heads="next,belief,outcome",
         response_mode="auxiliary",
         obs_mask_warmup_updates=2,
@@ -760,6 +779,7 @@ def test_card_counter_ppo_warmup_resume_and_carried_ratio_one(tmp_path):
         rollout_wide_projection=True,
         learner_batched_attention=True,
         learner_length_groups=2,
+        rollout_decoder_kv_cache=bool(trunk),
         num_envs=4,
         steps_per_update=12,
         minibatch_matches=4,
@@ -786,16 +806,22 @@ def test_card_counter_ppo_warmup_resume_and_carried_ratio_one(tmp_path):
     samples = carried.buffer.finalize(carried.refresh_values(), carried_cfg.gamma, carried_cfg.gae_lambda)
     assert samples > 0
     saw_mixed = False
+    max_ratio_deviation = 0.0
     for rows in carried.minibatches():
         probs = set(np.unique(carried.buffer.compact()["obs_mask_prob"][rows]).tolist())
         if {0.0, 0.5, 1.0} <= probs:
             saw_mixed = True
         terms = carried.minibatch_loss(rows)
-        assert float(terms["ratio_deviation"]) < 1e-5
+        ratio_deviation = float(terms["ratio_deviation"])
+        max_ratio_deviation = max(max_ratio_deviation, ratio_deviation)
+        assert ratio_deviation < 1e-5
     assert saw_mixed
+    if trunk:
+        print(f"carried card_counter 0/0.5/1 max |ratio - 1|={max_ratio_deviation:.9g}")
 
     run_cfg = HistoryPPOConfig(
         **cc_seq,
+        **trunk,
         obs_mask_warmup_updates=2,
         snapshot_updates=1,
         batch_snapshot_policies=True,

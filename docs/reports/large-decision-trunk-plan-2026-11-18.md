@@ -1,0 +1,373 @@
+# 大模型新血统：加宽决策路径的实现方案（2026-11-18）
+
+状态为 **结构已实现，完成本地 CPU 验收**。见文末[实现记录](#9-实现记录2026-11-18)。
+第 4.3 节作业 22095 的双卡单设备测试通过，旧结构冻结回放未过门禁。
+八 rank 数值验证、完整 PPO 吞吐、整卡显存峰值和棋力未测。见[作业结果](#11-velocity-门禁结果2026-11-19)。
+第 5 节的训练草案仍待另行授权。
+
+## 1. 决定与理由
+
+11 月 18 日用户决定：新建一个更大的网络，随机初始化，自博弈 PPO 从头训练，
+不在现有血统上加宽或蒸馏。参照是 OpenAI Five 用最终结构重跑后以更短时间超过
+原模型的经验。本方案只回答"多大、参数放在哪里"。
+
+支持这个决定的测量（均为 11 月 18 日对现有产物的只读核对）：
+
+- 主线 u234993（SHA-256 `68df2615…16b3af7b`）的 actor 共 1,509,870 个参数。
+  其中公共历史编码器 793,088 个，而 [11 月 12 日诊断](history-root-cause-2026-11-12.md)
+  显示它的读出几乎不改变贪心出牌。实际决定出牌的部分约 47 万个参数：
+  私有观测 `1849→128→128`（253,312）、`feed_forward`（131,712）、
+  `action_tower`（36,352）、`fusion` `256→128→128→1`（49,537）。
+- DanLM v1 检查点的配置：共 4,003,073 个参数；序列部分 128 维、3 个注意力块；
+  `hand_mlp` 为 `134→512→512→512`；`q_head` 为 `256→1024→1024→1024→1`（约 260 万）。
+  它用 2,019,950,592 条转移训练，主线用了 15,400,501,248 次决策。
+  两者算法不同（它是蒙特卡洛 Q 学习），所以这只是容量假设的旁证。
+- 主线对 DanLM 的差距集中在单局胜率。u195450 在 20,000 副牌上：无进贡的牌
+  −0.164 ± 0.023，有进贡的牌约 −0.10；赢和输的平均幅度为 2.137 和 2.148 级；
+  单局胜率 47.07%。进贡启发式不是主要差距。
+- 容量只在 400 万决策时测过（64 宽 × 2 层对 128 宽 × 4 层）。全模型 256 宽只
+  [测过吞吐](capacity-throughput-2026-10-09.md)：−28.3%，单卡峰值 44.16 GiB，
+  且当时 `fusion` 仍是 128 宽。更大模型的棋力从未测过。
+
+尺寸征求过 GPT 6.2 Astra 的意见。它独立给出的方案与下文主体一致，并提出把最宽的层
+放在每次出牌只算一次的状态主干上，已采纳。它建议候选打分头用 `512×2`、critic 不变；
+本方案选 `1024×2` 和 `512×3`，并把 `512×2` 列为吞吐不达标时的回退。
+
+## 2. 目标结构
+
+公共历史编码器保持 128 宽 × 4 层 × 8 头，KV 页缓存的形状和成本不变。
+历史读取用已有的 `PrivateCrossDecoder`（3 层、4 个查询槽）。新增容量全部在决策路径。
+
+| 模块 | 现在 | 目标 | 参数约数 |
+|---|---|---|---:|
+| 公共历史编码器 | 128 × 4 层 × 8 头 | 不变 | 79 万 |
+| 私有观测编码 | `1849→128→128` | `1849→512→512→512`，另有 `512→128` 作读取查询 | 154 万 |
+| 历史读取 | 单层交叉注意力 | `PrivateCrossDecoder` 3 层、4 槽，读出仍过原 `feed_forward` 和 `output_norm` | 98 万 |
+| 决策状态主干 | 无（状态即 128 维读出） | 512 维私有表示拼 128 维读出，`640→1024→512`，残差加回私有表示 | 118 万 |
+| 动作塔 | `154→128→128` | 不变 | 3.6 万 |
+| 候选打分 | `256→128→128→1` | `640→1024→1024→1` | 171 万 |
+| critic | `2011→256×3→1` | `2011→512×3→1` | 156 万 |
+
+actor 合计约 640 万到 650 万个参数（实现后报告精确值），决策路径约 450 万，
+是现在的 9 到 10 倍。
+
+### 2.1 前向计算
+
+记 `W = width = 128`，`P = private_hidden = 512`，`T = trunk_hidden = 1024`。
+
+```text
+h      = private(obs_masked)                       # [n, P]，ReLU MLP，private_layers 层
+query  = query_proj(h) + seat(seat)                # [n, W]
+base   = private_decoder(query, attention_norm, …) # [n, W]，调用方式不变
+r      = output_norm(base + feed_forward(base))    # [n, W]，沿用现有两层
+x      = cat(h, r)                                 # [n, P + W]
+state  = state_norm(h + trunk(trunk_norm(x)))      # trunk: Linear(P+W, T) → ReLU → Linear(T, P)
+fused  = cat(state[rows], action_tower(cand))      # [m, P + action_width]
+logit  = fusion(fused)                             # (P+action_width) → fusion_width ×2 → 1
+```
+
+- `obs_masked` 仍由 `mask_public_obs` 产生，`private_obs_mode` 的三种模式都要可用。
+- `seat` 嵌入只加在查询上。观测已按相对座位编码，状态主干不需要绝对座位。
+- `belief` 和 `outcome` 辅助头读最终的 `state`（`P` 维），语义与现在"读决策状态"一致；
+  `next` 头仍读公共编码位置（`W` 维）。
+- `response_head` 和 `response_bridge` 的输入维度随 `fused` 变为 `P + action_width`。
+
+### 2.2 初始化
+
+- 新增的隐藏层用 PyTorch `nn.Linear` 默认初始化，与现有层一致。
+- `trunk` 的最后一层权重和偏置置零，使初始 `state = state_norm(h)`。
+- `fusion` 的最后一层权重乘 0.01、偏置置零，使初始策略接近均匀。
+- 仅在 `private_hidden > 0` 时生效。旧结构的初始化和随机数消耗顺序一字节都不能变。
+
+### 2.3 配置字段
+
+在 `HistoryPolicyConfig` 新增三个字段，默认值表示旧结构：
+
+| 字段 | 默认 | 目标值 | 含义 |
+|---|---:|---:|---|
+| `private_hidden` | 0 | 512 | 0 为旧的 `mlp(obs_dim, width, 2)`；大于 0 启用新决策路径 |
+| `private_layers` | 2 | 3 | 私有观测编码的层数，仅在 `private_hidden > 0` 时使用 |
+| `trunk_hidden` | 0 | 1024 | 状态主干的隐藏宽度，`private_hidden > 0` 时必须大于 0 |
+
+- `private_hidden > 0` 要求 `private_decoder_layers >= 1`、`window == 0`、
+  `style_input` 关闭、`private_qk_norm == "none"`、`private_fusion == "sum"`。
+  其余组合在 `__post_init__` 明确报错，不实现旧读取器与新主干的组合。
+- `config_record` 在三个字段取默认值时不写入它们，旧检查点的结构记录保持不变。
+- 增加属性 `state_width`：`private_hidden` 大于 0 时取它，否则取 `width`。
+  所有把决策状态宽度写成 `config.width` 的地方改用它。
+- 训练 CLI 增加 `--private-hidden --private-layers --trunk-hidden --action-width
+  --fusion-width --critic-width --critic-layers`，并经
+  `HistoryPPOConfig.policy_config()` 传入。结构字段在 `--resume` 时不可更改。
+
+## 3. 代码改动范围
+
+| 文件 | 改动 |
+|---|---|
+| [train/history_model.py](../../train/history_model.py) | 配置字段与校验、`config_record`、`HistoryActor` 新模块与 `decision_states`、`candidate_outputs`、辅助头与 response 头的输入宽度、`_decode_decision_states` 里按 `config.width` 建零张量的回退 |
+| [train/history_config.py](../../train/history_config.py) | CLI 与 `policy_config()`；这些字段不进 `RESUME_OVERRIDES` |
+| [train/history_snapshot_batch.py](../../train/history_snapshot_batch.py) | `head_parameters`、`head_signature`、`_head_values`、`merged_log_probs`、`_merged_decode_states` 现在硬编码 `p0/p1`、`f0/f1`、`u0/u1/u2` 和两层结构；需支持任意层数的私有编码、`query_proj`、状态主干和两个新 LayerNorm |
+| [train/history_cache.py](../../train/history_cache.py) | 第 149 至 163 行直接调用 `model.private` 和 `feed_forward`；改走 actor 方法，或对新结构明确报错 |
+| [train/history_aux.py](../../train/history_aux.py) | 核对辅助头输入宽度的假设 |
+| [train/history_cuda_graphs.py](../../train/history_cuda_graphs.py)、[eval/botzone/numpy_actor.py](../../eval/botzone/numpy_actor.py)、[train/history_sequence_migrate.py](../../train/history_sequence_migrate.py)、[train/history_fusion_migrate.py](../../train/history_fusion_migrate.py) | 对新结构明确报错拒绝，与现有对 `private_decoder_layers` 的拒绝方式一致 |
+| [eval/search.py](../../eval/search.py)、[eval/botzone/search.py](../../eval/botzone/search.py)、[bench/batched_rollout.py](../../bench/batched_rollout.py)、[eval/private_attention_audit.py](../../eval/private_attention_audit.py) | 逐个核对是否直接访问 `actor.private`、`feed_forward`、`fusion`；能走 actor 方法的改走方法，否则明确报错 |
+
+不改 `cpp/`、观测与动作编码、公共 token 格式、PPO 的回报与对手池语义。
+三项采样加速开关（Triton 分页注意力、learner 解码器 K/V 缓存、紧凑快照投影）
+作用在公共编码器和解码器上，应与新决策路径直接兼容，需由测试确认。
+
+## 4. 验收标准
+
+### 4.1 旧结构不变
+
+- `bench.training_revision --verify --device cpu --updates 2` 在 `dense`、`paged`、
+  `snapshots` 三种情形下通过，指纹与改动前一致。
+- 现有 Python 与 C++ 全量套件通过，跳过数不增加。
+- u234993 这样的旧检查点能照常加载和评测，`model_config` 记录不出现新字段。
+
+### 4.2 新结构正确
+
+- 参数量：按第 2 节的层宽逐模块核对，并在报告里写出 actor 和 critic 的精确总数。
+- 初始化：随机初始化后，每个决策的候选对数概率与均匀分布的最大偏差低于 0.05；
+  `state` 与 `state_norm(h)` 相等。
+- 梯度：一次完整 actor 损失（PPO、熵、response、next、belief、outcome）反向后，
+  每个新参数的梯度有限。`trunk` 末层初值为零，所以第 0 步时 `trunk` 首层、`trunk_norm`
+  以及经 `r` 流向解码器的策略梯度为零属预期；做一步优化后再反向，全部新参数和解码器
+  参数的梯度应非零。
+- 合并快照推理与逐身份参考的候选对数概率最大差低于 `2e-5`，采样动作与随机状态一致。
+- 普通缓存、分页缓存、learner 解码器 K/V 缓存、紧凑快照投影各自与无缓存前向一致，
+  沿用现有各项测试的容差。
+- PPO 用存储的行重算，`ratio` 与 1 的偏差在现有容差内；`card_counter` 遮挡概率
+  混合的跨更新结转也要覆盖。
+- 检查点保存、`--resume`、两个 rank 的 CPU DDP 冒烟各跑通两次更新，参数有限且各 rank 一致。
+- 评测路径：`eval.history_policy`、`eval.lineage_eval`、`eval.danlm.arena duplicate`
+  都能加载随机初始化的新结构检查点并打完一小批牌。`eval.lineage_eval` 只有 batched
+  后端，标量参照用 `eval.duplicate.play_duplicate_teams` 在同一批 `generate_deals`
+  牌上逐副对照，不为此给 `eval.lineage_eval` 增加后端选项（11 月 18 日更正：
+  原文写成"两个后端"，有两个后端的是 `eval.history_frozen`）。
+  这三条是训练后判断成败的唯一手段，必须在提交训练前可用。
+
+### 4.3 提交训练前的 Velocity 门禁（实现完成后另行授权）
+
+- 双 L40S、8 个 rank 的 CUDA 数值门禁，沿用 22092 启动脚本里的那组测试并加入新结构用例。
+- 完整 PPO 吞吐与显存：同一配置下新结构对 128 宽旧结构（同样带 3 层解码器）的
+  全局决策每秒之比、最慢 rank 的更新耗时、整卡显存峰值和分配重试次数。
+- 回退规则（拟定）：完整更新吞吐低于旧结构的 75%，或 4 个 rank 共用一卡时整卡峰值
+  超过 40 GiB，则把 `fusion_width` 降到 512 重测。
+
+## 5. 首跑配方草案
+
+仅为草案，启动需用户另行授权并写入当次的提交记录。
+
+```text
+--width 128 --layers 4 --heads 8 --max-rounds 16
+--private-decoder-layers 3 --private-query-slots 4 --private-obs-mode full
+--private-hidden 512 --private-layers 3 --trunk-hidden 1024
+--action-width 128 --fusion-width 1024 --critic-width 512 --critic-layers 3
+--response-mode auxiliary --response-coef 0.1
+--aux-heads next,belief,outcome --aux-coef 0.1
+--lr 0.00015 --critic-lr 0.0003 --entropy 0.03 --clip 0.2 --epochs 2
+--gamma 1.0 --gae-lambda 0.95 --grad-clip 10.0 --value-coef 1.0
+--world-size 8 --num-envs 128 --steps-per-update 64 --minibatch-matches 8
+--snapshot-updates 2 --population-recent 4 --snapshot-probability 0.5
+--population-archive-every 32 --population-archive-size 16 --population-archive-share 0.5
+--population-archive-filter nearest_pair --population-archive-max-age-updates 40000
+```
+
+- 随机初始化，新的血统标识和种子；不用 `--init-checkpoint`，不加载任何旧权重、优化器或快照。
+- 首跑用 `--private-obs-mode full`。是否加 `card_counter` 遮挡，等 22092 的结果再定。
+- actor 学习率取 1.5e-4，是因为网络更深更宽；这是首跑设定，没有大模型的实测依据。
+- 学习率和熵系数的后期退火不在首跑范围内，留到曲线变平后单独决定。
+- 采样加速开关沿用 22092 通过门禁后的那一组。
+
+## 6. 成败判据
+
+旧血统的归档检查点提供等决策量的参照。它们当时对 DanLM 的成绩来自不同的 4,000 副牌集，
+所以要先把下表的旧检查点在 20,000 副牌集（种子 2026111001）上重测，再与新血统配对比较。
+
+| 累计决策 | 旧血统归档检查点 | 当时的净级差（各自牌集） |
+|---:|---|---:|
+| 13 亿 | `.work/lineage/main/u20264-1328M.pt` | −1.356 |
+| 23 亿 | `.work/lineage/main/u35588-2332M.pt` | −0.869 |
+| 38 亿 | `.work/lineage/main/u58032-3803M.pt` | −0.497（m5 u58528） |
+| 48 亿 | `.work/lineage/main/u73284-4803M.pt` | −0.334（m7 u73780） |
+
+- 在 13 亿和 23 亿决策处各评一次，报告配对差值和 95% 区间，同时记录等 GPU 小时的对比。
+- 拟定的停止线：23 亿决策时配对差值的区间整体低于零，停下来复盘。
+- 旧血统早期的配方与现在不同（辅助头在 u9989 才加入、环境数和对手池都改过），
+  所以这是粗略参照，不是严格对照。
+- 每次评测同时记录同手牌替换历史后的策略变化，观察更强的私有路径是否继续绕开历史。
+
+## 7. 风险与限制
+
+- 容量是假设。与 DanLM 的参数对比不能排除算法差异；新血统可能在同样的位置变平。
+- 候选打分头按每个候选计算一次。平均 17 个候选时，`640→1024→1024→1` 每次决策约
+  2,900 万次乘加，是 `512×2` 方案的近 3 倍。采样端预计影响很小，学习端可能明显变慢，
+  均未实测，由 4.3 的门禁决定。
+- 合并快照推理按身份堆叠整套头权重。新结构每个身份约 560 万个参数，32 个槽位约
+  700 MiB 每 rank，需计入单卡显存。
+- 从头训练到旧血统 48 亿决策的水平，按主线约每秒 1.4 万次决策估算需要四卡约 4 天，
+  双卡约加倍；这是按旧结构吞吐的估算。
+- Botzone 的 NumPy actor 不支持新结构。新血统在补上这条路径前不能打包上 Botzone。
+
+## 8. 产物与来源
+
+- 尺寸讨论与 GPT 6.2 Astra 的答复原文保存在当次会话的临时目录，未入库；其结论已写入第 1、2 节。
+- 参数拆分来自 `.work/danlm-u234993-2026-11-17/u234993.pt`；DanLM 配置来自
+  `.work/external/DanLM/ckpts/DanLM_v1/dansformer_v1_best_eval.pt`
+  （SHA-256 `5341d731…15cd7244`，见[u234993 评测记录](main-u234993-danlm-2026-11-17.md)）。
+- 差距拆分来自 `.work/danlm-u195450-2026-11-12/u195450.json` 的逐副记录。
+
+## 9. 实现记录（2026-11-18）
+
+本次实现第 2、3 节，验收覆盖第 4.1、4.2 节的本地路径。分支为
+`fusion-split-habit-2026-10-18`，基线提交为 `e2f4eb142f0f1de086bb860fc59739f2086d6d75`。
+源码摘要包括三项在途采样优化及本次改动，改动前 `source_sha256` 为
+`763fadd882835961f5ecf2e93318b19545199daf151138e24113bfd783e7d784`，完成后为
+`a418f92758cd05cb9d6c22c43e2543a01e2d0bb07106870e7a7181e983a726bf`。
+引擎摘要为 `248f048a3a7e56d1feba574fb4358216f5f393503b3eb8629d6415de6e6c31cb`。
+本机使用 `.work/external/danlm-venv/bin/python`、PyTorch `2.14.0` 和
+`PYTHONPATH=python:oracle:.`。源码清单、指纹、测试日志和冒烟产物位于忽略目录
+`.work/large-decision-trunk-2026-11-18/`。
+
+### 结构与精确参数量
+
+| 模块 | 第 2 节估算 | 实际参数量 | 拆分 |
+|---|---:|---:|---|
+| 公共历史编码 | 790,000 | 819,968 | Transformer 层 793,088，token 投影、round/phase 嵌入、BOS、输出归一化 26,880 |
+| 私有观测编码 | 1,540,000 | 1,538,176 | 私有 MLP 1,472,512，`query_proj` 65,664 |
+| 历史读取 | 980,000 | 984,952 | `PrivateCrossDecoder` 852,216，座位嵌入、两处归一化和原 FFN 132,736 |
+| 决策状态主干 | 1,180,000 | 1,183,488 | 线性层 1,181,184，`trunk_norm` 1,280，`state_norm` 1,024 |
+| 动作塔 | 36,000 | 36,352 | 两层均为 128 宽 |
+| 候选打分 | 1,710,000 | 1,707,009 | 两层均为 1,024 宽，末层输出标量 |
+| Actor 合计，关闭可选头 | 6,400,000–6,500,000 | **6,269,945** | 上述六行之和 |
+| Response 头与 bridge | — | 116,247 | `auxiliary` 和 `explicit` 的参数量相同 |
+| Next / belief / outcome | — | 191,958 | 分别为 39,603 / 86,562 / 65,793 |
+| Actor 合计，开启草案中的全部头 | 6,400,000–6,500,000 | **6,578,150** | 含 308,205 个可选参数 |
+| Critic | 1,560,000 | **1,555,969** | 两种 actor 配置共用该尺寸，三层塔 1,555,456，标量头 513 |
+
+第 2 节按约数估计了 actor 总量。实测无可选头为 627 万，加入草案的可选头为 658 万。
+私有观测、主干、动作塔和候选打分合计 4,465,025 个参数，约为旧口径的 9.48 倍。
+所有层宽和前向公式按第 2 节实现。
+
+### 本地验收
+
+| 验收 | 结果与证据 |
+|---|---|
+| 4.1 旧结构逐字节复验 | `bench.training_revision --verify --device cpu --case {dense,paged,snapshots} --updates 2 --output DIR` 三组通过。改动前后两次更新、恢复初始状态和恢复后更新的指纹完全一致，三组 `model_config` 的序列化记录完全相同。另对传统、旧三层 decoder 和 `split` 三种旧配置逐字节比较初始 actor/critic、全局与采样 RNG、候选 logp 和采样，全部相同。 |
+| 4.1 全量套件 | Python 改动前 1,793 通过、400 跳过，完成后 1,817 通过、400 跳过。用改动前源码清单逐文件校验了基线副本。两次各有 2 条现有 PyTorch 警告。重新构建的 C++ 单元测试 87 项通过，三种 fuzz 配置各 20,000 局、零失败。独立 Python oracle 14 组通过。 |
+| 4.1 旧检查点 | `u234993.pt` SHA-256 核对为 `68df2615d2cc697afe1d61e633d8e867abc01c7e1c795a1065cef48916b3af7b`。重新生成的 `model_config` 等于原记录，三个新字段均缺省。通过 `eval.history_policy` 与目标尺寸随机 actor 完成两副四腿。 |
+| 4.2 参数与初始化 | `test_history_large_trunk.py` 核对上表。目标尺寸真实采样行的初始 `state` 逐位等于 `state_norm(h)`，候选 logp 离均匀分布最大 `4.00543213e-5`，阈值 `0.05`。 |
+| 4.2 完整 actor 反向 | 真实 PPO 小批次含策略、熵、response、next、belief 和 outcome，所有 actor 参数梯度有限。第 0 步时状态主干首层、`trunk_norm`、`query_proj` 和 decoder 的梯度为零。一轮 Adam 后，新决策模块和 decoder 共 93 个参数张量的梯度各有非零元素。`auxiliary` 模式的既有零输入 response bridge 梯度按原语义保持为零。 |
+| 4.2 合并快照 | `test_history_snapshot_batch.py` 覆盖 1、3、4 层私有编码、三种观测模式、槽位空洞、多决策共用流、快照权重更新和长前缀紧凑投影。相对逐身份无缓存参照最大 `∣Δlogp∣ = 1.1920929e-7`，阈值 `2e-5`。采样动作与采样后 RNG 状态完全相同。 |
+| 4.2 缓存路径 | `test_history_sequence_decoder.py` 中，普通 KV、分页 KV（含 page span）和 learner decoder K/V 缓存相对无缓存参照的最大 `∣Δlogp∣` 均为 `9.53674316e-7`，阈值 `1e-5`。紧凑快照投影通过上一行的参照比较，测试确认走紧凑分支。采样开关集成测试同时覆盖两条 CPU 路径，CUDA 分支包含新结构的 Triton 测试。 |
+| 4.2 PPO 行重算 | `card_counter` 在一批结转行混合 `0 / 0.5 / 1` 遮挡概率，实测最大 `∣ratio−1∣ = 0`，阈值 `1e-5`。集成测试也从保存的采样行重算 logp。 |
+| 4.2 保存、恢复和 DDP | 目标尺寸单进程 CPU CLI 冷启更新 1、2（PPO 样本数 219、212），保存后由 `--resume` 完成更新 3、4（54、62）。检查点中的参数、配置和 Adam 状态均可恢复，参数有限。目标尺寸双 rank CPU DDP 完成两次更新，两个 rank 在初始和每次更新后检查所有参数有限并比较参数字节 SHA-256，完全一致。 |
+| 4.2 评测加载 | `test_history_large_trunk.py` 用四个独立随机检查点（种子 41–44），双方各两个，贪心。`generate_deals(32, 20261118)` 的 64 条腿由 `play_duplicate_teams` 和开启公共 KV 的 `play_duplicate_batch` 完整对照，含名次、胜队、级差、座位回报和决策数，逐腿完全相同。`eval.lineage_eval` CLI 和使用 DanLM v1 的 `eval.danlm.arena duplicate` CLI 各打完四副八腿，无排除。 |
+
+### 兼容与数值处理
+
+- `train/history_cache.py` 实际上是离线 `HistoryBelief` 的缓存，明确拒绝 actor。
+  训练和评测缓存通过 `HistoryActor.decision_states` 支持新结构。PyTorch 标量 search 使用
+  policy 接口，Botzone search 受 NumPy actor 守卫保护。私有 CUDA 图、迁移脚本、
+  旧共享前缀搜索 benchmark 和单层 attention audit 会明确拒绝新结构。
+- 目标尺寸逐腿对照初次分岔于第 21 副换边腿第 46 次决策（以下均从 1 计数）。相同候选
+  17 与 16（候选索引从 0 计数）的原始 logit 差在标量和 batched 分别是
+  `+1.19325705e-7` 和 `+1.19151082e-7`，batched 的 FP32 对数概率将其舍入为并列。
+  新结构贪心改用原始 logits 后，第 19 副首腿第 10 次决策仍出现原始评分翻转，候选
+  1 减 0 的差从 `+5.82076609e-10` 变成 `−5.82076609e-11`。观测与候选逐位相同。
+  因此 `eval/batched.py` 对新结构 CPU 贪心的接近首选行（差不超过
+  `8 × FP32 eps × max(1, ∣best logit∣)`）用标量形状和无缓存公共前缀重算，再取严格
+  argmax。此门槛仅触发复算，验收仍逐腿精确比较。`eval.lineage_eval` 保留现有入口。
+- CUDA 数值（包括 Triton 分页注意力）、完整 PPO 吞吐、显存和棋力均**未测**。
+  本地随机初始化评测仅确认软件能跑完。未连接 Velocity 或提交作业，未执行第 4.3、5、6 节。
+
+## 10. Velocity 门禁提交记录（2026-11-18）
+
+用户另行授权执行第 4.3 节。Slurm 作业 `22095` 在 `normal` 分区申请双 L40S、
+32 个 CPU、160 GiB 主机内存和 1 小时 15 分钟，上调 nice 至 `10000` 以保留已有作业的排序。
+核对时 `22095` 为 `PENDING (Priority)`，未分配资源。Slurm 当时预计
+11 月 20 日 04:20 多伦多时间开跑，预估可能变化。`22092` 仍在原队列，
+其脚本校验值与提交记录相同。独立目录为
+`~/guanzero/large-trunk-gate-a418f92758cd-20261118/`，日志为 `slurm-22095.out`，
+结果写入 `results-22095/`。源码摘要沿用第 9 节的 `a418f92758cd…a726bf`，源码包 SHA-256 为
+`25b2ee457e87f81aaf38911af75790611685d005894ad61bbbdd7242b29bc33d`。
+Slurm 保存的脚本与本地校验副本逐字节一致，SHA-256 为
+`8d505c521700d0e2fc5e1a71c6fa4539f2244c5aee539c92411982049e4004ad`。
+本地脚本和提交回执在 `.work/large-decision-trunk-2026-11-18/velocity-gate/`。
+
+作业内在每张卡执行 22092 的 13 项 CUDA 回归及 3 项大决策主干检查，并沿用旧结构的冷、长前缀冻结回放。
+通过数值门禁后，两个架构从同一随机种子启动各自的短时基准，使用相同采样与学习配置，8 个 rank
+各 128 桌、每次更新 64 步、2 个 PPO epoch，同时开启三项采样优化。比较臂各跑 12 次更新，前
+4 次作为预热。吞吐以各更新的全局决策数除以从最早 rank 进入更新到最晚 rank 完成更新的时长，
+其中包含收集、学习、更新内同步及收尾。另记录最慢 rank 的更新耗时、两卡每 100 ms 采样的整卡
+显存峰值及各 rank 的分配重试。旧结构用 `fusion_width=128` 和 `critic_width=256`，新结构按第 2 节。
+如果新结构的吞吐低于旧结构的 75%，或实测任一卡峰值超过 40 GiB，作业内只将候选头的
+`fusion_width` 降到 512 并重测。作业退出后需要读取结果才能判定门禁。当前无 CUDA 门禁结果，
+吞吐、显存及棋力仍未测。作业没有正式训练入口，不写入 `runs/main` 或 22092 的目录。
+
+## 11. Velocity 门禁结果（2026-11-19）
+
+Slurm 记录 `22095` 在多伦多时间 02:46:33 开始，02:49:04 以 `FAILED`、`1:0` 退出，
+耗时 2 分 31 秒。两张 L40S 的健康检查均通过，环境为 PyTorch `2.11.0+cu128`。
+每张卡的 13 项继承回归和 3 项新结构专测均通过。新结构两种宽度的合并快照及紧凑投影
+相对逐身份参考的最大 `∣Δlogp∣` 为 `1.1920929e-7`，采样动作和 RNG 完全一致。
+`fusion_width=1024` 的存储 PPO 行重算最大 `∣ratio−1∣` 为 `4.76837158e-7`。
+
+旧结构迁移检查点的 128 桌冷启动冻结回放触发了原门槛。五个开关组合的采样动作与 RNG
+全部一致，但以下四组在全量候选的 learner logp 或快照 logp 上超过 `1e-4`。
+
+| 优化组合 | Learner 最大 `∣Δlogp∣` | 快照最大 `∣Δlogp∣` | 结果 |
+|---|---:|---:|---|
+| decoder K/V | 1.20162964e-4 | 3.81469727e-6 | 失败 |
+| 紧凑投影 | 7.62939453e-6 | 7.62939453e-6 | 通过 |
+| decoder K/V + 紧凑投影 | 1.20162964e-4 | 3.81469727e-6 | 失败 |
+| Triton 分页 | 1.22070313e-4 | 1.22070313e-4 | 失败 |
+| 三项同时开启 | 1.20639801e-4 | 1.22070313e-4 | 失败 |
+
+最大 PPO 重算残差为 `4.04119492e-5`，在 `1e-4` 内。作业按原门槛停在冷回放。
+长前缀回放、八 rank DDP、完整 PPO 吞吐和整卡显存峰值均未测，未到按性能回退 512 的阶段。
+已核对 22092 在 02:46:33 独立退出。其 10 项数值测试通过，随后写门禁标记的 Python 子进程
+读取未导出的环境变量 `R`，报 `KeyError: 'R'`。本次只读核对，未启动正式训练或重提作业。
+本地原始证据在 `.work/large-decision-trunk-2026-11-18/velocity-gate/download-22095/`。
+
+## 12. 门禁修订与重提准备（2026-11-19）
+
+**修订理由。** 22095 唯一超限的是全量候选 logp 的绝对 `1e-4`。采样动作和 RNG 一致，
+采样动作 old logp 最大差不超过 `6.01e-5`，PPO 重算最大差 `7.15e-7`，不开优化时
+基线自身的采样/重算残差为 `4.04e-5`。FP32 舍入随 `∣logp∣` 增大，候选中大量尾部
+动作的 `∣logp∣` 在 10–35（本地 CPU 冒烟实测），单一绝对门槛对它们的相对要求过紧。
+22095 未记录最大差所在候选的 logp，因此这一点尚未在 CUDA 上直接核实。
+
+**修订内容（`replay.py`）。**
+- 采样动作 old logp、PPO 重算和采样/重算残差：仍为绝对 `1e-4`，不变。
+- 全量 learner 与快照候选：改为 `∣Δ∣ ≤ atol + 1e-5·∣logp_基线∣`。learner 的 atol 为 `1e-4`；
+  快照非 Triton 为 `2e-5`，Triton 为 `1e-4`，与原值相同。
+- 日志新增差值最大的 5 个候选的位置、基线 logp 和概率，以及最大概率差、按旧门槛
+  会超限的个数。
+- 本地核对：CPU 上 8 桌 `kv`、`compact` 两组通过，与基线逐位一致。人造扰动下，
+  `-25` 处差 `1.2e-4` 通过，`-0.01` 处差 `1.2e-4` 和 `-25` 处差 `5e-4` 都被拦下。
+  新 `replay.py` SHA-256 为 `438df86e1be61db861266b9a10b6327e214251a22c5180a052e3f9f613047eaf`，已写入门禁包的 `SHA256SUMS`（旧清单保存为 `SHA256SUMS.22095`）。
+
+**22092 修复。** `train-auto.sbatch` 写 `cuda-gate.json` 时改为把 `$R` 作为参数传入，
+不再读环境变量。新脚本 SHA-256 为 `032d78a960611996d6248844b7b135280201fa8a37f3dd833078b4a4e1323599`，已写入该包的 `bundle.json`（旧版保存为 `bundle.json.22092`）。
+
+只完成了本地修改和准备，没有上传，也没有提交作业。旧结构全量候选在 CUDA 上能否通过
+新门槛，要等重提后读取新日志才能判定。
+
+**重提记录（多伦多时间 2026-11-19 约 15:55）。** 经用户批准，两项作业都已重提。
+- 门禁作业 `22151`：独立目录为 `~/guanzero/large-trunk-gate-a418f92758cd-20261119/`。源码包和
+  其余脚本复制自 22095 的目录，只替换了 `replay.py` 和 `SHA256SUMS`，远端 `sha256sum -c` 全部通过。
+  Slurm 保存的脚本与 `gate.sbatch` 一致（`8d505c52…`），资源和 nice 与 22095 相同。
+- 训练作业 `22152`：替代 22092。远端旧脚本改名为 `train-auto.sbatch.22092`，新脚本 SHA-256 为
+  `032d78a9…`，Slurm 保存的脚本与之一致。`lr-main` 为空，因此从迁移后的 u234993 冷启动。
+  输出写入 `~/guanzero/runs/seq-cc-trick-np-u234993/slurm-22152.out`。
+- 核对时两项都处于 `PENDING (Priority)`，Slurm 未给出预计开始时间。
+  回执保存在 `velocity-gate/submission-22151-22152.txt`。
+
+**调整顺序与改为短跑（多伦多时间 2026-11-19 约 16:25）。** 用户要求先跑门禁，训练先短跑。
+- 门禁 `22151` 的 nice 从 `10000` 改为 `0`，优先级从 1 升到 10157，作业号不变。
+- 训练 `22152` 在 `PENDING` 状态下取消，当时还没写入任何检查点。改用 `22156` 重提，脚本不变（`032d78a9…`），
+  参数为 `--dependency=afterok:22151 --kill-on-invalid-dep=yes --time=01:30:00`、
+  `GZ_TARGET_UPDATES=248`（两次检查点，约 1,630 万决策）。到达 248 次更新即结束，不自动续交。
+  如果在时限内没跑到 248，脚本仍会按 `train_deadline` 续交下一段，需要手动取消。
+  门禁失败（包括新结构的性能判定失败）时，Slurm 会撤销 22156。

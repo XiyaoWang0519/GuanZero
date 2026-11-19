@@ -50,6 +50,8 @@ SWITCHABLE = frozenset({"rollout_paged_cache", "rollout_page_span", "rollout_tri
                         "batch_snapshot_encoder", "batch_snapshot_policies",
                         "learner_length_groups", "learner_chosen_response",
                         "rollout_trim_cuda_cache", "rollout_prefill_learner_cache",
+                        "rollout_triton_paged_attention", "rollout_decoder_kv_cache",
+                        "rollout_compact_snapshot_kv",
                         "profile_collection", "profile_learn"})
 
 
@@ -76,6 +78,10 @@ def switch(trainer, origin, settings: dict) -> None:
     if ((config.rollout_private_graphs or config.rollout_triton_cache)
             and collector.device.type != "cuda"):
         raise ValueError("private graphs and Triton cache copies need a CUDA rollout device")
+    if config.rollout_triton_paged_attention:
+        from train.history_paged_attention import require_triton
+        actor = trainer.actor
+        require_triton(collector.device, actor.bos.dtype, actor.config.width // actor.config.heads)
     trainer.config = config
     for cache in collector.caches.values():
         cache.clear()
@@ -87,6 +93,9 @@ def switch(trainer, origin, settings: dict) -> None:
     collector.snapshot_heads = None
     collector.paged_cache = config.rollout_paged_cache
     collector.page_span = config.rollout_page_span
+    collector.triton_paged_attention = config.rollout_triton_paged_attention
+    collector.decoder_kv_cache = config.rollout_decoder_kv_cache
+    collector.compact_snapshot_kv = config.rollout_compact_snapshot_kv
     collector.triton_cache = config.rollout_triton_cache
     collector.triton_min_batch = config.rollout_triton_min_batch
     collector.private_graphs = config.rollout_private_graphs
@@ -117,6 +126,8 @@ def measure(trainer, plan: list[str], arms: dict[str, dict], rank: int, log: Pat
     profiled = ({int(item) for item in os.environ.get(TORCH_PROFILE_UPDATES_ENV, "").split(",")
                  if item.strip()} if os.environ.get(TORCH_PROFILE_ENV) else set())
     appends = 0
+    previous_retries = (torch.cuda.memory_stats(trainer.device).get("num_alloc_retries", 0)
+                        if trainer.device.type == "cuda" else 0)
     for index, name in enumerate(plan):
         first = name != current
         if first:
@@ -126,6 +137,14 @@ def measure(trainer, plan: list[str], arms: dict[str, dict], rank: int, log: Pat
         started = time.perf_counter()
         line = trainer.update()
         wall = time.perf_counter() - started
+        peak_reserved = line["cuda_peak_reserved_bytes"]
+        peak_allocated = line["cuda_peak_allocated_bytes"]
+        retries = line["cuda_allocation_retries"] - previous_retries
+        previous_retries = line["cuda_allocation_retries"]
+        if dist.is_initialized():
+            maxima = torch.tensor([wall, peak_reserved, peak_allocated, retries], dtype=torch.float64)
+            dist.all_reduce(maxima, op=dist.ReduceOp.MAX)
+            wall, peak_reserved, peak_allocated, retries = maxima.tolist()
         passes = line["collection_cache"].get("appends", 0)
         row = dict(update=index, arm=name, first_of_block=first, wall_seconds=wall,
                    profiled=index in profiled,
@@ -142,8 +161,9 @@ def measure(trainer, plan: list[str], arms: dict[str, dict], rank: int, log: Pat
                    decisions=line.get("global_step_decisions", line["step_decisions"]),
                    mean_prefix=line["mean_prefix"], entropy=line["entropy"],
                    approx_kl=line["approx_kl"],
-                   peak_reserved_bytes=line["cuda_peak_reserved_bytes"],
-                   peak_allocated_bytes=line["cuda_peak_allocated_bytes"],
+                   peak_reserved_bytes=int(peak_reserved),
+                   peak_allocated_bytes=int(peak_allocated),
+                   max_rank_allocation_retries=int(retries),
                    cache=line["collection_cache"])
         appends = passes
         rows.append(row)
@@ -177,6 +197,7 @@ def summarize(rows: list[dict], warmup: int) -> dict:
             learn_median=statistics.median(pick("learn_seconds")),
             decisions_per_wall_second=sum(pick("decisions")) / sum(pick("wall_seconds")),
             mean_prefix=statistics.mean(pick("mean_prefix")),
+            max_rank_allocation_retries=max(pick("max_rank_allocation_retries")),
             peak_reserved_bytes=max(pick("peak_reserved_bytes")),
             peak_allocated_bytes=max(pick("peak_allocated_bytes")))
     names = list(result)
@@ -189,12 +210,12 @@ def summarize(rows: list[dict], warmup: int) -> dict:
 
 
 def _rank(rank: int, world: int, port: int, args) -> None:
-    from train.history_ddp import HistoryDDPTrainer, cuda_index, rank_output
+    from train.history_ddp import HistoryDDPTrainer, rank_cuda_index, rank_output
     if world > 1:
         os.environ.update(MASTER_ADDR="127.0.0.1", MASTER_PORT=str(port))
         dist.init_process_group("gloo", rank=rank, world_size=world)
     try:
-        index = cuda_index(args.device)
+        index = rank_cuda_index(args.device, rank, args.spread_gpus, torch.cuda.device_count())
         if index is not None:
             torch.cuda.set_device(index)
         arms = dict(parse_arm(text) for text in args.arm)
@@ -210,7 +231,8 @@ def _rank(rank: int, world: int, port: int, args) -> None:
         rows = measure(trainer, plan, arms, rank, log)
         if rank == 0:
             summary = dict(arms={k: {kk: str(vv) for kk, vv in v.items()} for k, v in arms.items()},
-                           device=args.device, world_size=world, warmup=args.warmup,
+                           device=args.device, world_size=world, spread_gpus=args.spread_gpus,
+                           warmup=args.warmup,
                            blocks=args.blocks, block_updates=args.block_updates,
                            resume=str(args.resume), results=summarize(rows, args.warmup))
             (Path(args.output) / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
@@ -226,6 +248,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", required=True, help="scratch directory; not the lineage")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--world-size", type=int, default=1)
+    parser.add_argument("--spread-gpus", action="store_true",
+                        help="distribute ranks round-robin over the visible GPUs")
     parser.add_argument("--arm", action="append", required=True,
                         help=f"NAME=KEY=VALUE,... with KEY in {sorted(RESUME_OVERRIDES)}")
     parser.add_argument("--warmup", type=int, default=25,

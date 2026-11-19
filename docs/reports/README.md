@@ -14,7 +14,9 @@ Historical records stay at their existing paths to preserve references.
 
 ## Current summaries, deployment and research proposals
 
+- [大模型新血统：加宽决策路径的实现方案（2026-11-18）](large-decision-trunk-plan-2026-11-18.md) — **本地 CPU 验收通过，Velocity 22095 停在旧结构冻结回放**。新结构双卡单设备 CUDA 检查通过。八 rank、吞吐、显存和棋力未测。
 - [多层序列解码器、记牌器输入裁剪与最近邻对对手池实现及预检（2026-11-17）](sequence-decoder-nearest-pair-2026-11-17.md) — 多层 QK-Norm 相对位置跨注意力解码器、保留 382 维记牌器并退火遮挡 1,467 维历史汇总、合并快照推理适配与 `nearest_pair` 持久化分层探针归档；本地、Velocity 预检 22039 及 L40S CUDA 门禁验证通过，双卡作业 22048 入队，牌力待测
+- [主线 u234993 对 DanLM 的配对评测（2026-11-17）](main-u234993-danlm-2026-11-17.md) — 对 u195450 共同计分 19,936 副，净级差 −0.02317/局，胜率变化区间包含零
 - [u195450 / filtered：历史识别、逐层读取与条件行为（2026-11-15）](history-identification-2026-11-15.md) — 8,000 局、48 次探针拟合及新测试；公共历史概率参照 3 局恢复 79% 身份预测收益，无隐藏牌采样部分也达 67%；通用原始/各层探针泛化不足，条件机会特征 10 局有小幅收益；主线未动
 - [u195450 / filtered 池：同手牌策略差异与隐藏手牌身份收益（2026-11-15）](filtered-identity-oracle-2026-11-15.md) — 192 个独立根、每根 2×128 副隐藏配牌；同手牌首选差异 7.80%，隐藏平均后身份仍有小幅独立预测收益；全部冻结、主线未动
 - [u195450 下一步出牌预测：读取结构 × 容量（2026-11-14）](history-next-prediction-2026-11-14.md) — 54 次离线拟合、320 场新测试；约 6.8 万/13.4 万参数的原/改进读取器均未建立正确历史收益，训练拟合与验证泛化分离，身份参照也未定；主线未动
@@ -108,6 +110,9 @@ Historical records stay at their existing paths to preserve references.
 
 ## Performance and compute
 
+- [Velocity 三项采样优化的实现与验证（2026-11-18）](velocity-rollout-optimizations-2026-11-18.md) — 三项独立开关接入训练与恢复；22087 冻结权重的本地 CPU 采样组合吞吐 +19.0%，双卡完整 PPO 待测。
+
+- [Velocity 三层解码器训练提速调查（2026-11-18）](velocity-sequence-throughput-2026-11-18.md) — 使用 22087 的冻结权重核验了采样端增量 K/V、快照投影填充及显存代价，并梳理了已有 Triton 公共分页注意力的 L40S 对照证据。
 - [Training throughput refactor — October 18, 2026](training-throughput-refactor-2026-10-18.md)
 - [非有限梯度与归约等待诊断（2026-10-13）](training-gradient-diagnosis-2026-10-13.md)
 - [Page-span 基线上的投影优化（2026-10-13，候选验证）](training-stack-next-2026-10-13.md)
@@ -185,7 +190,6 @@ raw result/provenance pointers and negative findings.
 
 - [主线私有注意力诊断（2026-10-15）](private-attention-diagnosis-2026-10-15.md)：同一 fixture、m5–u86800 共 8 组权重的 CPU 对照；所有 head 都是分差极大的硬 one-hot（无 <1 ulp 平局），q 方向几乎不随决策变化，落点按比赛固定（u86800 有 7/8 head 落在常数 BOS）；扰动历史内容的策略 TV 中位数 ≤ 2e-3；m7 起 q/k 的 math 梯度精确为 0，u86800 部分 head 的 Adam √v 已衰减到次正规不动点。只对这一 fixture 成立，未宣布模块退化。
 
-<<<<<<< HEAD
 - [QK-norm 三臂 500M 产物核验与机制探针（2026-10-16）](qknorm-mechanism-2026-10-16.md)：同点 +503.84M decisions 与 SHA/源码核验通过；both 解除了极端饱和但 query 仍高度共线，均值替换策略变化小；未启动新训练。
 
 - [Q/K 范数调整的离线可塑性与 Adam 验证（2026-10-16）](qknorm-plasticity-2026-10-16.md)：四档缩放通过 CPU 前向门槛；方向信号保持、步幅提升，保守候选为逐 head 范数 16 配合 m/a、v/a² 且保留 step；清整块 K/V 状态会改变 V，未启动训练或写迁移 checkpoint。

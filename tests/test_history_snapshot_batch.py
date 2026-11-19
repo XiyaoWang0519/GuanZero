@@ -531,6 +531,8 @@ def _decoder_config(
     obs_mode: str = "private_only",
     response_mode: str = "auxiliary",
     aux_heads: str = "",
+    private_layers: int = 2,
+    private_hidden: int = 0,
 ) -> HistoryPolicyConfig:
     return HistoryPolicyConfig(
         width=32,
@@ -545,6 +547,9 @@ def _decoder_config(
         private_decoder_layers=decoder_layers,
         private_query_slots=query_slots,
         private_obs_mode=obs_mode,
+        private_layers=private_layers,
+        private_hidden=private_hidden,
+        trunk_hidden=48 if private_hidden else 0,
     )
 
 
@@ -578,8 +583,8 @@ def _decoder_players(
 class _DecoderStep(Step):
     """Synthetic step with multi-round streams, explicit ``round_index``, and zero-prefix rows."""
 
-    def __init__(self, spec, seed: int, *, zero_prefix_rows: tuple[int, ...] = ()):
-        super().__init__(spec, seed, max_candidates=7, longest=36, shorter_prefix=True)
+    def __init__(self, spec, seed: int, *, zero_prefix_rows: tuple[int, ...] = (), longest=36):
+        super().__init__(spec, seed, max_candidates=7, longest=longest, shorter_prefix=True)
         rng = np.random.default_rng(seed + 900)
         for row in zero_prefix_rows:
             if row < len(self.prefix):
@@ -595,7 +600,8 @@ class _DecoderStep(Step):
         return inp
 
 
-def _merged_decoder(step, policies, device, heads=None, *, include_extra: bool = True):
+def _merged_decoder(step, policies, device, heads=None, *, include_extra: bool = True,
+                    compact_kv: bool = False):
     from train.history_decoder import extract_stream_pos
 
     groups = step.groups()
@@ -629,8 +635,92 @@ def _merged_decoder(step, policies, device, heads=None, *, include_extra: bool =
             heads, layout, fields, memory,
             pos_seat=pos_seat, pos_round=pos_round,
             group_slots=(slots if include_extra else None),
+            compact_kv=compact_kv,
         )
     return groups, layout, fields, log_probs
+
+
+def test_compact_snapshot_kv_long_prefix_slot_gap_and_shared_streams(device, monkeypatch):
+    import train.history_snapshot_batch as snapshot
+
+    step = _DecoderStep([(1, 8, 5), (3, 3, 1)], seed=37, longest=180, zero_prefix_rows=(0,))
+    policies = _decoder_players((1, 2, 3), device, decoder_layers=3, query_slots=4,
+                                obs_mode="card_counter")
+    heads = SnapshotHeads()
+    for identity, actor in policies.items():
+        heads.slot(identity, actor)
+    _, layout, fields, expected = _merged_decoder(step, policies, device, heads)
+    assert layout.length >= 64 and layout.slots == 3
+    dense_linear = snapshot._linear
+
+    def no_padded_kv(x, tensors, name, slots):
+        assert not name.endswith("_kv")
+        return dense_linear(x, tensors, name, slots)
+
+    monkeypatch.setattr(snapshot, "_linear", no_padded_kv)
+    _, _, _, actual = _merged_decoder(step, policies, device, heads, compact_kv=True)
+    torch.testing.assert_close(actual, expected, atol=ATOL, rtol=0)
+    generators = [torch.Generator(device=device).manual_seed(77) for _ in range(2)]
+    before, after = [merged_sample(logp, layout, fields, gen)[0]
+                     for logp, gen in zip((expected, actual), generators)]
+    assert torch.equal(before, after)
+    assert torch.equal(generators[0].get_state(), generators[1].get_state())
+
+
+@pytest.mark.parametrize("obs_mode,private_layers", [("full", 1), ("private_only", 4), ("card_counter", 3)])
+def test_large_trunk_merged_and_compact_match_uncached_identities(obs_mode, private_layers, monkeypatch):
+    import train.history_snapshot_batch as snapshot
+
+    step = _DecoderStep([(1, 8, 5), (3, 3, 1)], seed=37, longest=180, zero_prefix_rows=(0,))
+    policies = _decoder_players((1, 2, 3), "cpu", mask_probs={1: 0.25, 2: 0.5, 3: 1.0},
+                                obs_mode=obs_mode, private_hidden=64, private_layers=private_layers)
+    heads = SnapshotHeads()
+    with torch.no_grad():
+        for identity, actor in policies.items():
+            # Exercise the trained history branch rather than the zero-initialized residual.
+            actor.trunk[-1].weight.normal_(std=0.05)
+            actor.fusion[-1].weight.mul_(100.0)
+            heads.slot(identity, actor)
+    groups, layout, fields, dense = _merged_decoder(step, policies, "cpu", heads)
+    assert layout.length >= 64 and layout.slots == 3
+    original = snapshot._linear
+
+    def no_padded_kv(x, tensors, name, slots):
+        assert not name.endswith("_kv")
+        return original(x, tensors, name, slots)
+
+    monkeypatch.setattr(snapshot, "_linear", no_padded_kv)
+    _, _, _, compact = _merged_decoder(step, policies, "cpu", heads, compact_kv=True)
+
+    def compare_actors(*results):
+        inputs = [step.inputs_with_round(group, "cpu") for group in groups]
+        actors = [policies[group.identity] for group in groups]
+        ref_generator = torch.Generator().manual_seed(77)
+        with torch.no_grad():
+            reference = torch.cat([actor.candidate_log_probs(inp) for actor, inp in zip(actors, inputs)])
+            choices = torch.cat([actor.act(inp, ref_generator, max_candidates=group.max_candidates)[0]
+                                 for actor, inp, group in zip(actors, inputs, groups)])
+        for result in results:
+            diff = float((result - reference).abs().max())
+            print(f"{obs_mode}, {private_layers} private layers, merged max |dlogp|={diff:.9g}")
+            assert diff < ATOL
+            generator = torch.Generator().manual_seed(77)
+            actual, _ = merged_sample(result, layout, fields, generator)
+            assert torch.equal(actual, choices)
+            assert torch.equal(generator.get_state(), ref_generator.get_state())
+
+    compare_actors(dense, compact)
+    with torch.no_grad():
+        actor = policies[1]
+        actor.private[-2].weight.mul_(2)
+        actor.query_proj.weight.mul_(1.5)
+        actor.trunk_norm.weight.mul_(0.75)
+        actor.trunk[-1].weight.mul_(0.5)
+        actor.state_norm.bias.add_(0.5)
+    _, _, _, refreshed = _merged_decoder(step, policies, "cpu", heads, compact_kv=True)
+    assert heads.writes == 4
+    assert float((refreshed - compact).abs().max()) > 1e-4
+    compare_actors(refreshed)
 
 
 @pytest.mark.parametrize("decoder_layers,query_slots,obs_mode", [
@@ -768,14 +858,14 @@ def test_merged_decoder_card_counter_masks_only_action_history_dims(device):
     assert float((base_lp - expected).abs().max()) < ATOL
 
     base_obs = step.obs.copy()
-    # Perturbing all 1,467 masked public dims leaves merged_log_probs unchanged at obs_mask_prob=1.0.
-    for start, end in ((216, 648), (805, 968), (968, 1430), (1439, 1849)):
+    # At full masking, history summary changes leave merged_log_probs unchanged.
+    for start, end in ((216, 648), (968, 1430), (1439, 1849)):
         step.obs[:, start:end] = (step.obs[:, start:end] == 0).astype(step.obs.dtype)
     _, _, _, masked_pert_lp = _merged_decoder(step, policies, device, include_extra=True)
     assert torch.equal(masked_pert_lp, base_lp)
 
-    # Perturbing kept card-counter slices alters merged_log_probs and still matches HistoryActor.
-    for start, end in ((108, 216), (648, 732), (732, 748), (790, 793)):
+    # Perturbing the counter or current trick changes merged_log_probs and matches HistoryActor.
+    for start, end in ((108, 216), (648, 732), (732, 748), (790, 793), (805, 968)):
         step.obs[:] = base_obs
         step.obs[:, start:end] = (step.obs[:, start:end] == 0).astype(step.obs.dtype)
         c_groups, _, _, counter_lp = _merged_decoder(step, policies, device, include_extra=True)
@@ -856,3 +946,57 @@ def test_trainer_merged_decoder_nearest_pair_update_and_resume(tmp_path):
     assert l3["snapshot_heads"].get("slots")
     assert np.isfinite(l3["actor_grad_norm"]) and l3["actor_grad_norm"] > 0
     assert resumed.population.archive_diversity_stats()["archive_filter"] == "nearest_pair"
+
+
+def test_rollout_speed_flags_resume_and_ppo_recomputation(tmp_path, device):
+    _check_rollout_speed_flags(tmp_path / "sequence", device)
+    _check_rollout_speed_flags(tmp_path / "large-trunk", device,
+                               private_hidden=64, private_layers=3, trunk_hidden=96)
+
+
+def _check_rollout_speed_flags(tmp_path, device, **trunk):
+    flags = ["rollout_decoder_kv_cache", "rollout_compact_snapshot_kv"]
+    if device == "cuda":
+        flags.append("rollout_triton_paged_attention")
+    cli = ["--output", str(tmp_path), "--private-decoder-layers", "3", "--rollout-kv-cache",
+           "--rollout-paged-cache", "--batch-snapshot-policies",
+           *["--" + key.replace("_", "-") for key in flags]]
+    parsed = config_from_args(build_parser().parse_args(cli))
+    assert all(getattr(parsed, key) for key in flags)
+    config = HistoryPPOConfig(**trunk, width=32, heads=2, layers=1, private_decoder_layers=3,
+                              private_query_slots=4, private_obs_mode="card_counter",
+                              rollout_kv_cache=True, rollout_paged_cache=True, rollout_page_span=True,
+                              batch_snapshot_policies=True, batch_snapshot_encoder=True,
+                              rollout_batched_attention=True, rollout_wide_projection=True,
+                              rollout_prefill_learner_cache=True, num_envs=4, steps_per_update=96,
+                              epochs=1, minibatch_matches=2, snapshot_updates=1,
+                              snapshot_probability=1.0, seed=17)
+    trainer = HistoryTrainer(config, tmp_path / "origin", device=device)
+    trainer._snapshot_population()
+    ckpt = trainer.save()
+    payload = torch.load(ckpt, map_location="cpu", weights_only=False)
+    for key in ["rollout_decoder_kv_cache", "rollout_compact_snapshot_kv",
+                "rollout_triton_paged_attention"]:
+        del payload["config"][key]
+    torch.save(payload, ckpt)
+    overrides = parse_resume_overrides([key + "=true" for key in flags])
+    resumed = HistoryTrainer(HistoryPPOConfig(updates=2), tmp_path / "resumed", device=device,
+                             resume=ckpt, resume_overrides=overrides)
+    resumed.collect()
+    assert resumed.collector.learner_pool.decoder_layers == 3
+    assert resumed.collector.kv_pool.decoder_layers == 0
+    if device == "cuda":
+        assert resumed.collector.cache_metrics()["paged_attention_kernel_calls"] > 0
+    data = resumed.buffer.compact()
+    rows = np.arange(0, len(data["logp"]), 7)
+    with torch.no_grad():
+        recomputed, _ = resumed.recompute_log_probs(rows)
+    np.testing.assert_allclose(recomputed.cpu().numpy(), data["logp"][rows], rtol=0, atol=1e-4)
+    line = resumed.update()
+    assert np.isfinite(line["actor_grad_norm"]) and line["actor_grad_norm"] > 0
+    assert resumed.collector.learner_pool.decoder_kv is None
+    restored = HistoryTrainer(HistoryPPOConfig(updates=3), tmp_path / "restored", device=device,
+                              resume=resumed.save())
+    assert all(getattr(restored.config, key) for key in flags)
+    assert restored.collector.learner_pool is None
+    assert restored.update()["actor_grad_norm"] > 0

@@ -712,7 +712,8 @@ class HistoryCollector:
                  page_span: bool = False,
                  round_streams: bool = False,
                  row_style: Callable[[int, int], int] | None = None,
-                 prefill_learner_cache: bool = False) -> None:
+                 prefill_learner_cache: bool = False, triton_paged_attention: bool = False,
+                 decoder_kv_cache: bool = False, compact_snapshot_kv: bool = False) -> None:
         self.env = env
         self.actor = actor
         self.store = store
@@ -770,6 +771,18 @@ class HistoryCollector:
         self.learner_pool = None        # the learner's own pages, returned before each learn
         self.batch_snapshot_encoder = bool(batch_snapshot_encoder)
         self.page_span = bool(page_span)
+        self.triton_paged_attention = triton_paged_attention
+        self.decoder_kv_cache = decoder_kv_cache
+        self.compact_snapshot_kv = compact_snapshot_kv
+        if triton_paged_attention:
+            from train.history_paged_attention import require_triton
+            if not paged_cache:
+                raise ValueError("Triton paged attention requires a paged cache")
+            require_triton(self.device, actor.bos.dtype, actor.config.width // actor.config.heads)
+        if decoder_kv_cache and not (paged_cache and actor.private_decoder is not None):
+            raise ValueError("decoder K/V cache requires a paged cache and private decoder")
+        if compact_snapshot_kv and actor.private_decoder is None:
+            raise ValueError("compact snapshot K/V requires a private decoder")
         self.batch_snapshot_policies = bool(batch_snapshot_policies)
         self.snapshot_heads = None      # stacked snapshot heads, created on first merged step
         if self.batch_snapshot_policies:
@@ -802,6 +815,9 @@ class HistoryCollector:
                            pool_used_pages=sum(pool.used_pages for pool in pools),
                            pool_pages=sum(pool.pages for pool in pools),
                            pool_grows=sum(pool.grows for pool in pools))
+        if self.triton_paged_attention:
+            metrics["paged_attention_kernel_calls"] = sum(
+                cache.attention_kernel_calls for cache in self.caches.values())
         return metrics
 
     def invalidate_learner_cache(self) -> None:
@@ -875,8 +891,11 @@ class HistoryCollector:
                 from train.history_paged_cache import KVPagePool, PagedHistoryCache
                 name = "learner_pool" if int(identity) == LEARNER else "kv_pool"
                 if getattr(self, name) is None:
-                    setattr(self, name, KVPagePool.for_actor(actor))
-                cache = PagedHistoryCache(actor, getattr(self, name), page_span=self.page_span)
+                    layers = actor.config.private_decoder_layers if (
+                        identity == LEARNER and self.decoder_kv_cache) else 0
+                    setattr(self, name, KVPagePool.for_actor(actor, decoder_layers=layers))
+                cache = PagedHistoryCache(actor, getattr(self, name), page_span=self.page_span,
+                                          attention_backend="triton" if self.triton_paged_attention else None)
             elif self.triton_cache:
                 from train.history_triton_cache import TritonHistoryCache
                 cache = TritonHistoryCache(actor, min_batch=self.triton_min_batch)
@@ -1024,6 +1043,7 @@ class HistoryCollector:
             log_probs = merged_log_probs(
                 self.snapshot_heads, layout, fields, memory,
                 pos_seat=pos_seat, pos_round=pos_round, group_slots=plan.slots,
+                compact_kv=self.compact_snapshot_kv,
             )
         else:
             log_probs = merged_log_probs(self.snapshot_heads, layout, fields, memory)

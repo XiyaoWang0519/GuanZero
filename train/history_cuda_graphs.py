@@ -152,6 +152,8 @@ class PrivateDecisionGraphs:
                  max_bytes: int = 128 << 20, warmup: int = 3,
                  admit_after: int = 3, max_observed_shapes: int = 256,
                  integer_alignment_agnostic: bool = True):
+        if actor.config.private_hidden > 0:
+            raise ValueError("private CUDA graphs do not support private_hidden > 0")
         if min(max_entries, max_bytes, warmup, admit_after, max_observed_shapes) < 1:
             raise ValueError("graph cache limits and warmup must be positive")
         self._interval_active = False
