@@ -14,7 +14,7 @@ Historical records stay at their existing paths to preserve references.
 
 ## Current summaries, deployment and research proposals
 
-- [大模型新血统：加宽决策路径的实现方案（2026-11-18）](large-decision-trunk-plan-2026-11-18.md) — **本地 CPU 验收通过，Velocity 22095 停在旧结构冻结回放**。新结构双卡单设备 CUDA 检查通过。八 rank、吞吐、显存和棋力未测。
+- [大模型新血统：加宽决策路径的实现方案（2026-11-18）](large-decision-trunk-plan-2026-11-18.md) — 门禁 22151 通过（速度为旧结构 0.85 倍，显存 11.5 GiB）；11 月 20 日以遮记牌配置从头开训（作业 22320）。棋力未测。
 - [多层序列解码器、记牌器输入裁剪与最近邻对对手池实现及预检（2026-11-17）](sequence-decoder-nearest-pair-2026-11-17.md) — 多层 QK-Norm 相对位置跨注意力解码器、保留 382 维记牌器并退火遮挡 1,467 维历史汇总、合并快照推理适配与 `nearest_pair` 持久化分层探针归档；本地、Velocity 预检 22039 及 L40S CUDA 门禁验证通过，双卡作业 22048 入队，牌力待测
 - [主线 u234993 对 DanLM 的配对评测（2026-11-17）](main-u234993-danlm-2026-11-17.md) — 对 u195450 共同计分 19,936 副，净级差 −0.02317/局，胜率变化区间包含零
 - [u195450 / filtered：历史识别、逐层读取与条件行为（2026-11-15）](history-identification-2026-11-15.md) — 8,000 局、48 次探针拟合及新测试；公共历史概率参照 3 局恢复 79% 身份预测收益，无隐藏牌采样部分也达 67%；通用原始/各层探针泛化不足，条件机会特征 10 局有小幅收益；主线未动

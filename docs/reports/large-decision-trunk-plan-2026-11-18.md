@@ -371,3 +371,25 @@ Slurm 记录 `22095` 在多伦多时间 02:46:33 开始，02:49:04 以 `FAILED`�
   `GZ_TARGET_UPDATES=248`（两次检查点，约 1,630 万决策）。到达 248 次更新即结束，不自动续交。
   如果在时限内没跑到 248，脚本仍会按 `train_deadline` 续交下一段，需要手动取消。
   门禁失败（包括新结构的性能判定失败）时，Slurm 会撤销 22156。
+
+## 首跑提交记录（多伦多时间 2026-11-20 约 19:05）
+
+用户决定放弃旧结构短跑，直接训练大模型，并要求遮住记牌信息。训练参数由 Claude 按第 5 节草案确定。
+
+- **取消：** 旧结构的 22318（误提交为长跑）和 22319（248 次更新短跑）都在 `PENDING` 时取消，未训练。
+  22156 此前因 `~/guanzero/gz-seq-cc-trick-np-2026-11-18.tar.gz` 不存在而失败（包只在任务子目录里）。
+- **源码：** 直接复用 22151 门禁验证过的 `source.tar.gz`（SHA-256 `25b2ee45…`）。解开后与提交
+  `9760247` 的 `git archive` 逐文件一致（只多一个 `source-identity.json`）。
+- **配置：** 第 5 节草案，改动三处：`--private-obs-mode card_counter --obs-mask-warmup-updates 0`
+  （第一步起全遮）；`--world-size 8` 放在 2 张 L40S 上；采样加速开关用 22151 通过的整组
+  （含 `--rollout-triton-paged-attention --rollout-decoder-kv-cache --rollout-compact-snapshot-kv`）。
+  种子 `2026112001`，行为探针种子 `20261120`，`--population-archive-min-tv 0.05`。
+- **脚本：** `train-auto.sbatch`（SHA-256 `c56f6731…`），由旧结构脚本改出：去掉初始检查点，
+  到 36,000 次更新（约 23.6 亿决策）自动停，每段结束把 `latest.pt` 另存到 `runs/large-cc-fresh-2026-11-20/archive/u<N>.pt`
+  供评测。远端目录 `~/guanzero/large-cc-2026-11-20/`，本地副本 `.work/velocity-large-cc-2026-11-20/`。
+- **本地冒烟：** CPU 上 2 个 rank、4 桌，跑 4 次更新再续跑 2 次，都正常结束；actor 6,578,151 参数，
+  critic 1,555,969 参数，`obs_mask_prob` 从第 1 次更新起为 1.0。Triton 等 CUDA 开关本地无法测。
+- **作业：** `22320`，2×L40S、32 核、160 GB、12 小时一段。提交时 `PENDING`：节点 216 个 CPU 核被其他用户占满，
+  节点 GPU 总数为 3（此前为 4）。
+- **限制：** 同时改了决策部分大小和遮记牌两项，结果无法归因于其中一项。2 张卡按门禁速度
+  （约 7,770 决策/秒）估算，到 23.6 亿决策约需 3.5 天。
