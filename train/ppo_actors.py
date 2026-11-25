@@ -77,6 +77,7 @@ import numpy as np
 import torch
 
 import gd
+from infra.node_local import require_node_local
 
 PROGRESS_KEYS = ("decisions", "learner_decisions", "rounds", "matches", "learner_match_wins")
 
@@ -233,6 +234,7 @@ def actor_main(connection, spec: dict, net_weights: dict, reference_weights: dic
     """Entry point of one actor process."""
     # The learner handles SIGINT/SIGTERM and closes the actors itself.
     signal.signal(signal.SIGINT, signal.SIG_IGN)
+    require_node_local("ppo actor")
     try:
         actor = Actor(spec, net_weights, reference_weights, tensors)
         connection.send(("ok", "ready"))

@@ -27,6 +27,7 @@ Historical records stay at their existing paths to preserve references.
 - [u195450 历史事实解码与读取模块可学习性（2026-11-14）](history-answer-learnability-2026-11-14.md) — 最终 encoder 逐 token 解码可恢复 95.31% 历史事实，原生 reader 约 50%；独立 Q/K 归一化监督训练尚无可靠增益，主线未动
 - [u195450 / 当前 filtered 池：历史信息与分层利用诊断（2026-11-13）](filtered-history-diagnosis-2026-11-13.md) — 20 个当前池快照、1,280 场四轮轨迹、82,560 个独立选招/评分分支；历史收益未建立，固定读出仅改变 2/960 首选，主线未动
 - [u184140 / u195450 历史利用根因诊断（2026-11-12）](history-root-cause-2026-11-12.md) — 当前权重/activation/梯度干预：私有 Q/K 饱和、近似常量读出；缓存路径核对通过，未启动修复训练
+- [Velocity NFS relief: node-local env and GPU allocation (October 25–26, 2026)](velocity-nfs-staging-2026-10-25.md) — operational; NFS baseline, shm staging, guards, one-GPU-per-arm switch
 - [Opt-in FP32 paged rollout-attention prototype (October 18, 2026)](paged-attention-prototype-2026-10-18.md) — implementation and local CPU checks; CUDA compilation, integration and speed unverified
 - [主线长跑指标复核（2026-10-06）](training-review-2026-10-06.md)
 - [主线 Transformer 打法演变（2026-10-06）](style-evolution-2026-10-06.md)
