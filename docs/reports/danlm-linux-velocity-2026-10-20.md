@@ -59,7 +59,7 @@ ImportError: cannot import name 'game' from 'danzero.engine'
 
 ## Velocity probe
 
-`ssh velocity` (`x2524wan@max-velocity.uwaterloo.ca`) succeeded. Login node is
+`ssh velocity` succeeded. Login node is
 Linux x86_64. Under `~/guanzero/` there are GuanZero trees, eval kits, and the
 V1T ONNX (`evalkit/v3_rep_v1t_best_eval_001_int8.onnx`), but **no DanLM
 checkout with loadable Linux extensions**. CPU inference preference is moot:

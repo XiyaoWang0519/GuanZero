@@ -17,7 +17,7 @@ deal sets. avg4 is an **evaluation** artifact only (`averaged_from` set;
 
 ## Checkpoint inventory (Velocity, 2026-10-20)
 
-Host: `max-velocity.uwaterloo.ca` (`ssh velocity`). Main lineage
+Host: Velocity (`ssh velocity`). Main lineage
 `history_ppo-2026092801-d1d612ae`. Segment tree
 `~/guanzero/runs/main/segments/lr-main/`; milestones
 `~/guanzero/runs/main/milestones/`.
