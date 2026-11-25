@@ -57,10 +57,12 @@ def face_to_bz(face: int, copy: int = 0) -> int:
 
 
 def level_to_gd(level: object) -> int:
-    """Botzone level string ``"2".."10", "J", "Q", "K", "A"`` -> gd level 0..12."""
+    """Botzone level string (including judge's ``"0"`` for ten) -> gd 0..12."""
     text = str(level).strip().upper()
     if text == "1":
         text = "A"
+    elif text == "0":
+        text = "10"
     return LEVEL_NAMES.index(text)
 
 
@@ -296,6 +298,7 @@ class RoundLog(object):
         self.first_play_seen = False
         self.leader_hint = -1    # first mover of the round as the requests show it
         self.positional = False  # a history arrived as positional slots
+        self.leading = True      # pending request's window, not accumulated replay
 
     def _global(self, g: dict) -> None:
         if not g:
@@ -318,6 +321,22 @@ class RoundLog(object):
                     store[int(seat)] = cards[0]
 
     def _history(self, history: list) -> None:
+        # Match the judge's lead test using this request's window. In
+        # particular, a finished partner's old play must not prevent jiefeng.
+        self.leading = True
+        for i in range(len(history) - 1, -1, -1):
+            entry = history[i]
+            if isinstance(entry, dict) and "player" in entry and "response" in entry:
+                seat, action = int(entry["player"]), entry["response"][0]
+            elif isinstance(entry, list) and len(entry) == 2:
+                seat, action = (self.me + i) % 4, entry[0]
+            else:
+                continue
+            if seat == self.me:
+                break
+            if action:
+                self.leading = False
+                break
         if not history:
             if not self.first_play_seen:
                 self.leader_hint = self.me

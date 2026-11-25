@@ -53,6 +53,8 @@ Historical records stay at their existing paths to preserve references.
 - [Auxiliary heads on the history encoder (October 2, 2026)](aux-heads-2026-10-02.md)
 - [Botzone bot, steps 1 to 4 (October 3, 2026)](botzone-bot-2026-10-03.md)
 - [Botzone search deployment — October 4, 2026](botzone-search-2026-10-04.md)
+- [Botzone 计分与动作合法性复核（2026-10-22）](botzone-legality-audit-2026-10-22.md) — 60 局旧线上记录及 244,332 个候选通过用户裁判；异常兜底有可复现漏洞，当前 v7 近期线上日志未完成审计
+- [Botzone 异常兜底修复（2026-10-22）](botzone-fallback-fix-2026-10-22.md) — 本地修复贡还、抗贡、实体手牌与领出判定；用户裁判故障注入验证，未部署
 - [近期实验复核：方向、证据缺口与优先级（2026-10-04）](experiment-review-2026-10-04.md)
 - [Fused test-time search: design (October 5, 2026)](fused-search-design-2026-10-05.md)
 - [Learning-rate decay and weight averaging (October 3-4, 2026)](lr-decay-weight-avg-2026-10-04.md)

@@ -37,7 +37,8 @@ from typing import List, Optional
 import numpy as np
 
 from . import pyengine as pe
-from .protocol import RoundLog, card_to_gd, claim_faces, physical_claim
+from .protocol import (RoundLog, card_to_gd, claim_faces, is_wild, physical_claim,
+                       power, rank_of)
 
 KEEP_RUNNING = ">>>BOTZONE_REQUEST_KEEP_RUNNING<<<"
 WEIGHTS_NAME = "gz_actor.npz"
@@ -152,24 +153,58 @@ class Bot(object):
         return out
 
     def _fallback(self, log: RoundLog) -> object:
-        """A legal answer from the log alone: pass when following, else the lowest card."""
+        """Answer from our cards and the pending request, without mirror or actor.
+
+        Exchanges are simultaneous in the platform judge: tribute/return
+        choices come from the original deal; received cards enter play only
+        after every return. During play, pass when following and lead a single.
+        """
+        if log.stage in ("tribute", "return") and log.resist:
+            return []
         hand = list(log.deliver)
-        for card in (log.my_tribute, log.my_return):
-            if card is not None and card in hand:
-                hand.remove(card)
+        if log.stage == "tribute":
+            eligible = [c for c in hand if not is_wild(card_to_gd(c), log.level)]
+            card = max(eligible, key=lambda c: (power(rank_of(card_to_gd(c)), log.level), -c))
+            return [card]
+        if log.stage == "return":
+            # The supplied judge allows natural ranks <=9, except level 9
+            # where the cap is 8. Jokers and the elevated level are excluded.
+            cap = 6 if log.level == 7 else 7  # gd ranks: 2=0, 8=6, 9=7
+            eligible = [c for c in hand
+                        if rank_of(card_to_gd(c)) <= cap
+                        and rank_of(card_to_gd(c)) != log.level]
+            return [min(eligible, key=lambda c: (rank_of(card_to_gd(c)), c))]
+        if log.stage != "play":
+            return []
+        if log.tribute and not log.resist:
+            if log.tribute == 1:
+                route = {log.last: log.first}
+            else:
+                down, up = (log.first + 1) % 4, (log.first + 3) % 4
+                key = lambda seat: power(rank_of(card_to_gd(log.tribute_cards[seat])), log.level)
+                banker_payer = down if key(down) >= key(up) else up
+                other_payer = up if banker_payer == down else down
+                route = {banker_payer: log.first, other_payer: (log.first + 2) % 4}
+            # Remove outgoing physical ids before adding incoming cards.
+            # Use public exchange dictionaries even if our prior response
+            # was not separately cached in my_tribute/my_return.
+            for payer, receiver in route.items():
+                if payer == log.me:
+                    hand.remove(log.tribute_cards[payer])
+                if receiver == log.me:
+                    hand.remove(log.return_cards[receiver])
+            for payer, receiver in route.items():
+                if receiver == log.me:
+                    hand.append(log.tribute_cards[payer])
+                if payer == log.me:
+                    hand.append(log.return_cards[receiver])
         for move in log.moves:
             if move.seat == log.me:
                 for card in move.action:
-                    if card in hand:
-                        hand.remove(card)
-        if log.stage in ("tribute", "return"):
-            return [hand[0]] if hand else []
-        own = [i for i, m in enumerate(log.moves) if m.seat == log.me]
-        last_own = own[-1] if own else -1
-        following = any(not m.is_pass and m.seat != log.me for m in log.moves[last_own + 1:])
-        if following or not hand:
+                    hand.remove(card)
+        if not log.leading:
             return [[], []]
-        card = min(hand, key=lambda c: (card_to_gd(c) // 4 if card_to_gd(c) < 52 else 13, c))
+        card = min(hand, key=lambda c: (power(rank_of(card_to_gd(c)), log.level), c))
         return [[card], [card]]
 
 
