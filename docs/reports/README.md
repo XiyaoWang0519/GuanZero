@@ -46,6 +46,8 @@ Historical records stay at their existing paths to preserve references.
 
 - [Main-lineage u99200 versus DanLM (October 30, 2026)](u99200-danlm-eval-2026-10-30.md) — 3,992/4,000 valid duplicate deals; −0.257 levels/round, paired +0.091 over u86800; adapter exclusions retained
 - [Shared eval baseline: m7, u86800, avg4 (October 20, 2026)](eval-baseline-avg4-2026-10-20.md) — Velocity inventory, avg4 rebuild with matching model_digest; selection DanLM 4k (seed 20260929) from Mac Oct 18; holdout DanLM 4k (seed 20261020) completed on Mac — avg4−u86800 +0.096 [+0.051, +0.140]
+- [Branch B: avg4 residual-shuffle search (October 20, 2026)](search-avg4-residual-2026-10-20.md) — self-play +0.0175 [+0.0025, +0.0375]; `value_margin=0` identical; `selection=mean` +0.030 CI crosses zero; not a promote
+- [Train-time `next_coef` knob (October 20, 2026)](next-coef-knob-2026-10-20.md) — belief/outcome stay on `aux_coef`; next separately weighted / annealable; Velocity arms 8255–8258 queued
 - [Opt-in FP32 paged rollout-attention prototype (October 18, 2026)](paged-attention-prototype-2026-10-18.md) — implementation and local CPU checks; CUDA compilation, integration and speed unverified
 - [主线长跑指标复核（2026-10-06）](training-review-2026-10-06.md)
 - [主线 Transformer 打法演变（2026-10-06）](style-evolution-2026-10-06.md)
@@ -215,6 +217,8 @@ raw result/provenance pointers and negative findings.
 - [主线 SDPA 异常的触发调查（2026-10-15）](training-sdpa-trigger-2026-10-15.md)：窗口内 u74155 已有 norm >100，无同期部署/重启证据；同输入 CPU 对照发现 m6–m7 attention score 大幅增长，支持大 score 下 backward 概率重建不稳定的假设，CUDA 内部机制仍待证实。
 
 - [主线私有注意力诊断（2026-10-15）](private-attention-diagnosis-2026-10-15.md)：同一 fixture、m5–u86800 共 8 组权重的 CPU 对照；所有 head 都是分差极大的硬 one-hot（无 <1 ulp 平局），q 方向几乎不随决策变化，落点按比赛固定（u86800 有 7/8 head 落在常数 BOS）；扰动历史内容的策略 TV 中位数 ≤ 2e-3；m7 起 q/k 的 math 梯度精确为 0，u86800 部分 head 的 Adam √v 已衰减到次正规不动点。只对这一 fixture 成立，未宣布模块退化。
+
+- [私有注意力归一化 A/B 计划（2026-10-15）](qknorm-ab-plan-2026-10-15.md)：10 月 15–16 日已执行（三臂训练完成，评测进行中）；以下为原计划摘要。分支 `qknorm-ab-2026-10-15` 加入默认关闭的 `query_norm`（q_proj 前 LayerNorm）与 `qk_norm`（逐 head RMSNorm + 可学温度）；关闭时逐位一致，fixture 门槛三臂通过；插入时刻探针：query_norm 单独不解除饱和，两者同开把注意力变为近均匀且 q/k 梯度恢复；三臂从 u86800 续训 500M 的 Velocity kit 在 `.work/qknorm-ab-2026-10-15/`，未提交作业。
 
 - [QK-norm 三臂 500M 产物核验与机制探针（2026-10-16）](qknorm-mechanism-2026-10-16.md)：同点 +503.84M decisions 与 SHA/源码核验通过；both 解除了极端饱和但 query 仍高度共线，均值替换策略变化小；未启动新训练。
 
