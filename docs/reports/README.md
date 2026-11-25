@@ -45,6 +45,7 @@ Historical records stay at their existing paths to preserve references.
 - [Bounded Velocity league continuation (November 3, 2026)](league-resume-2026-11-03.md) — includes the 19:11 UTC progress/handoff snapshot, current jobs/successors, guarded continuation rules, held experiments and remaining evaluation
 
 - [Main-lineage u99200 versus DanLM (October 30, 2026)](u99200-danlm-eval-2026-10-30.md) — 3,992/4,000 valid duplicate deals; −0.257 levels/round, paired +0.091 over u86800; adapter exclusions retained
+- [Shared eval baseline: m7, u86800, avg4 (October 20, 2026)](eval-baseline-avg4-2026-10-20.md) — Velocity inventory, avg4 rebuild with matching model_digest; selection DanLM 4k (seed 20260929) from Mac Oct 18; holdout DanLM 4k (seed 20261020) completed on Mac — avg4−u86800 +0.096 [+0.051, +0.140]
 - [Opt-in FP32 paged rollout-attention prototype (October 18, 2026)](paged-attention-prototype-2026-10-18.md) — implementation and local CPU checks; CUDA compilation, integration and speed unverified
 - [主线长跑指标复核（2026-10-06）](training-review-2026-10-06.md)
 - [主线 Transformer 打法演变（2026-10-06）](style-evolution-2026-10-06.md)
