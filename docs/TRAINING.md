@@ -44,6 +44,22 @@ card. Checkpoint writes are outside the timed updates.
 
 ## Choose the entrypoint
 
+November 3, 2026 operational receipt: the [bounded Velocity league continuation](reports/league-resume-2026-11-03.md)
+uses an isolated copy of the campaign source with corrected same-shape archive
+probe rebinding. Its two arms stop at update 130,000, with 12-hour Slurm
+allocations. The later user-authorized automatic-continuation amendment queues
+afterok successors for healthy deadline stops, honoring STOP and durable-sync
+failures; crash retries remain disabled. This is a scoped experiment
+continuation; the original campaign source and main training remain unchanged.
+Read its source identity, checkpoint and storage-check evidence before reusing
+that launcher; older campaign wrappers automatically resubmit.
+
+The later [November 3 page-span receipt](reports/league-page-span-2026-11-03.md)
+records current-checkpoint numerical gates and one-GPU/four-rank complete-PPO
+measurements before enabling `rollout_page_span=true` in the filtered arm.
+Near already had this flag enabled. Preserve the arm's global batch/rank layout,
+FP32 and full history; the measured gain is scoped to that option and workload.
+
 | Task | Owning module / document |
 |---|---|
 | Sequence self-play PPO | `train.history_config`, `train.history_ppo`, `train.history_rollout`, `train.history_population` |
@@ -302,6 +318,32 @@ population consists of current-policy copies; frozen snapshots enter once
 they exist. Fixed heuristic tribute/back-tribute is a declared exchange-only
 exception, identical across arms. No MLP, greedy or styled play opponent is
 silently added to improve a weak cold-start curve.
+
+## Google Colab compute
+
+Checked November 15, 2026. [Google One Help](https://support.google.com/googleone/answer/14534406?hl=en)
+lists 200 Colab compute units (CCUs) for Google AI Pro in Canada. The
+[Colab FAQ](https://research.google.com/colaboratory/intl/en-GB/faq.html)
+says eligible paid plans receive the grant monthly based on the signup date,
+automatically on the same Google account. Free trials are excluded; for a
+family plan, the benefit is for the plan manager. The signed-in
+[Colab plan page](https://colab.research.google.com/signup) showed **0 CCUs**
+and Settings → Subscription did not show an active entitlement. The cause
+was not verified. Check the Google One membership account and paid status
+and recheck the Colab balance before budgeting any paid GPU time.
+
+Once units are available, use Colab for short, restartable single-GPU work:
+CUDA parity and component benchmarks for paged attention on a compatible GPU,
+small frozen-checkpoint evaluations on fixed deals, or isolated reader
+diagnostics that benefit from CUDA. Keep CPU-only probes local and long,
+multi-GPU PPO runs on Velocity. Colab GPU models and session lifetimes vary;
+CCUs do not imply a fixed number of GPU hours.
+
+For a first pilot, pin source, checkpoint and seeds, record the assigned GPU
+and software versions, cap the run at 30 minutes, and record the before/after
+CCU balance. Save logs and results outside the temporary VM between batches
+and disconnect afterward. Report component timings separately from full PPO
+throughput or playing strength. No Colab experiment has been launched.
 
 ## Remote GPU pilot
 
@@ -570,3 +612,14 @@ See [the dated record](TRAINING_EVIDENCE.md#learning-rate-decay-october-4).
 ## Planted-habit diagnostic (September 30)
 
 See [the dated record](TRAINING_EVIDENCE.md#planted-habit-diagnostic-september-30).
+
+## November 8 main continuation configuration
+
+The user-authorized main run now uses next_coef=0.1 without annealing and
+the strength_behavior filtered archive schedule. Its population was rebuilt
+from main u155773 using the existing source's schedule-change resume path.
+The launcher `~/guanzero/main-filtered-auto-2026-11-08.sbatch` preserves
+two-GPU/eight-rank automatic continuation, 12-hour allocations, STOP,
+checkpoint and durable-sync checks. See the
+[transition receipt](reports/main-filtered-next-on-2026-11-08.md) for exact
+parameters, source identity and the pre-switch checkpoint.

@@ -28,6 +28,23 @@ Historical records stay at their existing paths to preserve references.
 - [u195450 / 当前 filtered 池：历史信息与分层利用诊断（2026-11-13）](filtered-history-diagnosis-2026-11-13.md) — 20 个当前池快照、1,280 场四轮轨迹、82,560 个独立选招/评分分支；历史收益未建立，固定读出仅改变 2/960 首选，主线未动
 - [u184140 / u195450 历史利用根因诊断（2026-11-12）](history-root-cause-2026-11-12.md) — 当前权重/activation/梯度干预：私有 Q/K 饱和、近似常量读出；缓存路径核对通过，未启动修复训练
 - [Velocity NFS relief: node-local env and GPU allocation (October 25–26, 2026)](velocity-nfs-staging-2026-10-25.md) — operational; NFS baseline, shm staging, guards, one-GPU-per-arm switch
+- [u195450 matched versus shuffled opponent history (November 12, 2026)](main-matched-history-2026-11-12.md) — no observed win or net-level gain per round from matched history
+- [Main u184140 versus u195450 cross-round history swap (November 12, 2026)](main-kv-swap-2026-11-12.md) — lower policy sensitivity on 707 shared contexts
+- [Main u195450 versus u184140 on 20,000 reused DanLM deals (November 12, 2026)](main-u195450-danlm-2026-11-12.md) — paired gains in net levels and round wins
+- [Main u184140 versus u155248 on 20,000 fresh DanLM deals (November 10, 2026)](main-danlm-fresh-20000-2026-11-10.md) — near-zero paired differences on the new set
+- [Main u184140 versus DanLM (November 10, 2026)](main-u184140-danlm-2026-11-10.md) — paired comparison with pre-switch u155248; both intervals include zero
+- [League filtered-arm page-span validation (November 3, 2026)](league-page-span-2026-11-03.md) — +8.93% complete-PPO throughput; current-checkpoint rollout and parameter/gradient/optimizer parity; adopted only in filtered training
+
+- [Main next-on / filtered continuation (November 8, 2026)](main-filtered-next-on-2026-11-08.md) — user-authorized population switch at u155773 and automatic continuation
+- [Main four-checkpoint strength curve (November 8, 2026)](main-curve-2026-11-08.md) — same-deal learning curve and paired improvement rates
+- [Main u155248 versus DanLM (November 8, 2026)](main-u155248-danlm-2026-11-08.md) — paired improvement over u111202
+- [Main bounded resume (November 4, 2026)](main-bounded-resume-2026-11-04.md) — u111202 toward u120000
+- [Main and league endpoints versus DanLM (November 4, 2026)](main-league-danlm-2026-11-04.md) — three frozen endpoints on a fresh shared deal set
+- [Next-coefficient paired endpoint evaluation (November 4, 2026)](next-coef-paired-2026-11-04.md) — four existing endpoints against the shared fork
+- [League u130000 paired head-to-head (November 4, 2026)](league-u130000-paired-2026-11-04.md) — net levels and round win rates on 2,000 fixed deals
+- [Bounded Velocity league continuation (November 3, 2026)](league-resume-2026-11-03.md) — includes the 19:11 UTC progress/handoff snapshot, current jobs/successors, guarded continuation rules, held experiments and remaining evaluation
+
+- [Main-lineage u99200 versus DanLM (October 30, 2026)](u99200-danlm-eval-2026-10-30.md) — 3,992/4,000 valid duplicate deals; −0.257 levels/round, paired +0.091 over u86800; adapter exclusions retained
 - [Opt-in FP32 paged rollout-attention prototype (October 18, 2026)](paged-attention-prototype-2026-10-18.md) — implementation and local CPU checks; CUDA compilation, integration and speed unverified
 - [主线长跑指标复核（2026-10-06）](training-review-2026-10-06.md)
 - [主线 Transformer 打法演变（2026-10-06）](style-evolution-2026-10-06.md)

@@ -1,0 +1,51 @@
+{
+  "observed_utc": "2026-11-03T19:11:15.868719+00:00",
+  "target_update": 130000,
+  "rate_scope": "Global environment decisions including collection and learning, from cumulative counter differences. Near uses the latest 49 update intervals; filtered uses 40 post-resume intervals including warm-up. Neither is a guaranteed completion forecast.",
+  "runs": {
+    "league-near": {
+      "job": "19007",
+      "successor": "19044",
+      "update": 122167,
+      "decisions": 8006336512,
+      "sample_updates": 49,
+      "seconds_per_update": 7.985943034999263,
+      "decisions_per_second": 8206.419669259018,
+      "collect_seconds_median": 4.493278616981115,
+      "learn_seconds_median": 3.3565473615017254,
+      "mean_prefix_median": 542.7759103605944,
+      "finite_losses": true,
+      "metric_age_seconds": 2.0923614501953125,
+      "page_span": true,
+      "sync_status": "ok 2026-11-03T19:11:01Z",
+      "estimated_remaining_hours_raw": 17.37608105365256
+    },
+    "league-filtered": {
+      "job": "19048",
+      "successor": "19049",
+      "update": 123663,
+      "decisions": 8104378368,
+      "sample_updates": 40,
+      "seconds_per_update": 7.044677210476948,
+      "decisions_per_second": 9302.910274232849,
+      "collect_seconds_median": 4.3049562979722396,
+      "learn_seconds_median": 3.1237637659651227,
+      "mean_prefix_median": 562.21633404379,
+      "finite_losses": true,
+      "metric_age_seconds": 0.48052406311035156,
+      "page_span": true,
+      "sync_status_at_snapshot": "ok 2026-11-03T19:06:03Z",
+      "sync_followup_utc": "2026-11-03T19:11:19Z",
+      "sync_followup_returncode": 0,
+      "sync_followup_seconds": 1,
+      "estimated_remaining_hours_raw": 12.400588745220116,
+      "estimate_limitation": "Includes short-history restart warm-up; do not treat this raw estimate as steady-state throughput."
+    }
+  },
+  "scheduler_verification": {
+    "19007": "RUNNING",
+    "19048": "RUNNING",
+    "19044": "PENDING afterok:19007",
+    "19049": "PENDING afterok:19048"
+  }
+}
