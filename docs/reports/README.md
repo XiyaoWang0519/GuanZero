@@ -49,12 +49,14 @@ Historical records stay at their existing paths to preserve references.
 - [Branch B: avg4 residual-shuffle search (October 20, 2026)](search-avg4-residual-2026-10-20.md) — self-play +0.0175 [+0.0025, +0.0375]; `value_margin=0` identical; `selection=mean` +0.030 CI crosses zero; not a promote
 - [Train-time `next_coef` knob (October 20, 2026)](next-coef-knob-2026-10-20.md) — belief/outcome stay on `aux_coef`; next separately weighted / annealable; Velocity arms 8255–8258 queued
 - [Opt-in FP32 paged rollout-attention prototype (October 18, 2026)](paged-attention-prototype-2026-10-18.md) — implementation and local CPU checks; CUDA compilation, integration and speed unverified
+- [Training speed pass without a GPU (October 18, 2026)](training-speed-cpu-2026-10-18.md) — CPU-side speed work from the unmerged `claude/epic-thompson-y9edoh` branch; that code was not adopted, the report is kept as a record
 - [主线长跑指标复核（2026-10-06）](training-review-2026-10-06.md)
 - [主线 Transformer 打法演变（2026-10-06）](style-evolution-2026-10-06.md)
 - [对 DanLM 的对局复盘（2026-10-06）](danlm-game-review-2026-10-06.md)
 - [进贡/还贡怎么学：问题说明和配对数据（2026-10-06）](tribute-learning-brief-2026-10-06.md)
 - [Auxiliary heads on the history encoder (October 2, 2026)](aux-heads-2026-10-02.md)
 - [Botzone bot, steps 1 to 4 (October 3, 2026)](botzone-bot-2026-10-03.md)
+- [OpenGuanDan ladder: u9989 against 16 competition bots (October 3, 2026)](ogd-ladder-u9989-2026-10-03.md) — 1,600 whole matches, CPU; u9989 greedy, no search: 25% match wins vs 2nd-no-ai, 55–60% vs three others, 84–100% vs the remaining twelve; harness in `eval/ogd_ladder/` (restored Nov 25, not re-run)
 - [Botzone search deployment — October 4, 2026](botzone-search-2026-10-04.md)
 - [Botzone 计分与动作合法性复核（2026-10-22）](botzone-legality-audit-2026-10-22.md) — 60 局旧线上记录及 244,332 个候选通过用户裁判；异常兜底有可复现漏洞，当前 v7 近期线上日志未完成审计
 - [Botzone 异常兜底修复（2026-10-22）](botzone-fallback-fix-2026-10-22.md) — 本地修复贡还、抗贡、实体手牌与领出判定；用户裁判故障注入验证，未部署
